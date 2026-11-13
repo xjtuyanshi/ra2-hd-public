@@ -305,6 +305,64 @@ b01..b08: noon, map-driven default, dusk, night, night rain, fires, day rain, la
 regression framings), `atmobase` (the same framings without parameters older builds ignore, for before/after
 comparisons) and `atmoperf` (frame cost, see below).
 
+## Living world (hd-alive)
+
+Opt in with `hd-alive=1` on the live game URL, or `alive=1` in either sandbox. Defaults and launcher presets stay
+unchanged. Like `hd-water`, this is a URL option; there is no water/alive INI setting. Tunables in both entries:
+`alive-cloud=1` (shadow strength scale, 0..2; 0 disables clouds, 1 is the default), `alive-sway=1` (wind/ripple amplitude, 0..3),
+`alive-speed=1` (renderer clock speed, 0..4). Tunables alone do not enable animation.
+`alive-debug=cloud` shows the raw cloud multiplier as encoded grey (0.64 patch core, exactly 1.0 gap at clear noon),
+bypassing exposure, grading and art colours in the existing display pass; shrouded ground stays black.
+Use it with the alive flag. It creates no render target or pass.
+
+In the live bench, `window.__fx.live.setAlive(true|false)` switches animation without reloading;
+`setAlive({clouds: true, wind: false})` switches parts independently and preserves tuning.
+`LiveViewOptions.alive` and `HdRenderer.setAlive` accept the same boolean or partial options
+(`clouds`, `wind`, `cloud`, `sway`, `speed`, `debugCloud`). `setAlive(false)` also clears debug.
+
+`src/livingWorldNodes.ts` shares one world-XZ cloud field across terrain/cliffs/shore, decals, sprites, voxel
+materials and all water looks. Two non-repeating gradient-noise octaves (5.75/12-cell lattices, weights 0.85/0.15)
+and a -0.085..0.145 smooth threshold retain small-scale edges and lit gaps. Gradient noise avoids broad value-noise
+plateaus. Deterministic CPU sampling of a 40-cell square at 0/4/8/12 seconds gives 42.3..44.0% shadow coverage;
+the median axis-aligned 5..95% edge width at time zero is 1.43 cells. Small crops have variable coverage, not a fixed quota
+of patches. Drift is 0.85 cells/second along `environment.windDirection`, plus a slow 0.8-cell coordinate morph
+(0.07/0.09 radians/second). Clouds fade with night and overcast/precipitation; airless maps disable animation.
+Clouds attenuate the complete scene-lit term after the scene palette transform, including physical sky fill;
+painted fill, reflected sky and glints use the same multiplier. Local lamp/fire/explosion light, emitted panes and
+house-converter lamps stay additive and bright. Ore's authored self-light receives cloud cover but still bypasses
+map/night grading; separate engine ore glints retain their emission. Already lit mirror captures are not shaded twice.
+No painter key, analytic depth or silhouette code changes.
+
+The default core is 0.64 (36% darkening), scaled by `alive-cloud` and the day/weather weight. Attenuation runs in
+the sRGB/palette domain before converting back to linear light: a linear-light factor of 0.64 would display at about
+0.82 and hide in the grass texture. Shadow colour uses (0.90, 0.95, 1.05), normalized by Rec.709 luminance; the cool
+tint fades with shadow depth and clear gaps remain exactly (1,1,1). Debug remains untinted grey. Named shader
+functions initialize the cloud factor to 1 on every invocation, including the unlit ore/gem branch. A shared inline
+TSL function must not cache that initialization inside a sibling lighting branch. With clouds off, the shading
+function returns its input without a colour conversion. Generated WGSL/GLSL contracts cover indexed/HD sprite
+branches and passes; the binding-budget suite also audits terrain, voxel, water and reflection material paths.
+
+Tree eligibility (`src/ra2/livingTrees.ts`) requires `kind: 'tree'` plus stock `TREEdd`/`TIBTREdd` IDs; rocks, posts,
+unknown/modded names and other art stay rigid. The existing quad receives camera-plane shear and a small tilt,
+with vertex height weight to power 1.4, a pinned bottom and no displacement snapping. Its crown envelope is
++/-3.8 native pixels idle and +/-6.2 at gust peaks (predicted +/-9.5 and +/-15.5 screen pixels at zoom 2.5), scaled
+by `alive-sway`. Per-cell phase varies the idle period from 2.6 to 3.4 seconds. Gusts travel with the clouds;
+their 8.5-cell wavelength gives a 10-second regional period. Tree shadows and wet reflection quads stay fixed.
+Procedural sandbox trees stay rigid; use original-map or live tree cards for review.
+
+Grass ripples share that analytic gust: about +/-5% luminance with a tiny yellow-green crest, without another
+texture read. Original terrain packs eligibility into the existing contact attribute's third channel (no extra
+vertex buffer): clear/rough cells in temperate/urban theaters plus a sampled green-art mask. Roads, shore, rock,
+sand-coloured texels, snow, desert and lunar art stay unchanged. Plain-ground fallback also receives the ripple.
+
+All animation uses `HdRenderer.seconds()`, including frozen-clock `__fx.advance(ms)`. Switches change uniforms
+only; there is no per-tree CPU animation, new pipeline on toggle, extra full-screen pass or cloud texture lookup.
+Chimney smoke is omitted: emitter heads/streaks cannot draw it, and existing smoke spawning uses random particle
+births rather than the deterministic uniform-clock animation required here. GPU cost (+0.5 ms target), exact off-state
+pixels versus baseline 6b34e81, cross-material agreement within 3%, leaf-card integrity and phone-clip readability remain **UNVERIFIED**
+until Claude's same-scene renders and `HdRenderer.benchmark(N)`. CPU math and generated shader/layout tests do not
+establish rendered pixels or GPU timing.
+
 ## Scene lighting events
 
 `LiveSnapshot.lighting` carries the engine's current ambient, selected ground/level terms, normal RGB, raw event

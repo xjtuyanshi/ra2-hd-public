@@ -7,6 +7,7 @@ import {
   type WaterTuning,
 } from './waterLook';
 import { clearBedWaterLook } from './clearWater';
+import { canHaveLivingGrass } from './livingGrass';
 import { paintedWaterMask } from './paintedWater';
 import {
   Box3,
@@ -180,6 +181,8 @@ export function buildRa2Terrain(cache: Ra2Cache): Ra2TerrainBuild {
   const uvs: number[] = [];
   const rects: number[] = [];
   const walls: number[] = [];
+  const livingGrass: number[] = [];
+  let grassCell = 0;
   const uvs2: number[] = [];
   const rects2: number[] = [];
   const indices: number[] = [];
@@ -210,6 +213,7 @@ export function buildRa2Terrain(cache: Ra2Cache): Ra2TerrainBuild {
   ) => {
     positions.push(x, level * LEVEL_HEIGHT, y);
     walls.push(wall);
+    livingGrass.push(wall ? 0 : grassCell);
     uvs2.push(uv2[0] / atlasW, uv2[1] / atlasH);
     rects2.push(rect2[0] / atlasW, rect2[1] / atlasH, (rect2[0] + rect2[2]) / atlasW, (rect2[1] + rect2[3]) / atlasH);
     uvs.push(uv[0] / atlasW, uv[1] / atlasH);
@@ -222,6 +226,7 @@ export function buildRa2Terrain(cache: Ra2Cache): Ra2TerrainBuild {
       if (!cellExists(x, y)) continue;
       const t = tileAt(x, y);
       if (!t) continue;
+      grassCell = canHaveLivingGrass(manifest.theater, t) ? 1 : 0;
       const h = baseLevel(x, y);
       if (isWater(x, y)) waterCells.push({ x, y, level: h });
       const c = [
@@ -329,19 +334,20 @@ export function buildRa2Terrain(cache: Ra2Cache): Ra2TerrainBuild {
   const geometry = new BufferGeometry();
   const count = positions.length / 3;
   geometry.setAttribute('position', new BufferAttribute(new Float32Array(positions), 3));
-  // x: the cliff-foot contact shade; y: where the water mirrors raised ground (cliffMirrorZone), per vertex. One
-  // attribute for both: the ground material already binds as many vertex buffers as a WebGPU pipeline may.
+  // x: cliff-foot shade; y: raised-ground mirror zone; z: grass eligibility.
+  // Pack all three: the ground already binds as many vertex buffers as a WebGPU pipeline may.
   const shade = contactShade(positions, walls, hGrid, W * SUB + 1, H * SUB + 1);
   const mirrorZone = cliffMirrorZone(hGrid, W * SUB + 1, H * SUB + 1, SUB);
-  const contact = new Float32Array(count * 2);
+  const contact = new Float32Array(count * 3);
   for (let v = 0; v < count; v++) {
-    contact[v * 2] = shade[v]!;
+    contact[v * 3] = shade[v]!;
     if (walls[v] === 1) continue;
     const gx = Math.round(positions[v * 3]! * SUB);
     const gz = Math.round(positions[v * 3 + 2]! * SUB);
-    contact[v * 2 + 1] = mirrorZone[gz * (W * SUB + 1) + gx] ?? 0;
+    contact[v * 3 + 1] = mirrorZone[gz * (W * SUB + 1) + gx] ?? 0;
   }
-  geometry.setAttribute('contact', new BufferAttribute(contact, 2));
+  for (let v = 0; v < count; v++) contact[v * 3 + 2] = livingGrass[v]!;
+  geometry.setAttribute('contact', new BufferAttribute(contact, 3));
   // The tile art already contains the engine's slope shading; flat shading normals avoid lighting it twice.
   const normals = new Float32Array(count * 3);
   for (let i = 0; i < count; i++) normals[i * 3 + 1] = 1;
@@ -764,7 +770,11 @@ function wetSheen(
   const nightSheen = light
     .mul(puddle.mul(0.015))
     .add(mirroredLight.mul(puddle).mul(sparkle).mul(0.16))
-    .add(sceneLitColour(sky.mul(float(0.03).add(puddle.mul(0.045))).mul(skyLevel), nodes.sceneTerrainMul))
+    .add(
+      nodes.alive.shade(
+        sceneLitColour(sky.mul(float(0.03).add(puddle.mul(0.045))).mul(skyLevel), nodes.sceneTerrainMul),
+      ),
+    )
     .mul(wetPaved);
   // An independent impact in each small cell keeps rings spatially sparse and avoids coherent waves over a road.
   const rippleCell: ShaderNode = floor(xz.mul(2.2));
@@ -790,7 +800,7 @@ function wetSheen(
     .add(reflected)
     .mul(puddle)
     .mul(float(WET_GROUND_LOOK.puddleLift).add(ring.mul(WET_GROUND_LOOK.rippleLift)));
-  const daySheen = sky.div(skyLuma).mul(wetLitLuma).mul(reflected.add(puddleLift));
+  const daySheen = nodes.alive.shade(sky.div(skyLuma).mul(wetLitLuma).mul(reflected.add(puddleLift)));
   return mix(daySheen, nightSheen, night);
 }
 
@@ -804,6 +814,7 @@ class ArtLightingModel extends PhysicalLightingModel {
   constructor(
     private readonly gloss: ShaderNode,
     private readonly sceneMultiplier: ShaderNode,
+    private readonly cloud: ShaderNode,
   ) {
     super();
   }
@@ -820,7 +831,7 @@ class ArtLightingModel extends PhysicalLightingModel {
 
   override finish(builder: NodeBuilder): void {
     super.finish(builder);
-    finishSceneLighting(builder, this.sceneMultiplier);
+    finishSceneLighting(builder, this.sceneMultiplier, this.cloud);
   }
 
   override direct({
@@ -852,8 +863,16 @@ class ArtMaterial extends MeshStandardNodeMaterial {
   /** 0 = dry art (diffuse only) .. 1 = full wet specular. */
   gloss: ShaderNode = float(0);
   sceneMultiplier!: ShaderNode;
+  cloudShadow: ShaderNode = float(1);
+  override copy(source: this): this {
+    super.copy(source);
+    this.gloss = source.gloss;
+    this.sceneMultiplier = source.sceneMultiplier;
+    this.cloudShadow = source.cloudShadow;
+    return this;
+  }
   override setupLightingModel(): PhysicalLightingModel {
-    return new ArtLightingModel(this.gloss, this.sceneMultiplier);
+    return new ArtLightingModel(this.gloss, this.sceneMultiplier, this.cloudShadow);
   }
 }
 
@@ -890,6 +909,7 @@ function terrainArtSampler(cache: Ra2Cache) {
 function plainArtMaterial(colour: ShaderNode, nodes: AtmosphereNodes): ArtMaterial {
   const material = new ArtMaterial();
   material.sceneMultiplier = nodes.sceneTerrainMul;
+  material.cloudShadow = nodes.alive.shadow;
   // The sun and sky see the night-desaturated albedo; local lights (emissive) the full colour.
   material.colorNode = moonlit(colour, nodes);
   material.gloss = float(0);
@@ -909,6 +929,14 @@ function plainArtMaterial(colour: ShaderNode, nodes: AtmosphereNodes): ArtMateri
   return material;
 }
 
+/** Clear/rough green texels only: roads, shore, rock and non-green sand cannot borrow the ripple. */
+function grassArt(colour: ShaderNode, raw: ShaderNode, nodes: AtmosphereNodes): ShaderNode {
+  const green = smoothstep(0.97, 1.07, raw.g.div(raw.r.max(0.001)))
+    .mul(smoothstep(1.2, 1.55, raw.g.div(raw.b.max(0.001))))
+    .mul(attribute('contact', 'vec3').z);
+  return nodes.alive.grass(colour, green);
+}
+
 /**
  * The ground as the map paints it, without wetness, water shading or reflections: what is drawn when the GPU refuses
  * even the ground without mirrors (see materialFallback.ts). Three sampled textures at most.
@@ -916,9 +944,10 @@ function plainArtMaterial(colour: ShaderNode, nodes: AtmosphereNodes): ArtMateri
 function createPlainGround(cache: Ra2Cache): MeshStandardNodeMaterial {
   const { sample } = terrainArtSampler(cache);
   const raw = sample('atlasUv', 'atlasRect').colour;
+  const nodes = cache.nodes ?? DEFAULT_ATMOSPHERE_NODES;
   return plainArtMaterial(
-    srgbScale(raw.rgb, terrainGradeAt(cache.mapLight, positionWorld.xz)),
-    cache.nodes ?? DEFAULT_ATMOSPHERE_NODES,
+    grassArt(srgbScale(raw.rgb, terrainGradeAt(cache.mapLight, positionWorld.xz)), raw.rgb, nodes),
+    nodes,
   );
 }
 
@@ -959,10 +988,11 @@ function createMaterials(
 
   const ground = new ArtMaterial();
   ground.sceneMultiplier = nodes.sceneTerrainMul;
+  ground.cloudShadow = nodes.alive.shadow;
   const { uv, colour: raw } = sample('atlasUv', 'atlasRect');
   // Tile art under the map's own light (see mapLighting.ts), as the engine draws it.
   const grade: ShaderNode = terrainGradeAt(cache.mapLight, positionWorld.xz);
-  const art: ShaderNode = vec4(srgbScale(raw.rgb, grade), raw.a);
+  const art: ShaderNode = vec4(grassArt(srgbScale(raw.rgb, grade), raw.rgb, nodes), raw.a);
   // The surface texture is linearly filtered for ordinary light dressing. Weather must not borrow paving from a
   // neighbouring road into a grass/sand cell; retain the established continuous night blend.
   const paved: ShaderNode = mix(
@@ -990,13 +1020,13 @@ function createMaterials(
     // mask leaves small islands of shore rock that the upscaled art smears into pale blotches ringed with foam, so
     // water and land within a few tenths of a cell of it at a cliff foot become deep water: no islands, sandy bed,
     // caustics or lapping foam. Land further from the water keeps its art.
-    const nearCliff: ShaderNode = clamp(float(1).sub(attribute('contact', 'vec2').x).mul(6), 0, 1);
+    const nearCliff: ShaderNode = clamp(float(1).sub(attribute('contact', 'vec3').x).mul(6), 0, 1);
     const painted: ShaderNode = texture(map.shore, uv)
       .r.mul(SHORE_MAX - SHORE_MIN)
       .add(SHORE_MIN);
     // Sheltered water within about 1.5 cells of a cliff: no surf there, so the scree the art paints at a cliff foot is
     // not outlined in foam (the enhanced look's `calm`).
-    const sheltered: ShaderNode = clamp(float(1).sub(attribute('contact', 'vec2').x).mul(12), 0, 1);
+    const sheltered: ShaderNode = clamp(float(1).sub(attribute('contact', 'vec3').x).mul(12), 0, 1);
     // A mask that follows the painted waterline (MapMaterials.waterline) already reaches the rock: the water is not
     // extended onto land at cliff feet.
     const cliffWater: ShaderNode = map.paintedWaterline ? float(0) : nearCliff.mul(smoothstep(-0.45, -0.15, painted));
@@ -1068,7 +1098,7 @@ function createMaterials(
         reflection = cliffSoftMirror(
           mirror as unknown as MirrorSource,
           mirror.uvNode as ShaderNode,
-          attribute('contact', 'vec2').y.mul(water.cliffSoft),
+          attribute('contact', 'vec3').y.mul(water.cliffSoft),
         );
       }
       reflectionTarget = mirror.target;
@@ -1268,14 +1298,14 @@ function createMaterials(
     weatherLand = float(1).sub(waterness);
     const body = albedo.mul(float(1).sub(surface.fresnel.mul(0.8)));
     albedo = mix(albedo, body, waterness);
-    ground.emissiveNode = surface.sky.mul(surface.fresnel).add(surface.glint).mul(waterness);
+    ground.emissiveNode = nodes.alive.shade(surface.sky.mul(surface.fresnel).add(surface.glint)).mul(waterness);
     roughness = mix(roughness, float(0.25), waterness);
   }
   // Contact shading darkens every light at cliff feet (an occlusion term); the sun and sky see the night-desaturated
   // albedo, local lights (emissive, below) the full colour.
   const look = spriteLookFor(nodes);
   const contact = Fn(() => {
-    const value: ShaderNode = attribute('contact', 'vec2').x.toVar();
+    const value: ShaderNode = attribute('contact', 'vec3').x.toVar();
     If(look.enabled.greaterThan(0.5).and(look.contactShade.notEqual(1)), () => {
       value.assign(float(1).sub(float(1).sub(value).mul(look.contactShade).min(0.85)));
     });

@@ -1,3 +1,4 @@
+import type { AliveChange, AliveOptions } from '../livingWorld';
 import { hdInfantryPageIsBare } from '../ra2/infantryArt';
 import {
   BoxGeometry,
@@ -318,6 +319,8 @@ export interface LiveViewOptions extends VoxelUnitsOptions {
   nativeDetail?: 'ignore' | 'mirror';
   /** Water surface preset; classic remains the default. Enhanced-family looks support live uniform switching. */
   water?: WaterStyle;
+  /** Living-world presentation (clouds and tree wind); off unless explicitly enabled. */
+  alive?: AliveChange;
   /**
    * The engine's own field-wide ore/gem glints (ra2/cellGlints.ts, the pass HD mode skips on the native surface):
    * on by default; false leaves them out.
@@ -1366,6 +1369,10 @@ export class LiveView {
     return parseWaterStyle(this.hd.setWaterLook(style) ?? null);
   }
 
+  setAlive(change: AliveChange): Readonly<AliveOptions> {
+    return this.hd.setAlive(change);
+  }
+
   static async create(canvas: HTMLCanvasElement, options: LiveViewOptions): Promise<LiveView> {
     waterPreset.style = options.water ?? 'classic';
     // Only trees are static: overlays and smudges change during a match and are drawn by the view (cellLayer).
@@ -1418,6 +1425,7 @@ export class LiveView {
       requiredLimits,
     });
     await hd.init(world);
+    if (options.alive !== undefined) hd.setAlive(options.alive);
     hd.setState(state);
     // The original shows no vignette; keep the frame edge faithful to the game's own view.
     hd.settings.vignette = 0;

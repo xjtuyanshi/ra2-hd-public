@@ -20,12 +20,12 @@ import {
   UnsignedByteType,
   WebGPURenderer,
 } from 'three/webgpu';
-import { float, lights, texture as textureNode, uniform, uv, vec4 } from 'three/tsl';
+import { float, lights, texture as textureNode, uniform, uv, vec2, vec4 } from 'three/tsl';
 import { GLINT_CAPACITY, GlintLayer } from '../src/live/glintLayer';
 // @ts-expect-error r186 exposes this internal module without a matching @types/three declaration.
 import RenderObject from 'three/src/renderers/common/RenderObject.js';
 import { InstancedQuad } from '../src/instancedQuad';
-import { SpriteLayer } from '../src/ra2/sprites';
+import { SpriteLayer, type SpriteInstance } from '../src/ra2/sprites';
 import { spriteLookFor } from '../src/ra2/spriteLook';
 import { waterPreset } from '../src/ra2/waterLook';
 import { EffectSpriteLayer, MESH_IDLE_SECONDS, type EffectInstance } from '../src/live/effectSprites';
@@ -42,6 +42,7 @@ import { buildSmoothVoxelGeometry, buildStandInVoxelParts } from '../src/ra2/vox
 import { VoxelWaterMesh, voxelShadowMaterial, voxelWaterMaterial } from '../src/ra2/voxelShadow';
 import { Ra2NightDressing } from '../src/ra2/nightDressing';
 import { AtmosphereNodes } from '../src/atmosphere';
+import { SceneLitMaterial } from '../src/lighting';
 import { ObjectLayer } from '../src/objects';
 import { Mist } from '../src/mist';
 import { TerrainDepth } from '../src/terrainDepth';
@@ -138,11 +139,43 @@ function layout(mesh: Mesh, uniformLimit = MAX_UNIFORM_BYTES, capture?: TerrainD
 
 function assertLimits(mesh: Mesh, uniformLimit = MAX_UNIFORM_BYTES, capture?: TerrainDepth) {
   const result = layout(mesh, uniformLimit, capture);
+  assertNeutralCloudFunction(result.fragmentShader);
   expect(result.buffers.length, mesh.name).toBeGreaterThan(0);
   expect(result.buffers.length, mesh.name).toBeLessThanOrEqual(MAX_VERTEX_BUFFERS);
   expect(result.attributes.length, mesh.name).toBeLessThanOrEqual(16);
   for (const bytes of result.uniformBytes) expect(bytes, mesh.name).toBeLessThanOrEqual(uniformLimit);
   return result;
+}
+
+/** Audit every compiled material using clouds, including physical, sprite, water and reflection variants. */
+function assertNeutralCloudFunction(shader: string) {
+  if (!shader.includes('aliveCloudStrength')) return;
+  // A shared inline Fn can initialize inside one branch and leave zero in its sibling (the black-ore regression).
+  // A named function keeps the neutral assignment in the callee, before its strength-dependent branch.
+  const declaration = shader.match(/(?:fn|float) aliveCloudShadow\s*\([^)]*\)[^{]*\{/);
+  expect(declaration, 'cloud paths must call a scope-local shader function').not.toBeNull();
+  const start = declaration!.index! + declaration![0].length;
+  let depth = 1,
+    end = start;
+  for (; depth && end < shader.length; end++) {
+    if (shader[end] === '{') depth++;
+    if (shader[end] === '}') depth--;
+  }
+  const body = shader.slice(start, end - 1);
+  const neutral = body.indexOf('aliveCloudNeutral = 1.0;');
+  const branch = body.indexOf('if (');
+  expect(neutral).toBeGreaterThan(-1);
+  expect(branch).toBeGreaterThan(neutral);
+  expect(body).toMatch(/if \( \( strength > 0\.0 \) \)/);
+  expect(body.trimEnd()).toMatch(/return aliveCloudNeutral;$/);
+  expect(body.match(/aliveCloudNeutral = /g)).toHaveLength(2);
+  const colour = shader.match(/(?:fn|vec3) aliveCloudColour\s*\([^)]*\)[^{]*\{([^}]+)\}/)?.[1];
+  if (colour) {
+    // grey=1 -> cover=0 -> mix(1,tint,0)*1, so disabled clouds never tint a surface.
+    expect(colour).toMatch(/clamp\( \( \( 1\.0 - grey \) \/ 0\.36 \)/);
+    expect(colour).toMatch(/return \( mix\( vec3(?:<f32>)?\( 1\.0(?:, 1\.0, 1\.0)? \)/);
+    expect(colour).toMatch(/\* (?:vec3(?:<f32>)?\( )?grey/);
+  }
 }
 
 /** The backend binds interleaved views once, regardless of how many shader attributes read them. */
@@ -193,6 +226,162 @@ function dispose(mesh: Mesh): void {
 }
 
 describe('r186 vertex and uniform binding budget', () => {
+  it.each([false, true])(
+    'initializes clouds independently in unlit ore/gem and lit sprite branches (WebGL=%s)',
+    (forceWebGL) => {
+      const source = cache();
+      const instances = (
+        [
+          { flat: true, unlit: true, lighting: 'none' }, // Ore and gems take the select's unlit branch.
+          { flat: true, lighting: 'full' }, // Walls, smudges/craters and ground decals.
+          { lighting: 'ambient', houseConverter: true }, // Buildings, infantry and SHP vehicles.
+          { lighting: 'full' },
+          { lighting: 'none' },
+          { lighting: 'full', deckHeight: 4 }, // Bridge decks retain their own light sample/depth policy.
+        ] as Partial<SpriteInstance>[]
+      ).map((fields) => ({
+        anchor: new Vector3(1, 0, 1),
+        frame: { rect: [0, 0, 24, 48] as [number, number, number, number], offset: [-12, -40] as [number, number] },
+        palette: '',
+        push: 0,
+        shadow: false,
+        ...fields,
+      }));
+      try {
+        for (const hd of [null, { color: texture(), remap: texture() }]) {
+          for (const materials of [null, { texture: texture() }]) {
+            const windows = texture();
+            const layer = new SpriteLayer(source, instances, instances.length, undefined, hd, windows, materials);
+            try {
+              for (const mesh of [layer.mesh, ...layer.groundPasses, layer.readOnlyMesh, layer.unitMesh]) {
+                const renderer = new WebGPURenderer({
+                  canvas: { width: 1, height: 1 } as HTMLCanvasElement,
+                  forceWebGL,
+                });
+                renderer.hasFeature = () => false;
+                renderer.hasCompatibility = () => false;
+                const builder = (renderer.backend as unknown as LayoutBackend).createNodeBuilder(mesh, renderer);
+                builder.camera = new OrthographicCamera(-1, 1, 1, -1, 0.1, 400);
+                builder.scene = new Scene();
+                builder.build();
+                const shader = builder.fragmentShader;
+                assertNeutralCloudFunction(shader);
+                // The old graph reused a temporary initialized only in the lit branch. Each consumer now calls a
+                // real shader function with explicit uniforms; selecting unlit cannot skip its initializer.
+                const calls = shader.match(/aliveCloudShadow\( [^\n]+aliveCloudStrength \)/g) ?? [];
+                expect(calls.length).toBeGreaterThanOrEqual(2);
+                expect(shader).not.toContain('aliveCloudMultiplier =');
+                expect(shader).not.toMatch(/\b(?:NaN|undefined)\b/);
+              }
+            } finally {
+              dispose(layer.mesh);
+              windows.dispose();
+            }
+            materials?.texture.dispose();
+          }
+          hd?.color.dispose();
+          hd?.remap.dispose();
+        }
+      } finally {
+        source.nodes!.dispose();
+      }
+    },
+  );
+
+  it('keeps the same living-world shader and instance layout across off/on/off switches', () => {
+    const source = cache();
+    const alive = source.nodes!.alive;
+    const layer = new SpriteLayer(
+      source,
+      [
+        {
+          anchor: new Vector3(1, 0, 1),
+          frame: { rect: [0, 0, 24, 48], offset: [-12, -40] },
+          palette: 'theater',
+          push: 0,
+          shadow: false,
+          windSway: true,
+        },
+      ],
+      1,
+    );
+    try {
+      const off = assertLimits(layer.mesh);
+      expect(off.vertexShader).toContain('aliveWindAmplitude');
+      expect(off.fragmentShader).toContain('aliveCloudStrength');
+      alive.set(true);
+      alive.update(10, 0.6, 0, 0, false);
+      const on = assertLimits(layer.mesh);
+      expect(on.vertexShader).toBe(off.vertexShader);
+      expect(on.fragmentShader).toBe(off.fragmentShader);
+      expect(on.attributes.length).toBe(off.attributes.length);
+      expect(on.sampledTextures).toEqual(off.sampledTextures);
+      alive.set(false);
+      alive.update(10, 0.6, 0, 0, false);
+      const restored = assertLimits(layer.mesh);
+      expect(restored.vertexShader).toBe(off.vertexShader);
+      expect(restored.fragmentShader).toBe(off.fragmentShader);
+    } finally {
+      dispose(layer.mesh);
+      source.nodes!.dispose();
+    }
+  });
+
+  it('switches raw cloud debug in the same display shader without any sampled textures', () => {
+    const nodes = new AtmosphereNodes();
+    const material = new MeshBasicNodeMaterial();
+    material.colorNode = nodes.alive.debugView(vec4(0.2, 0.4, 0.6, 1), vec2(85, 135), float(1));
+    const mesh = new Mesh(new PlaneGeometry(1, 1), material);
+    try {
+      const off = assertLimits(mesh);
+      expect(off.fragmentShader).toContain('aliveDebugCloud');
+      expect(off.fragmentShader).toContain('aliveCloudStrength');
+      expect(off.fragmentSampledTextures).toHaveLength(0);
+      nodes.alive.set({ clouds: true, debugCloud: true });
+      nodes.alive.update(8, 0.6, 0, 0, false);
+      expect(assertLimits(mesh).fragmentShader).toBe(off.fragmentShader);
+      nodes.alive.set(false);
+      nodes.alive.update(8, 0.6, 0, 0, false);
+      expect(nodes.alive.debugCloud.value).toBe(0);
+      expect(assertLimits(mesh).fragmentShader).toBe(off.fragmentShader);
+    } finally {
+      dispose(mesh);
+      nodes.dispose();
+    }
+  });
+
+  it('packs grass eligibility with contact shade, retaining cell boundaries and the vertex buffer limit', () => {
+    const source = cache();
+    const tile = source.manifest.tiles[0]!;
+    source.manifest.tiles = [13, 11, 10, 15].map((terrainType) => ({ ...tile, terrainType }));
+    source.tile.set([0, 1, 2, 3]);
+    const terrain = buildRa2Terrain(source);
+    try {
+      const geometry = terrain.mesh.geometry;
+      const contact = geometry.getAttribute('contact');
+      const position = geometry.getAttribute('position');
+      expect(contact.itemSize).toBe(3);
+      let grass = 0,
+        rigid = 0;
+      for (let i = 0; i < contact.count; i++) {
+        const x = position.getX(i),
+          z = position.getZ(i);
+        if (Number.isInteger(x) || Number.isInteger(z)) continue;
+        const expected = x < 1 && z < 1 ? 1 : 0;
+        expect(contact.getZ(i)).toBe(expected);
+        if (expected) grass++;
+        else rigid++;
+      }
+      expect(grass).toBeGreaterThan(0);
+      expect(rigid).toBeGreaterThan(0);
+      for (const material of terrain.mesh.material as MeshBasicNodeMaterial[])
+        assertLimits(new Mesh(geometry, material));
+    } finally {
+      dispose(terrain.mesh);
+      source.nodes!.dispose();
+    }
+  });
+
   it('draws every sprite layer of one feature set with one shader graph, each layer bound to its own pages', () => {
     const source = cache();
     const capture = new TerrainDepth(1);
@@ -378,15 +567,19 @@ describe('r186 vertex and uniform binding budget', () => {
           const exemptionLines = fragmentShader.split('\n').filter((line) => line.includes('spriteGradeExempt'));
           const label = `${mesh.name}: ${hd ? 'HD' : 'indexed'}, ${materials ? 'materials' : 'plain'}`;
           // Compile the real TSL graph: uploading an attribute alone does not prove the fragment shader reads it.
-          // Strip the independent house-converter and indexed-house-paint bits before deciding whether to bypass the
+          // Strip the independent wind, house-converter and indexed-house-paint bits before deciding whether to bypass the
           // map grade.
           expect(exemptionLines.join('\n'), label).toContain(
             'spriteGradeExempt = ( spriteLightingBits - ( spriteIndexedHousePaint * 2.0 ) );',
           );
-          const houseBit = fragmentShader.match(/spriteHouseConverter = step\( 3\.5, (\w+)\.z \);/);
-          expect(houseBit, label).not.toBeNull();
+          const windBit = fragmentShader.match(/spriteTreeWind = step\( 7\.5, (\w+)\.z \);/);
+          expect(windBit, label).not.toBeNull();
           expect(fragmentShader, label).toContain(
-            `spriteLightingBits = ( ${houseBit![1]}.z - ( spriteHouseConverter * 4.0 ) );`,
+            `spriteConverterBits = ( ${windBit![1]}.z - ( spriteTreeWind * 8.0 ) );`,
+          );
+          expect(fragmentShader, label).toContain('spriteHouseConverter = step( 3.5, spriteConverterBits );');
+          expect(fragmentShader, label).toContain(
+            'spriteLightingBits = ( spriteConverterBits - ( spriteHouseConverter * 4.0 ) );',
           );
           expect(fragmentShader, label).toContain('spriteIndexedHousePaint = step( 1.5, spriteLightingBits );');
           // The per-instance flag chooses the instance's own light alone (no map grade); default instances keep the
@@ -605,6 +798,7 @@ describe('r186 vertex and uniform binding budget', () => {
         layer.setInstances([{ ...card, alpha }], 0);
         const mesh = meshes(pass === 'top' ? layer.topRoot : layer.root)[0]!;
         const native = assertLimits(mesh);
+        expect(native.fragmentShader).not.toContain('aliveCloudStrength');
         expect(native.buffers.length).toBe(6);
         expect(native.fragmentShader.includes('terrainDepthPullEnabled')).toBe(pass === 'air');
         expect('instanceMatrix' in mesh).toBe(false);
@@ -631,6 +825,7 @@ describe('r186 vertex and uniform binding budget', () => {
         mesh.name.startsWith('live-effects-hd-'),
       )!;
       const result = assertLimits(hd);
+      expect(result.fragmentShader).not.toContain('aliveCloudStrength');
       expect(result.fragmentShader.includes('terrainDepthPullEnabled')).toBe(pass === 'air');
       // Six vec4 instance fields and one position buffer (the count is the geometry's: no fallback matrix buffer).
       expect(result.buffers.length).toBe(7);
@@ -970,6 +1165,48 @@ describe('r186 vertex and uniform binding budget', () => {
     dispose(sprites.mesh);
     dispose(terrain.mesh);
     source.nodes!.dispose();
+  });
+
+  it('retains defined neutral cloud inputs when physical terrain/object/voxel materials are cloned', () => {
+    const source = cache();
+    const terrain = buildRa2Terrain(source);
+    const parts = buildVoxelGeometry(syntheticModel([syntheticSection(2)]), new Uint8Array(768), source.nodes);
+    const plain = new SceneLitMaterial();
+    plain.sceneMultiplier = source.nodes!.sceneObjectMul;
+    plain.lightsNode = lights([new AmbientLight(0xffffff, 1)]);
+    // A physical material constructed without a living-world binding must still multiply by one, never undefined.
+    const geometry = new PlaneGeometry();
+    const neutralShader = assertLimits(new Mesh(geometry, plain)).fragmentShader;
+    expect(neutralShader).toMatch(/aliveCloudShade\( [^\n]+, vec3<f32>\( 1\.0(?:, 1\.0, 1\.0)? \) \)/);
+    expect(neutralShader).not.toContain('aliveCloudStrength');
+    const bound = plain.clone();
+    bound.cloudShadow = source.nodes!.alive.shadow;
+    const physical = [
+      ...(terrain.mesh.material as MeshBasicNodeMaterial[]),
+      ...parts.map((part) => part.material),
+      voxelPbrMaterialFor(new Uint8Array(768), source.nodes),
+      bound,
+    ];
+    try {
+      for (const material of physical) {
+        const inputs = material as typeof material & { cloudShadow: unknown; sceneMultiplier: unknown };
+        expect(inputs.cloudShadow).toBe(source.nodes!.alive.shadow);
+        const clone = material.clone() as typeof inputs;
+        try {
+          expect(clone.cloudShadow).toBe(inputs.cloudShadow);
+          expect(clone.sceneMultiplier).toBe(inputs.sceneMultiplier);
+        } finally {
+          clone.dispose();
+        }
+      }
+    } finally {
+      plain.dispose();
+      geometry.dispose();
+      bound.dispose();
+      dispose(terrain.mesh);
+      parts.forEach((part) => part.geometry.dispose());
+      source.nodes!.dispose();
+    }
   });
 
   it('audits sandbox object/window materials and custom full-screen mist/tone mapping', () => {

@@ -1,3 +1,4 @@
+import { parseAliveParams } from '../src/livingWorld';
 /**
  * Live-view bench (development only): drives LiveView with synthetic snapshots on a frozen clock, so one engine anim,
  * a set of units or buildings can be looked at (and screenshotted) deterministically, without running the game.
@@ -138,6 +139,7 @@ const live = await LiveView.create(canvas, {
   effectsHd: params.get('fxhd') !== '0',
   volumetricEffects: params.get('fxvol') === 'ray' ? 'ray' : 'off',
   effectsHdBase: params.get('fxhdbase') ?? undefined,
+  alive: parseAliveParams(params),
   water: params.get('water') === 'enhanced' ? 'enhanced' : 'classic',
   ...(params.get('glints') === 'off' ? { oreGlints: false } : {}),
   ...(params.has('sparkle') ? { crystalSparkle: Number(params.get('sparkle')) } : {}),

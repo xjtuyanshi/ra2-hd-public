@@ -1,3 +1,4 @@
+import { parseAliveParams } from '../../../../packages/hd-renderer/src/livingWorld';
 import { parseWaterStyle, WATER_STYLES, type WaterStyle } from '../../../../packages/hd-renderer/src/ra2/waterStyles';
 import type { VmShell } from '../../../adapter/vmShell';
 import type { VmFrame } from '../../../vm86/win32';
@@ -1285,6 +1286,7 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
           volumetricEffects: params.get('hd-fxvol') === 'ray' ? 'ray' : 'off',
           // Explicit water preset; unknown values retain the classic default.
           water: parseWaterStyle(params.get('hd-water')),
+          alive: parseAliveParams(params, 'hd-alive'),
           // hd-glints=off: leave out the engine's ore/gem glints; hd-sparkle=0..1: the HD star twinkle on crystals.
           ...(params.get('hd-glints') === 'off' ? { oreGlints: false } : {}),
           ...(params.has('hd-sparkle') && Number.isFinite(Number(params.get('hd-sparkle')))

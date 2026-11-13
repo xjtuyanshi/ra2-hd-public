@@ -76,7 +76,10 @@ export function buildWater(
     // Terrain above the waterline already hides the plane by depth test, except along the map's cut edges.
     const wet = smoothstep(-0.005, 0.005, signedDepth);
     const alpha = clamp(smoothstep(0.0, 0.5, depth).mul(0.65).add(0.3).add(foam), 0, 1).mul(wet);
-    return vec4(sceneLitColour(withFoam.mul(border).mul(wet), nodes.sceneTerrainMul), mix(float(1), alpha, border));
+    return vec4(
+      nodes.alive.shade(sceneLitColour(withFoam.mul(border).mul(wet), nodes.sceneTerrainMul)),
+      mix(float(1), alpha, border),
+    );
   })();
 
   const mesh = new Mesh(geometry, material);
