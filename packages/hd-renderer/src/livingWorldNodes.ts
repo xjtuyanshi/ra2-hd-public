@@ -65,13 +65,18 @@ const cloudShadow = Fn(([xz, clock, direction, strength]: ShaderNode[]) => {
   const result = float(1).toVar('aliveCloudNeutral');
   If(strength.greaterThan(0), () => {
     const drift = direction.mul(clock.mul(ALIVE.drift));
-    const morph = vec2(sin(clock.mul(0.07)), cos(clock.mul(0.09))).mul(0.8 / ALIVE.cloudScale);
-    const p = xz.sub(drift).div(ALIVE.cloudScale);
+    const morph = vec2(sin(clock.mul(0.07)), cos(clock.mul(0.09))).mul(ALIVE.cloudMorph / ALIVE.cloudScale);
+    const advected = xz.sub(drift);
+    const stretched = vec2(
+      dot(advected, direction).div(ALIVE.cloudStretch),
+      dot(advected, vec2(direction.y.negate(), direction.x)),
+    );
+    const p = stretched.div(ALIVE.cloudScale);
     const n = noise(p.add(morph))
-      .mul(0.85)
+      .mul(ALIVE.cloudFineWeight)
       .add(
-        noise(xz.sub(drift).div(ALIVE.cloudLargeScale).add(vec2(17.2, 9.4)).add(vec2(morph.y.negate(), morph.x))).mul(
-          0.15,
+        noise(stretched.div(ALIVE.cloudLargeScale).add(vec2(17.2, 9.4)).add(vec2(morph.y.negate(), morph.x))).mul(
+          1 - ALIVE.cloudFineWeight,
         ),
       );
     result.assign(float(1).sub(smoothstep(ALIVE.cloudEdgeLow, ALIVE.cloudEdgeHigh, n).mul(strength)));
@@ -93,7 +98,7 @@ const cloudColour = Fn(([grey]: ShaderNode[]) => {
   return mix(vec3(1), vec3(...ALIVE_CLOUD_TINT), cover).mul(grey);
 }).setLayout({ name: 'aliveCloudColour', type: 'vec3', inputs: [{ name: 'grey', type: 'float' }] });
 
-/** Palette-domain attenuation: multiplying linear light by 0.64 would still display at roughly 0.82 on grass. */
+/** Palette-domain attenuation: keeps the displayed shadow depth independent of the linear-light transfer curve. */
 export const shadeCloudColour = Fn(([source, factor]: ShaderNode[]) => {
   const result = source.toVar('aliveCloudLit');
   If(factor.x.notEqual(1).or(factor.y.notEqual(1)).or(factor.z.notEqual(1)), () => {
@@ -119,7 +124,9 @@ export class LivingWorldNodes {
   readonly debugCloud = uniform(0).setName('aliveDebugCloud');
   readonly shadowAt = (xz: ShaderNode): ShaderNode =>
     cloudShadow(xz, this.clock, this.windDirection, this.cloudStrength);
-  readonly shadow: ShaderNode = cloudColour(this.shadowAt(positionWorld.xz));
+  // One VarNode per material builder shares all optical terms. Branching consumers (sprites) append it at
+  // their colour root, before sibling branches. Keep the neutral initializer in the named cloudShadow Fn.
+  readonly shadow: ShaderNode = cloudColour(this.shadowAt(positionWorld.xz)).toVar('aliveCloudFactor');
 
   set(change: AliveChange): Readonly<AliveOptions> {
     this.options = resolveAlive(change, this.options);
@@ -149,6 +156,15 @@ export class LivingWorldNodes {
     return shadeCloudColour(colour, this.shadow);
   }
 
+  /** Weight both darkening and cool tint; clear/off remains exactly one, including on water. */
+  shadowWith(weight: ShaderNode | number): ShaderNode {
+    return mix(vec3(1), this.shadow, weight);
+  }
+
+  shadeWith(colour: ShaderNode, weight: ShaderNode | number): ShaderNode {
+    return shadeCloudColour(colour, this.shadowWith(weight));
+  }
+
   /** Raw encoded grey in the existing display pass; bypass scene grade/exposure without a new target. */
   debugView(display: ShaderNode, xz: ShaderNode, visible: ShaderNode): ShaderNode {
     return Fn(([colour, point, visibility]: ShaderNode[]) => {
@@ -171,9 +187,11 @@ export class LivingWorldNodes {
   grass(colour: ShaderNode, mask: ShaderNode): ShaderNode {
     return Fn(([source, eligible]: ShaderNode[]) => {
       const result = source.toVar();
-      If(this.windAmplitude.greaterThan(0).and(eligible.greaterThan(0)), () => {
-        const ripple = this.gust(positionWorld.xz).mul(2).sub(1).mul(0.05).mul(this.windAmplitude).mul(eligible);
-        result.mulAssign(vec3(float(1).add(ripple), float(1).add(ripple.mul(1.02)), float(1).add(ripple.mul(0.8))));
+      If(this.windAmplitude.greaterThan(0), () => {
+        If(eligible.greaterThan(0), () => {
+          const ripple = this.gust(positionWorld.xz).mul(2).sub(1).mul(0.05).mul(this.windAmplitude).mul(eligible);
+          result.mulAssign(vec3(float(1).add(ripple), float(1).add(ripple.mul(1.02)), float(1).add(ripple.mul(0.8))));
+        });
       });
       return result;
     })(colour, mask);

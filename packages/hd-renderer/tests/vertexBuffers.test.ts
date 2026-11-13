@@ -169,10 +169,12 @@ function assertNeutralCloudFunction(shader: string) {
   expect(body).toMatch(/if \( \( strength > 0\.0 \) \)/);
   expect(body.trimEnd()).toMatch(/return aliveCloudNeutral;$/);
   expect(body.match(/aliveCloudNeutral = /g)).toHaveLength(2);
+  const calls = shader.match(/aliveCloudShadow\( [^\n]+aliveCloudStrength \)/g) ?? [];
+  expect(calls, 'each material must evaluate the field once, shared by every optical term').toHaveLength(1);
   const colour = shader.match(/(?:fn|vec3) aliveCloudColour\s*\([^)]*\)[^{]*\{([^}]+)\}/)?.[1];
   if (colour) {
     // grey=1 -> cover=0 -> mix(1,tint,0)*1, so disabled clouds never tint a surface.
-    expect(colour).toMatch(/clamp\( \( \( 1\.0 - grey \) \/ 0\.36 \)/);
+    expect(colour).toMatch(/clamp\( \( \( 1\.0 - grey \) \/ 0\.22 \)/);
     expect(colour).toMatch(/return \( mix\( vec3(?:<f32>)?\( 1\.0(?:, 1\.0, 1\.0)? \)/);
     expect(colour).toMatch(/\* (?:vec3(?:<f32>)?\( )?grey/);
   }
@@ -227,7 +229,7 @@ function dispose(mesh: Mesh): void {
 
 describe('r186 vertex and uniform binding budget', () => {
   it.each([false, true])(
-    'initializes clouds independently in unlit ore/gem and lit sprite branches (WebGL=%s)',
+    'hoists one neutral cloud factor before unlit ore/gem and lit sprite branches (WebGL=%s)',
     (forceWebGL) => {
       const source = cache();
       const instances = (
@@ -266,10 +268,16 @@ describe('r186 vertex and uniform binding budget', () => {
                 builder.build();
                 const shader = builder.fragmentShader;
                 assertNeutralCloudFunction(shader);
-                // The old graph reused a temporary initialized only in the lit branch. Each consumer now calls a
-                // real shader function with explicit uniforms; selecting unlit cannot skip its initializer.
+                // One explicit base-stack VarNode serves every branch; a real function still owns identity.
+                // Sharing must not move initialization into a sibling branch (the black-ore regression).
                 const calls = shader.match(/aliveCloudShadow\( [^\n]+aliveCloudStrength \)/g) ?? [];
-                expect(calls.length).toBeGreaterThanOrEqual(2);
+                expect(calls).toHaveLength(1);
+                const main = shader.slice(shader.search(/(?:fn|void) main\(/));
+                const assignment = main.indexOf('aliveCloudFactor = aliveCloudColour(');
+                expect(assignment).toBeGreaterThan(-1);
+                // The initializer must be at main's top level, even when the first shaded path is skipped.
+                const prefix = main.slice(0, assignment);
+                expect((prefix.match(/\{/g)?.length ?? 0) - (prefix.match(/\}/g)?.length ?? 0)).toBe(1);
                 expect(shader).not.toContain('aliveCloudMultiplier =');
                 expect(shader).not.toMatch(/\b(?:NaN|undefined)\b/);
               }
@@ -307,7 +315,11 @@ describe('r186 vertex and uniform binding budget', () => {
     );
     try {
       const off = assertLimits(layer.mesh);
-      expect(off.vertexShader).toContain('aliveWindAmplitude');
+      const vertexMain = off.vertexShader.slice(off.vertexShader.indexOf('fn main('));
+      const windBranch = vertexMain.indexOf('if ( ( object.aliveWindAmplitude > 0.0 ) )');
+      expect(windBranch).toBeGreaterThan(-1);
+      // Eligibility/hash/phase/gust stay behind the uniform gate, so clouds-only skips all sway work.
+      expect(vertexMain.indexOf('sin(')).toBeGreaterThan(windBranch);
       expect(off.fragmentShader).toContain('aliveCloudStrength');
       alive.set(true);
       alive.update(10, 0.6, 0, 0, false);
@@ -316,6 +328,13 @@ describe('r186 vertex and uniform binding budget', () => {
       expect(on.fragmentShader).toBe(off.fragmentShader);
       expect(on.attributes.length).toBe(off.attributes.length);
       expect(on.sampledTextures).toEqual(off.sampledTextures);
+      expect(alive.windAmplitude.value).toBe(0);
+      alive.set({ wind: true });
+      alive.update(10, 0.6, 0, 0, false);
+      expect(alive.windAmplitude.value).toBe(1);
+      const windy = assertLimits(layer.mesh);
+      expect(windy.vertexShader).toBe(off.vertexShader);
+      expect(windy.fragmentShader).toBe(off.fragmentShader);
       alive.set(false);
       alive.update(10, 0.6, 0, 0, false);
       const restored = assertLimits(layer.mesh);
@@ -324,6 +343,25 @@ describe('r186 vertex and uniform binding budget', () => {
     } finally {
       dispose(layer.mesh);
       source.nodes!.dispose();
+    }
+  });
+
+  it('keeps grass eligibility and gust arithmetic behind the wind uniform gate', () => {
+    const nodes = new AtmosphereNodes();
+    const material = new MeshBasicNodeMaterial();
+    const eligible = uniform(1).setName('aliveTestGrassMask');
+    material.colorNode = nodes.alive.grass(vec4(0.2, 0.4, 0.1, 1).rgb, eligible);
+    const mesh = new Mesh(new PlaneGeometry(1, 1), material);
+    try {
+      const shader = assertLimits(mesh).fragmentShader;
+      const main = shader.slice(shader.indexOf('fn main('));
+      const gate = main.indexOf('if ( ( object.aliveWindAmplitude > 0.0 ) )');
+      expect(gate).toBeGreaterThan(-1);
+      expect(main.indexOf('object.aliveTestGrassMask')).toBeGreaterThan(gate);
+      expect(main.indexOf('sin(')).toBeGreaterThan(gate);
+    } finally {
+      dispose(mesh);
+      nodes.dispose();
     }
   });
 
@@ -1190,7 +1228,11 @@ describe('r186 vertex and uniform binding budget', () => {
     try {
       for (const material of physical) {
         const inputs = material as typeof material & { cloudShadow: unknown; sceneMultiplier: unknown };
-        expect(inputs.cloudShadow).toBe(source.nodes!.alive.shadow);
+        if (material === (terrain.mesh.material as MeshBasicNodeMaterial[])[0]) {
+          // The atlas fallback mixes land and protected water-body factors by its existing water mask.
+          expect(inputs.cloudShadow).toBeDefined();
+          expect(inputs.cloudShadow).not.toBe(source.nodes!.alive.shadow);
+        } else expect(inputs.cloudShadow).toBe(source.nodes!.alive.shadow);
         const clone = material.clone() as typeof inputs;
         try {
           expect(clone.cloudShadow).toBe(inputs.cloudShadow);

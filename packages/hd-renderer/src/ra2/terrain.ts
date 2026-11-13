@@ -1,3 +1,4 @@
+import { ALIVE } from '../livingWorld';
 import {
   createWaterTuning,
   writeWaterTuning,
@@ -1050,6 +1051,7 @@ function createMaterials(
           : max(attribute('hardShore', 'vec2').x, nearCliff).mul(tuning.newShore);
     const waterline = hard ? hardShoreInputs(deepened, hard, sheltered, waterness) : null;
     const shore: ShaderNode = waterline ? waterline.shore : deepened;
+    ground.cloudShadow = nodes.alive.shadowWith(mix(float(1), float(ALIVE.waterBodyWeight), waterness));
     weatherLand = float(1).sub(waterness);
     let reflection: { colour: ShaderNode; coverage: ShaderNode } | undefined;
     if (lakeBed) {
@@ -1295,10 +1297,14 @@ function createMaterials(
     // Per-tile atlas fallback: the painted water with sky reflection and glints, as before.
     const surface = waterSurface(water);
     const waterness: ShaderNode = texture(cache.waterMask, uv).r;
+    ground.cloudShadow = nodes.alive.shadowWith(mix(float(1), float(ALIVE.waterBodyWeight), waterness));
     weatherLand = float(1).sub(waterness);
     const body = albedo.mul(float(1).sub(surface.fresnel.mul(0.8)));
     albedo = mix(albedo, body, waterness);
-    ground.emissiveNode = nodes.alive.shade(surface.sky.mul(surface.fresnel).add(surface.glint)).mul(waterness);
+    ground.emissiveNode = nodes.alive
+      .shadeWith(surface.sky.mul(surface.fresnel), ALIVE.waterSkyWeight)
+      .add(nodes.alive.shadeWith(surface.glint, 1))
+      .mul(waterness);
     roughness = mix(roughness, float(0.25), waterness);
   }
   // Contact shading darkens every light at cliff feet (an occlusion term); the sun and sky see the night-desaturated

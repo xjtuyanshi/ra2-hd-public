@@ -1,3 +1,4 @@
+import { ALIVE } from './livingWorld';
 import {
   BufferAttribute,
   BufferGeometry,
@@ -197,6 +198,7 @@ function createTerrainMaterial(
   // Below the waterline the seabed turns dark and silty.
   const submerged = smoothstep(waterY + 0.02, waterY - 0.25, p.y);
   albedo = mix(albedo, color(0x4a4a3a), submerged.mul(0.6));
+  material.cloudShadow = nodes.alive.shadowWith(mix(float(1), float(ALIVE.waterBodyWeight), submerged));
 
   let roughness: ShaderNode = mix(float(0.92), float(0.72), weights.x.add(weights.y).min(1));
   roughness = mix(roughness, float(0.8), steep);

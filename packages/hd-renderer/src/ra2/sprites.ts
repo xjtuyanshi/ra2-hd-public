@@ -697,10 +697,12 @@ class SpriteGraph {
           .toVar();
         // Apply only AFTER native placement, with no integer snapping. Camera-plane displacement cannot change
         // anchor/painter depth or the native depth template. The trunk's bottom vertex remains exactly fixed.
-        If(treeWind.greaterThan(0.5).and(aFlat.lessThan(0.5)).and(nodes.alive.windAmplitude.greaterThan(0)), () => {
-          const sway = nodes.alive.sway(aAnchor, float(1).sub(gv));
-          card.addAssign(this.cameraRight.mul(sway.div(ppu)));
-          card.addAssign(this.cameraUp.mul(sway.mul(gu.sub(0.5)).mul(0.08).div(ppu)));
+        If(nodes.alive.windAmplitude.greaterThan(0), () => {
+          If(treeWind.greaterThan(0.5).and(aFlat.lessThan(0.5)), () => {
+            const sway = nodes.alive.sway(aAnchor, float(1).sub(gv));
+            card.addAssign(this.cameraRight.mul(sway.div(ppu)));
+            card.addAssign(this.cameraUp.mul(sway.mul(gu.sub(0.5)).mul(0.08).div(ppu)));
+          });
         });
         // Ground decal: invert the engine projection at the anchor's height (1 px right = (1/60, -1/60) cells,
         // 1 px down = (1/30, 1/30) cells), so the art covers exactly the same screen pixels while lying on the ground.
@@ -754,6 +756,8 @@ class SpriteGraph {
     // One colour graph per material (the main pass and the enhanced look's ground passes below).
     const colourNode = (): ShaderNode =>
       Fn(() => {
+        // Declare once before lit/unlit/relight siblings; a factor first used inside select's lit branch is unsafe.
+        nodes.alive.shadow.toStack();
         const texel = vec2(aRect.x.add(u.mul(aRect.z)), aRect.y.add(v.mul(aRect.w))).toVar();
         const atlasUv = texel.div(atlasSize);
         const paletteColour = (i: ShaderNode): ShaderNode =>

@@ -1,3 +1,4 @@
+import { ALIVE } from './livingWorld';
 import { DataTexture, Mesh, MeshBasicNodeMaterial, PlaneGeometry } from 'three/webgpu';
 import {
   Fn,
@@ -70,16 +71,22 @@ export function buildWater(
       .add(0.5);
     const lapping = smoothstep(0.06, 0.0, depth).mul(foamNoise.mul(1.4).sub(0.2));
     const foam = smoothstep(0.28, 0.0, depth).mul(smoothstep(0.3, 0.75, foamBand.mul(foamNoise).add(lapping)));
-    const lit = mix(body, sky, fresnel).add(glint);
-    const withFoam = mix(lit, uniforms.ambient.add(uniforms.sunColor.mul(0.8)), clamp(foam, 0, 1));
+    // Shade each optical term once. The transparent plane does not re-shade the seabed beneath it.
+    const lit = mix(
+      nodes.alive.shadeWith(body, ALIVE.waterBodyWeight),
+      nodes.alive.shadeWith(sky, ALIVE.waterSkyWeight),
+      fresnel,
+    ).add(nodes.alive.shadeWith(glint, 1));
+    const withFoam = mix(
+      lit,
+      nodes.alive.shadeWith(uniforms.ambient.add(uniforms.sunColor.mul(0.8)), ALIVE.waterBodyWeight),
+      clamp(foam, 0, 1),
+    );
 
     // Terrain above the waterline already hides the plane by depth test, except along the map's cut edges.
     const wet = smoothstep(-0.005, 0.005, signedDepth);
     const alpha = clamp(smoothstep(0.0, 0.5, depth).mul(0.65).add(0.3).add(foam), 0, 1).mul(wet);
-    return vec4(
-      nodes.alive.shade(sceneLitColour(withFoam.mul(border).mul(wet), nodes.sceneTerrainMul)),
-      mix(float(1), alpha, border),
-    );
+    return vec4(sceneLitColour(withFoam.mul(border).mul(wet), nodes.sceneTerrainMul), mix(float(1), alpha, border));
   })();
 
   const mesh = new Mesh(geometry, material);

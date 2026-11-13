@@ -165,6 +165,7 @@ if (world && params.get('ml') === '0') {
 // Enhanced look (src/ra2/spriteLook.ts): ?look=golden and single overrides, see sandbox/look.ts.
 applyLookParams(hd, params, state);
 await hd.init(world);
+// The shared parser requires alive-wind=1 in addition to the entry's cloud flag.
 hd.setAlive(parseAliveParams(params));
 // ?wet=<0..1>: start with wet ground (rain wets surfaces over a few seconds otherwise).
 if (params.has('wet') && world) world.terrain.wetness.value = Math.min(1, Math.max(0, Number(params.get('wet'))));

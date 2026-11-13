@@ -1286,6 +1286,7 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
           volumetricEffects: params.get('hd-fxvol') === 'ray' ? 'ray' : 'off',
           // Explicit water preset; unknown values retain the classic default.
           water: parseWaterStyle(params.get('hd-water')),
+          // The shared parser requires alive-wind=1 in addition to the entry's cloud flag.
           alive: parseAliveParams(params, 'hd-alive'),
           // hd-glints=off: leave out the engine's ore/gem glints; hd-sparkle=0..1: the HD star twinkle on crystals.
           ...(params.get('hd-glints') === 'off' ? { oreGlints: false } : {}),

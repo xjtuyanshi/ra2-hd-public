@@ -139,6 +139,7 @@ const live = await LiveView.create(canvas, {
   effectsHd: params.get('fxhd') !== '0',
   volumetricEffects: params.get('fxvol') === 'ray' ? 'ray' : 'off',
   effectsHdBase: params.get('fxhdbase') ?? undefined,
+  // The shared parser requires alive-wind=1 in addition to the entry's cloud flag.
   alive: parseAliveParams(params),
   water: params.get('water') === 'enhanced' ? 'enhanced' : 'classic',
   ...(params.get('glints') === 'off' ? { oreGlints: false } : {}),

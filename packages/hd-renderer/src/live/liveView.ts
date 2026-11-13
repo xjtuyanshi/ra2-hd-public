@@ -319,7 +319,7 @@ export interface LiveViewOptions extends VoxelUnitsOptions {
   nativeDetail?: 'ignore' | 'mirror';
   /** Water surface preset; classic remains the default. Enhanced-family looks support live uniform switching. */
   water?: WaterStyle;
-  /** Living-world presentation (clouds and tree wind); off unless explicitly enabled. */
+  /** Living-world presentation: true enables clouds; wind requires {wind: true}. All defaults are off. */
   alive?: AliveChange;
   /**
    * The engine's own field-wide ore/gem glints (ra2/cellGlints.ts, the pass HD mode skips on the native surface):
@@ -1369,6 +1369,7 @@ export class LiveView {
     return parseWaterStyle(this.hd.setWaterLook(style) ?? null);
   }
 
+  /** Boolean true enables clouds only; false disables clouds, wind and debug. */
   setAlive(change: AliveChange): Readonly<AliveOptions> {
     return this.hd.setAlive(change);
   }

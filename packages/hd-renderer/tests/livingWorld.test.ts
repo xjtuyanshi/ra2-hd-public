@@ -29,20 +29,29 @@ describe('living-world opt-in parameters', () => {
     const params = new URLSearchParams('hd-alive=1&alive-cloud=.3&alive-sway=1.5&alive-speed=.5');
     expect(parseAliveParams(params, 'hd-alive')).toEqual({
       clouds: true,
-      wind: true,
+      wind: false,
       debugCloud: false,
       cloud: 0.3,
       sway: 1.5,
       speed: 0.5,
     });
     expect(parseAliveParams(params).wind).toBe(false);
+    for (const flag of ['alive', 'hd-alive']) {
+      expect(parseAliveParams(new URLSearchParams(`${flag}=1&alive-wind=1`), flag)).toMatchObject({
+        clouds: true,
+        wind: true,
+      });
+      expect(parseAliveParams(new URLSearchParams('alive-wind=1'), flag)).toMatchObject({ clouds: false, wind: false });
+      for (const value of ['0', 'true', 'on', ''])
+        expect(parseAliveParams(new URLSearchParams(`${flag}=1&alive-wind=${value}`), flag).wind).toBe(false);
+    }
     expect(parseAliveParams(new URLSearchParams('alive-cloud=.4')).clouds).toBe(false);
   });
 
   it('bounds tunables, preserves explicit zero and ignores empty/nonfinite values', () => {
     expect(parseAliveParams(new URLSearchParams('alive=1&alive-cloud=0&alive-sway=-1&alive-speed=0'))).toEqual({
       clouds: true,
-      wind: true,
+      wind: false,
       debugCloud: false,
       cloud: 0,
       sway: 0,
@@ -73,16 +82,21 @@ describe('living-world opt-in parameters', () => {
     const partial = resolveAlive({ wind: false }, on);
     expect(partial).toEqual({ ...on, wind: false });
     expect(resolveAlive(true, resolveAlive(false, partial))).toEqual(on);
+    expect(resolveAlive(true)).toMatchObject({ clouds: true, wind: false });
+    const windy = resolveAlive({ wind: true }, on);
+    expect(windy).toMatchObject({ clouds: true, wind: true });
+    expect(resolveAlive(true, windy)).toMatchObject({ clouds: true, wind: false });
+    expect(resolveAlive(false, windy)).toMatchObject({ clouds: false, wind: false, debugCloud: false });
     expect(ALIVE_DEFAULTS.clouds).toBe(false);
   });
 });
 
 describe('deterministic cloud field', () => {
-  it('keeps a luminance-matched cool 0.64 core, exact clear gaps and a linear strength scale', () => {
+  it('keeps a luminance-matched cool 0.78 core, exact clear gaps and a linear strength scale', () => {
     const luminance = (c: readonly number[]) => c[0]! * 0.2126 + c[1]! * 0.7152 + c[2]! * 0.0722;
     expect(luminance(ALIVE_CLOUD_TINT)).toBeCloseTo(1, 14);
-    expect(luminance(cloudShadowColour(1))).toBeCloseTo(0.64, 14);
-    expect(luminance(cloudShadowColour(1, 0.5))).toBeCloseTo(0.82, 14);
+    expect(luminance(cloudShadowColour(1))).toBeCloseTo(0.78, 14);
+    expect(luminance(cloudShadowColour(1, 0.5))).toBeCloseTo(0.89, 14);
     expect(cloudShadowColour(1)[2]).toBeGreaterThan(cloudShadowColour(1)[0]!);
     for (const coverage of [0, 0.1, 0.5, 1]) {
       expect(cloudShadowColour(coverage, 0)).toEqual([1, 1, 1]);
@@ -112,28 +126,78 @@ describe('deterministic cloud field', () => {
       }
   });
 
-  it('retains lit gaps and patch cores in a zoomed forest crop rather than global exposure drift', () => {
-    for (const t of [0, 2, 4, 6, 8, 10, 12]) {
-      const field: number[] = [];
-      for (let x = 80; x < 90; x += 0.2) for (let z = 132; z < 138; z += 0.2) field.push(cloudCoverage(x, z, t, 0.6));
-      expect(Math.min(...field)).toBe(0);
-      expect(Math.max(...field)).toBe(1);
-      expect(field.filter((v) => v === 0).length / field.length).toBeGreaterThan(0.1);
-      expect(field.filter((v) => v === 1).length / field.length).toBeGreaterThan(0.1);
-    }
+  it('limits large-area default coverage to 25–35% and mean palette darkening to 5%', () => {
+    // 400 x 400 cells, one sample per cell, independent of camera, art, exposure and water shares.
     for (const t of [0, 4, 8, 12]) {
-      const field: number[] = [];
-      for (let x = 20; x < 60; x += 0.2) for (let z = 20; z < 60; z += 0.2) field.push(cloudCoverage(x, z, t, 0.6));
-      const coverage = field.filter((v) => v > 0.5).length / field.length;
-      expect(coverage).toBeGreaterThan(0.4);
-      expect(coverage).toBeLessThan(0.5);
+      let covered = 0,
+        totalDarkening = 0,
+        core = 1;
+      for (let x = -200; x < 200; x++)
+        for (let z = -200; z < 200; z++) {
+          const coverage = cloudCoverage(x, z, t, 0.6);
+          const factor = 1 - coverage * ALIVE.cloudDarkening;
+          if (factor < 0.97) covered++;
+          totalDarkening += 1 - factor;
+          core = Math.min(core, factor);
+        }
+      expect(covered / 160000).toBeGreaterThanOrEqual(0.25);
+      expect(covered / 160000).toBeLessThanOrEqual(0.35);
+      expect(totalDarkening / 160000).toBeLessThanOrEqual(0.05);
+      expect(core).toBeCloseTo(0.78, 12);
     }
   });
 
-  it('drifts in scene wind at 0.85 cells/second and freezes at speed zero', () => {
-    expect(aliveDrift(10, 0)).toEqual([8.5, 0]);
-    expect(aliveDrift(10, Math.PI / 2)[1]).toBeCloseTo(8.5);
-    expect(Math.hypot(...aliveDrift(10, 0.6, 2))).toBeCloseTo(17);
+  it('softens 5–95% edges over 2–3 cells and retains broad half-coverage patches', () => {
+    const edges: number[] = [],
+      chords: number[] = [];
+    // Scan both map axes at sub-cell resolution. Report medians, not the widest grazing edge.
+    for (const axis of [0, 1])
+      for (let row = -80; row < 80; row += 2) {
+        const sample = (p: number) => (axis ? cloudCoverage(row, p, 0, 0.6) : cloudCoverage(p, row, 0, 0.6));
+        let previous = sample(-100),
+          edgeStart: number | undefined,
+          chordStart: number | undefined;
+        for (let i = 1; i <= 2000; i++) {
+          const p = -100 + i * 0.1,
+            c = sample(p);
+          if ((previous <= 0.05 && c > 0.05) || (previous >= 0.95 && c < 0.95)) edgeStart = p;
+          if (edgeStart !== undefined && ((previous < 0.95 && c >= 0.95) || (previous > 0.05 && c <= 0.05))) {
+            edges.push(p - edgeStart);
+            edgeStart = undefined;
+          }
+          if (previous <= 0.5 && c > 0.5) chordStart = p;
+          if (chordStart !== undefined && previous > 0.5 && c <= 0.5) {
+            chords.push(p - chordStart);
+            chordStart = undefined;
+          }
+          previous = c;
+        }
+      }
+    const median = (values: number[]) => values.sort((a, b) => a - b)[Math.floor(values.length / 2)]!;
+    expect(edges.length).toBeGreaterThan(100);
+    expect(median(edges)).toBeGreaterThanOrEqual(2);
+    expect(median(edges)).toBeLessThanOrEqual(3);
+    expect(median(chords)).toBeGreaterThanOrEqual(8);
+    expect(median(chords)).toBeLessThanOrEqual(12);
+  });
+
+  it('reduces water darkening and its tint together, keeping exact identity while off', () => {
+    const luma = (c: readonly number[]) => c[0]! * 0.2126 + c[1]! * 0.7152 + c[2]! * 0.0722;
+    expect(luma(cloudShadowColour(1, 1, 1, ALIVE.waterBodyWeight))).toBeCloseTo(0.956, 14);
+    expect(luma(cloudShadowColour(1, 1, 1, ALIVE.waterSkyWeight))).toBeCloseTo(0.901, 14);
+    for (const weight of [0, ALIVE.waterBodyWeight, ALIVE.waterSkyWeight, 1]) {
+      const weighted = cloudShadowColour(1, 1, 1, weight);
+      const land = cloudShadowColour(1);
+      weighted.forEach((v, i) => expect(v).toBeCloseTo(1 + (land[i]! - 1) * weight, 14));
+      expect(cloudShadowColour(1, 0, 1, weight)).toEqual([1, 1, 1]);
+      expect(cloudShadowColour(0, 1, 1, weight)).toEqual([1, 1, 1]);
+    }
+  });
+
+  it('drifts in scene wind at 1.5 cells/second and freezes at speed zero', () => {
+    expect(aliveDrift(10, 0)).toEqual([15, 0]);
+    expect(aliveDrift(10, Math.PI / 2)[1]).toBeCloseTo(15);
+    expect(Math.hypot(...aliveDrift(10, 0.6, 2))).toBeCloseTo(30);
     expect(cloudCoverage(13, 42, 100, 0.6, 0)).toBe(cloudCoverage(13, 42, 0, 0.6, 0));
     expect(cloudCoverage(13, 42, 10, 0.6)).toBe(cloudCoverage(13, 42, 10, 0.6));
   });
@@ -181,7 +245,7 @@ describe('tree-only wind and travelling gusts', () => {
     expect(aliveGust(14, 27, 4, direction)).not.toBeCloseTo(aliveGust(14, 27, 0, direction), 3);
   });
 
-  it('keeps phone-visible idle and gust crown excursions and a ten-second regional gust period', () => {
+  it('keeps phone-visible idle and gust crown excursions and the shared drift period', () => {
     const idle: number[] = [],
       peaks: number[] = [];
     for (let t = 0; t < 60; t += 0.01) {
@@ -194,7 +258,7 @@ describe('tree-only wind and travelling gusts', () => {
     expect(Math.max(...idle)).toBeGreaterThan(3.5);
     expect(Math.min(...peaks)).toBeLessThan(-5.6);
     expect(Math.max(...peaks)).toBeGreaterThan(5.6);
-    expect(aliveGust(85, 135, 10, 0.6)).toBeCloseTo(aliveGust(85, 135, 0, 0.6));
+    expect(aliveGust(85, 135, ALIVE.gustLength / ALIVE.drift, 0.6)).toBeCloseTo(aliveGust(85, 135, 0, 0.6));
   });
 
   it('bounds grass luminance and moves its crest with the same gust, freezing with the renderer clock', () => {
@@ -258,12 +322,15 @@ describe('renderer-local living-world uniforms', () => {
     nodes.alive.set({ ...resolveAlive(true), speed: 2, debugCloud: true });
     nodes.alive.update(5, 0.6, 0, 0, false);
     expect(nodes.alive.clock.value).toBe(10);
-    expect(nodes.alive.cloudStrength.value).toBe(0.36);
+    expect(nodes.alive.cloudStrength.value).toBe(0.22);
+    expect(nodes.alive.windAmplitude.value).toBe(0);
+    nodes.alive.set({ wind: true });
+    nodes.alive.update(5, 0.6, 0, 0, false);
     expect(nodes.alive.windAmplitude.value).toBe(1);
     expect(mirror.alive.cloudStrength.value).toBe(0);
     mirror.copyValuesFrom(nodes);
     expect(mirror.alive.clock.value).toBe(10);
-    expect(mirror.alive.cloudStrength.value).toBe(0.36);
+    expect(mirror.alive.cloudStrength.value).toBe(0.22);
     expect(mirror.alive.debugCloud.value).toBe(1);
     nodes.alive.set(false);
     nodes.alive.update(5, 0.6, 0, 0, false);

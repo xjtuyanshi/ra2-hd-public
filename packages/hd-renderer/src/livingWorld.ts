@@ -20,12 +20,17 @@ export const ALIVE_DEFAULTS: Readonly<AliveOptions> = Object.freeze({
 });
 
 export const ALIVE = Object.freeze({
-  cloudScale: 5.75,
-  cloudLargeScale: 12,
-  cloudEdgeLow: -0.085,
-  cloudEdgeHigh: 0.145,
-  cloudDarkening: 0.36,
-  drift: 0.85,
+  cloudScale: 13,
+  cloudLargeScale: 26,
+  cloudEdgeLow: 0.07,
+  cloudEdgeHigh: 0.23,
+  cloudDarkening: 0.22,
+  cloudFineWeight: 0.8,
+  cloudStretch: 1.4,
+  cloudMorph: 0.35,
+  waterBodyWeight: 0.2,
+  waterSkyWeight: 0.45,
+  drift: 1.5,
   crownPixels: 3.8,
   gustPixels: 6.2,
   period: 3,
@@ -33,15 +38,15 @@ export const ALIVE = Object.freeze({
   heightPower: 1.4,
 });
 
-const cloudTintLuma = 0.9 * 0.2126 + 0.95 * 0.7152 + 1.05 * 0.0722;
+const cloudTintLuma = 0.98 * 0.2126 + 0.99 * 0.7152 + 1.01 * 0.0722;
 /** Rec.709-normalized cool tint; neutral gaps and faded clouds must not inherit the full tint. */
-export const ALIVE_CLOUD_TINT = Object.freeze([0.9, 0.95, 1.05].map((v) => v / cloudTintLuma));
+export const ALIVE_CLOUD_TINT = Object.freeze([0.98, 0.99, 1.01].map((v) => v / cloudTintLuma));
 
 /** CPU reference for the shader's palette-domain RGB multiplier (debug retains the untinted grey value). */
-export function cloudShadowColour(coverage: number, scale = 1, dayWeight = 1): number[] {
+export function cloudShadowColour(coverage: number, scale = 1, dayWeight = 1, weight = 1): number[] {
   const grey = 1 - coverage * scale * dayWeight * ALIVE.cloudDarkening;
   const tintWeight = Math.min(1, Math.max(0, (1 - grey) / ALIVE.cloudDarkening));
-  return ALIVE_CLOUD_TINT.map((tint) => grey * (1 + (tint - 1) * tintWeight));
+  return ALIVE_CLOUD_TINT.map((tint) => mix(1, grey * (1 + (tint - 1) * tintWeight), weight));
 }
 
 const bounded = (value: number | undefined, fallback: number, max: number) =>
@@ -49,7 +54,7 @@ const bounded = (value: number | undefined, fallback: number, max: number) =>
 
 export function resolveAlive(change: AliveChange, previous: Readonly<AliveOptions> = ALIVE_DEFAULTS): AliveOptions {
   if (typeof change === 'boolean')
-    return { ...previous, clouds: change, wind: change, debugCloud: change && previous.debugCloud };
+    return { ...previous, clouds: change, wind: false, debugCloud: change && previous.debugCloud };
   return {
     clouds: change.clouds ?? previous.clouds,
     wind: change.wind ?? previous.wind,
@@ -68,7 +73,7 @@ export function parseAliveParams(params: URLSearchParams, flag = 'alive'): Alive
   };
   return resolveAlive({
     clouds: params.get(flag) === '1',
-    wind: params.get(flag) === '1',
+    wind: params.get(flag) === '1' && params.get('alive-wind') === '1',
     cloud: number('alive-cloud'),
     sway: number('alive-sway'),
     speed: number('alive-speed'),
@@ -127,15 +132,15 @@ export function aliveDrift(seconds: number, direction: number, speed = 1): [numb
 export function cloudCoverage(x: number, z: number, seconds: number, direction: number, speed = 1): number {
   const [dx, dz] = aliveDrift(seconds, direction, speed);
   const t = seconds * speed;
-  const px = (x - dx) / ALIVE.cloudScale;
-  const pz = (z - dz) / ALIVE.cloudScale;
-  const mx = (Math.sin(t * 0.07) * 0.8) / ALIVE.cloudScale;
-  const mz = (Math.cos(t * 0.09) * 0.8) / ALIVE.cloudScale;
-  // Gradient noise crosses zero locally, avoiding the broad exposure drift of value-noise plateaus.
+  // Stretch along the wind, then blend two lattices: irregular edges without a third noise evaluation.
+  const along = ((x - dx) * Math.cos(direction) + (z - dz) * Math.sin(direction)) / ALIVE.cloudStretch;
+  const across = -(x - dx) * Math.sin(direction) + (z - dz) * Math.cos(direction);
+  const mx = (Math.sin(t * 0.07) * ALIVE.cloudMorph) / ALIVE.cloudScale;
+  const mz = (Math.cos(t * 0.09) * ALIVE.cloudMorph) / ALIVE.cloudScale;
   const n =
-    aliveGradientNoise(px + mx, pz + mz) * 0.85 +
-    aliveGradientNoise((x - dx) / ALIVE.cloudLargeScale + 17.2 - mz, (z - dz) / ALIVE.cloudLargeScale + 9.4 + mx) *
-      0.15;
+    aliveGradientNoise(along / ALIVE.cloudScale + mx, across / ALIVE.cloudScale + mz) * ALIVE.cloudFineWeight +
+    aliveGradientNoise(along / ALIVE.cloudLargeScale + 17.2 - mz, across / ALIVE.cloudLargeScale + 9.4 + mx) *
+      (1 - ALIVE.cloudFineWeight);
   return smooth(Math.min(1, Math.max(0, (n - ALIVE.cloudEdgeLow) / (ALIVE.cloudEdgeHigh - ALIVE.cloudEdgeLow))));
 }
 
