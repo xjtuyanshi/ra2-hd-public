@@ -12,6 +12,7 @@ import {
   lightMoment,
   lightReach,
   lightWindow,
+  gaussianWindow,
   lightLuminance,
   reconstructLight,
   irradianceKnee,
@@ -125,8 +126,13 @@ describe('physical light CPU twins', () => {
   });
   it('calibrates a night fire, retains convex physical falloff and caps source colours', () => {
     const light = policyLight(REAL_LIGHT_POLICIES.fire, [0, 0.4, 0]);
-    expect(lightLuminance(irradiance(light, 0.5))).toBeCloseTo(REAL_LIGHT_POLICIES.fire.ground, 8);
-    const profile = [0.5, 1, 2, 3].map((d) => lightLuminance(irradiance(light, d)));
+    // Gaussian: `ground` is the irradiance at the source; straight below it the height's share remains (cosine 1).
+    const { ground, radius, reach } = REAL_LIGHT_POLICIES.fire;
+    expect(lightLuminance(irradiance(light, 0))).toBeCloseTo(
+      ground * Math.exp(-((0.4 / radius) ** 2)) * gaussianWindow(0.4 / reach),
+      8,
+    );
+    const profile = [0.3, 0.6, 1, 1.5].map((d) => lightLuminance(irradiance(light, d)));
     expect(profile[2]! / profile[0]!).toBeLessThan(0.15);
     expect(profile[0]).toBeGreaterThan(profile[1]!);
     expect(profile[1]).toBeGreaterThan(profile[2]!);

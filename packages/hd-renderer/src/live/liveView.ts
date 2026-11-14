@@ -302,6 +302,8 @@ function visibleObjectEffects(snapshot: LiveSnapshot): LiveEffects | null | unde
 }
 
 export interface LiveViewOptions extends VoxelUnitsOptions {
+  /** Development measurement: GPU timestamp queries per render pass (HdRenderer stats().gpuMs). */
+  trackTimestamp?: boolean;
   /** Opt-in physical lighting graphs and resources. */
   realLight?: boolean;
   /** URL of the map's HD cache directory (manifest.json inside). */
@@ -1438,6 +1440,8 @@ export class LiveView {
       nodes: world.nodes,
       forceWebGL: options.forceWebGL ?? false,
       requiredLimits,
+      // Development measurement only: GPU timestamp queries (hd.stats().gpuMs), e.g. the bench's &perf=1.
+      trackTimestamp: options.trackTimestamp ?? false,
     });
     await hd.init(world);
     hd.setState(state);

@@ -65,6 +65,7 @@ import {
   LOCAL_LIGHT_HEIGHT_FALLOFF,
   localLightHeadroom,
   localSurfaceLight,
+  groundLightAlbedo,
   OBJECT_KNEE,
   objectLightAt,
   pavedAt,
@@ -1218,7 +1219,7 @@ class SpriteGraph {
             flat,
             localSurfaceLight(
               vec3(0),
-              physicalAlbedo,
+              groundLightAlbedo(physicalAlbedo, result.rgb, nodes),
               nodes,
               ground,
               height.add(aAnchor.y),

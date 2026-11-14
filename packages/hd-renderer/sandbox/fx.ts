@@ -68,6 +68,9 @@
  *                             the centre, e.g. TESLA@4,-2@1 or GAPOWR@-6,2@0@0.3 (a damaged power plant)
  *   &bolts=i:dx,dy,h;...      an electric bolt (engine beam, Tesla colour) from cell offset (dx, dy) at h leptons
  *                             above the ground to listed anim i, during its first &boltfor= seconds (default 0.4)
+ *   &lasers=dx,dy,h,tx,ty,th[,r,g,b];...  an engine laser (prism style) from cell offset (dx, dy) at h leptons to
+ *                             (tx, ty) at th leptons, inner colour r,g,b (default white), drawn from the spawn for
+ *                             &boltfor= seconds
  *   ?fx=replay&replay=<url>   replay recorded snapshots ({ snapshots: LiveSnapshot[], fps }) at 1 engine px per CSS
  *                             px (the tactical view's own framing), then hold the last one `time` seconds later;
  *                             a snapshot without shroud/overlays/smudges/cells keeps the previous snapshot's (dense
@@ -126,6 +129,8 @@ const fps = Number(params.get('fps') ?? 15);
 const time = Number(params.get('time') ?? 0);
 const house = Number(params.get('house') ?? (params.get('fx')?.split(',').includes('shpunits') ? 11 : 15));
 const live = await LiveView.create(canvas, {
+  // &perf=1: GPU timestamp queries, read with __fx.live.hd.stats().gpuMs.
+  trackTimestamp: params.get('perf') === '1',
   ...voxelLookParams(params),
   ...parseWeatherParams(params),
   mapBase: `/${encodeURIComponent(mapName)}`,
@@ -708,6 +713,20 @@ for (const item of (params.get('bolts') ?? '').split(';').filter(Boolean)) {
   bolts.set(Number(index), { ...ground, z: ground.z + (h ?? 0) });
 }
 const boltFor = Number(params.get('boltfor') ?? 0.4);
+/** &lasers=: engine lasers between two cell offsets (heights in leptons), with an optional inner colour. */
+const lasers = (params.get('lasers') ?? '')
+  .split(';')
+  .filter(Boolean)
+  .map((item) => {
+    const [dx, dy, h, tx, ty, th, r, g, b] = item.split(',').map(Number);
+    const from = at(cx + 0.5 + (dx ?? 0), cy + 0.5 + (dy ?? 0));
+    const to = at(cx + 0.5 + (tx ?? 0), cy + 0.5 + (ty ?? 0));
+    return {
+      source: { ...from, z: from.z + (h ?? 0) },
+      target: { ...to, z: to.z + (th ?? 0) },
+      colour: [r ?? 255, g ?? 255, b ?? 255] as [number, number, number],
+    };
+  });
 const repeat = Math.max(0, Number(params.get('repeat') ?? 0));
 const delays = (params.get('delay') ?? '')
   .split(',')
@@ -831,6 +850,8 @@ function benchBeams(): NonNullable<LiveSnapshot['effects']>['beams'] {
     if (!anim || age === null || age >= Math.round(boltFor * fps)) continue;
     beams.push({ source, target: { x: anim.x, y: anim.y, z: anim.z }, kind: 'bolt', colour: [82, 80, 255] });
   }
+  if (spawned !== null && frame - spawned < Math.round(boltFor * fps))
+    for (const l of lasers) beams.push({ source: l.source, target: l.target, kind: 'laser', colour: l.colour });
   return beams;
 }
 

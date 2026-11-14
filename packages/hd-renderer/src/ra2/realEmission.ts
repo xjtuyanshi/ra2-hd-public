@@ -50,13 +50,16 @@ export function animEmission(anim: LiveAnim, age: number, _now: number, fps = 62
     source: `anim:${anim.id}:${anim.uid}:${anim.type}`,
     from: at,
     to: at,
-    width: radius * 2,
+    // A short bloom behind the fireball's own core, about its size: the 2-radius disc spread a large yellow halo.
+    width: radius * 1.2,
     disc: true,
-    colour: [1, 0.5, 0.12],
-    hot: [1, 0.95, 0.8],
+    colour: [1, 0.7, 0.42],
+    hot: [1, 0.95, 0.85],
     gain: 1 - age / seconds,
-    // Pull along the view direction only, preserving the native on-screen centre.
-    push: Math.max(0, radius * 0.5),
+    // Pull along the view direction only, preserving the native on-screen centre. The pull must clear the whole outer
+    // glow (outerWidth / 2 of the width), or the ground cut the disc's lower half with a straight edge (sandbox
+    // EXPLOLRG at night, 0.05 s).
+    push: muzzle ? radius * 0.5 : radius * 1.6,
   };
 }
 

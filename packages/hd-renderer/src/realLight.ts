@@ -77,13 +77,23 @@ export interface PhysicalLight {
   planarReach?: boolean;
   flicker?: number;
   seed?: number;
+  /**
+   * 'gaussian': irradiance exp(-(d / radius)^2) of the 3D distance to the point or the closest point of the segment,
+   * with `radius` the falloff width. Short events use it: an inverse-square core strong enough to read beside its own
+   * art saturated the ground knee out to the window, which then cut a flat pool or a straight band along a beam with a
+   * hard rim (live SOV07TMD night, Prism volley). The Gaussian is negligible (< 0.1 %) before the window closes.
+   */
+  profile?: 'gaussian';
 }
+/** Window, in Gaussian widths, beyond which a Gaussian light is not drawn (exp(-2.7^2) < 0.07 %). */
+export const GAUSSIAN_REACH = 2.7;
 export const segmentLength = (l: PhysicalLight): number =>
   l.end ? Math.hypot(...l.end.map((v, i) => v - l.position[i]!)) : 0;
 /** Global dynamic default; source policy supplies tighter windows and explicit large-event exceptions. */
 export const REAL_LIGHT_REACH = { cells: 3 } as const;
 /** Conservative unwindowed scalar threshold, capped; the window reaches exactly zero at this derived distance. */
 export function lightReach(l: PhysicalLight): number {
+  if (l.profile === 'gaussian') return Math.min(l.reach ?? REAL_LIGHT_REACH.cells, GAUSSIAN_REACH * l.radius);
   return Math.min(
     l.reach ?? REAL_LIGHT_REACH.cells,
     Math.sqrt(
@@ -126,6 +136,13 @@ export function mergeNearbyLights<K>(
 export function lightWindow(t: number): number {
   return Math.max(0, 1 - Math.min(1, Math.max(0, t)) ** 2) ** 2;
 }
+/**
+ * Window of a Gaussian light: flat until the Gaussian itself has fallen off, so it trims only a negligible tail
+ * (the inverse-square window would also eat the visible shoulder of a short flash).
+ */
+export function gaussianWindow(t: number): number {
+  return Math.max(0, 1 - Math.min(1, Math.max(0, t)) ** 6) ** 2;
+}
 export interface LightMoment {
   s: [number, number, number];
   d: [number, number, number];
@@ -141,15 +158,16 @@ export function lightMoment(l: PhysicalLight, p: Point, windowed = true): LightM
   const d2 = delta.reduce((s, v) => s + v * v, 0);
   const distance = Math.sqrt(d2);
   let factor = 1 / Math.max(1e-8, d2 + l.radius ** 2);
-  if (l.end) {
+  if (l.profile === 'gaussian') factor = Math.exp(-d2 / Math.max(1e-8, l.radius ** 2));
+  else if (l.end) {
     // Integral of 1/(perpendicularDistance^2 + r_s^2 + t^2) over the actual finite segment.
     const a = Math.sqrt(Math.max(1e-8, d2 - (along - u) ** 2 + l.radius ** 2));
     factor = (Math.atan((len - along) / a) + Math.atan(along / a)) / a;
   }
-  if (windowed)
-    factor *= lightWindow(
-      (l.planarReach ? Math.hypot(delta[0]!, delta[2]!) : distance) / Math.max(lightReach(l), 1e-8),
-    );
+  if (windowed) {
+    const t = (l.planarReach ? Math.hypot(delta[0]!, delta[2]!) : distance) / Math.max(lightReach(l), 1e-8);
+    factor *= l.profile === 'gaussian' ? gaussianWindow(t) : lightWindow(t);
+  }
   const s = l.intensity.map((c) => c * factor) as [number, number, number];
   const lum = lightLuminance(s);
   return {
@@ -560,8 +578,9 @@ export class RealLightField {
       .add(atan(along.div(perpendicular)))
       .div(perpendicular);
     const windowDistance = extra.w.greaterThan(0.5).select(length(delta.xz), distance);
+    const windowT = clamp(windowDistance.div(max(b.w, 1e-8)), 0, 1);
     const weight = float(1)
-      .sub(clamp(windowDistance.div(max(b.w, 1e-8)), 0, 1).pow(2))
+      .sub(extra.z.greaterThan(1.5).select(windowT.pow(6), windowT.pow(2)))
       .pow(2);
     const transmission = Fn(() => {
       const value = float(1).toVar();
@@ -570,9 +589,14 @@ export class RealLightField {
       });
       return value;
     })();
+    const gaussian = exp(
+      dot(delta, delta)
+        .div(max(a.w.mul(a.w), 1e-8))
+        .negate(),
+    );
     const scalar = extra.z
-      .greaterThan(0.5)
-      .select(integral, float(1).div(max(d2, 1e-8)))
+      .greaterThan(1.5)
+      .select(gaussian, extra.z.greaterThan(0.5).select(integral, float(1).div(max(d2, 1e-8))))
       .mul(weight)
       .mul(transmission);
     const s = c.rgb.mul(scalar),
@@ -743,7 +767,7 @@ export class RealLightField {
             index,
             l.groundOnly ?? 0,
             l.occlude === false || (!isStatic && (ttl ?? hold + fade) < 0.3) || lightReach(l) < 1.5 ? 0 : 1,
-            l.end ? 1 : 0,
+            l.profile === 'gaussian' ? 2 : l.end ? 1 : 0,
             l.planarReach ? 1 : 0,
           );
         }

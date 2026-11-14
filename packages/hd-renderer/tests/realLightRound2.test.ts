@@ -157,7 +157,10 @@ describe('emissive budgets and finite graph', () => {
 describe('RA2 source lifetime and shape preservation', () => {
   it('adds short table-radius blast/muzzle cores and no added fire cores', () => {
     const anim = { id: 1, uid: 2, type: 'EXPLOLRG', x: 256, y: 512, z: 104 };
-    expect(animEmission(anim, 0, 0)!.width).toBe(2 * EFFECT_TABLE.EXPLOLRG!.light![3]);
+    const core = animEmission(anim, 0, 0)!;
+    expect(core.width).toBeCloseTo(1.2 * EFFECT_TABLE.EXPLOLRG!.light![3], 12);
+    // The pull towards the camera clears the whole outer glow, so the ground never cuts the disc.
+    expect(core.push!).toBeGreaterThanOrEqual((core.width / 2) * 2.5);
     expect(animEmission(anim, 0.15, 0.15)).toBeNull();
     expect(animEmission({ ...anim, type: 'GUNFIRE' }, 0, 0)).not.toBeNull();
     expect(animEmission({ ...anim, type: 'GUNFIRE' }, 0.1, 0.1)).toBeNull();

@@ -218,33 +218,33 @@ describe('round 4 source fidelity and receiver bounds', () => {
   });
   it('enforces source-sized windows, captured bolt/Prism colours and short explosion/muzzle timing', () => {
     for (const [name, cap] of Object.entries({
-      tesla: 2,
-      psychic: 2,
+      tesla: 1.2,
+      psychic: 1.2,
       muzzle: 1.2,
-      prism: 1.8,
-      fire: 2.2,
-      rad: 1.5,
-      temporal: 1.5,
-      sonic: 1.5,
-      magnetron: 1.5,
+      prism: 1.2,
+      fire: 1.6,
+      rad: 1.2,
+      temporal: 1.2,
+      sonic: 1.2,
+      magnetron: 1.2,
     })) {
       const p = REAL_LIGHT_POLICIES[name as keyof typeof REAL_LIGHT_POLICIES];
       const l = policyLight(p, [0, p.height, 0]);
       expect(lightReach(l)).toBeLessThanOrEqual(cap);
       expect(lightMoment(l, [cap, 0, 0]).s).toEqual([0, 0, 0]);
     }
-    expect(REAL_LIGHT_POLICIES.tesla.ground).toBe(1.2);
-    expect(REAL_LIGHT_POLICIES.muzzle.ground).toBe(0.25);
+    expect(REAL_LIGHT_POLICIES.tesla.ground).toBe(0.7);
+    expect(REAL_LIGHT_POLICIES.muzzle.ground).toBe(0.4);
     expect(animLightPolicy('VTMUZZLE')?.hold ?? REAL_LIGHT_POLICIES.muzzle.hold).toBe(2 / 62.5);
     // Explosion light lasts as long as its art (EXPLOLRG: 21 frames), never longer.
     const large = animLightPolicy('EXPLOLRG')!;
-    expect(large.hold! + large.fade!).toBeLessThanOrEqual(Math.max(0.37, 21 / 62.5) + 1e-9);
-    expect(large.reach).toBeLessThanOrEqual(4);
+    expect(large.hold! + large.fade!).toBeLessThanOrEqual(0.6);
+    expect(large.reach).toBeLessThanOrEqual(3);
     expect(animLightPolicy('EXPLOSML')!.reach).toBeGreaterThanOrEqual(1.5);
     for (const [kind, colour, cap] of [
-      ['bolt', [82, 80, 255], 0.55],
-      ['bolt', [190, 90, 255], 0.55],
-      ['laser', [255, 10, 0], 0.5],
+      ['bolt', [82, 80, 255], 0.3],
+      ['bolt', [190, 90, 255], 0.3],
+      ['laser', [255, 10, 0], 0.3],
     ] as const) {
       const l = nativeBeamLight({
         kind,

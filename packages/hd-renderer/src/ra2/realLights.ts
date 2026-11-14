@@ -16,20 +16,27 @@ import {
 } from '../realLight';
 import { LEVEL_HEIGHT } from '../world';
 
+/**
+ * Light colours are the source's own hue, strongly desaturated: at night the light should mostly brighten what it
+ * falls on, keeping the surface's hue. Saturated warm light turned moonlit grass olive/yellow (round-1 review, live
+ * SOV07TMD night). Saturation (1 - min / max) is about 0.3 for fire and explosions.
+ */
 export const LIGHT_COLOURS = {
-  // Saturation 0.5 (was 0.64): at night under blue moonlight the warmer value turned lit grass straw-yellow.
-  fire: [1, 0.72, 0.5],
-  explosion: [1, 0.74, 0.52],
-  hot: [1, 0.95, 0.9],
-  muzzle: [1, 0.88, 0.72],
-  tesla: capLightColour(beamColor([82, 80, 255]), 0.55),
-  chrono: [0.75, 0.9, 1],
-  psychic: capLightColour(beamColor([190, 90, 255]), 0.55),
-  iron: [1, 0.45, 0.4],
+  fire: [1, 0.82, 0.68],
+  explosion: [1, 0.85, 0.72],
+  hot: [1, 0.96, 0.92],
+  muzzle: [1, 0.9, 0.8],
+  tesla: capLightColour(beamColor([82, 80, 255]), 0.35),
+  chrono: [0.8, 0.92, 1],
+  psychic: capLightColour(beamColor([190, 90, 255]), 0.35),
+  iron: [1, 0.6, 0.55],
 } as const;
+/** Saturation cap of light taken from a beam's or bolt's own colour. */
+export const BEAM_LIGHT_SATURATION = 0.3;
 export interface LightPolicy {
   height: number;
   reach?: number;
+  /** Point/tube radius; for a Gaussian profile the falloff width (cells). */
   radius: number;
   ground: number;
   colour: Rgb;
@@ -38,53 +45,101 @@ export interface LightPolicy {
   fade?: number;
   flicker?: number;
   continuous?: boolean;
+  profile?: 'gaussian';
 }
-/** Source-sized windows and peak irradiance in noon units. Large events retain explicit design reach. */
+/** Gaussian width of every beam/bolt: the lit ground band stays within about one cell of the beam. */
+const BEAM_SIGMA = 0.44;
+const beam = (ground: number, colour: Rgb, day: number, radius = BEAM_SIGMA) =>
+  ({ reach: 1.2, height: 0.5, radius, ground, colour, day, profile: 'gaussian' }) as const;
+/**
+ * Source-sized Gaussian falloffs (`radius` is the width, the window closes at 2.7 widths); `ground` is the peak
+ * irradiance in noon units at the source (ground under a source `height` up takes exp(-(height / radius)^2) of it). Beams light a narrow soft line, never a band with edges; fires and burning wrecks
+ * a small flickering glow; superweapons keep their design reach.
+ */
 export const REAL_LIGHT_POLICIES = {
   fire: {
-    reach: 2.2,
+    reach: 1.6,
     height: 0.4,
-    radius: 0.25,
+    radius: 0.6,
     ground: 0.8,
     colour: LIGHT_COLOURS.fire,
     day: 0,
-    flicker: 0.18,
+    flicker: 0.3,
     continuous: true,
+    profile: 'gaussian',
   },
   burning: {
-    reach: 2.2,
+    reach: 1.2,
     height: 0.3,
-    radius: 0.15,
-    ground: 0.25,
+    radius: 0.45,
+    ground: 0.35,
     colour: LIGHT_COLOURS.fire,
     day: 0,
-    flicker: 0.18,
+    flicker: 0.35,
     continuous: true,
+    profile: 'gaussian',
   },
   muzzle: {
     reach: 1.2,
     height: 0.5,
-    radius: 0.1,
-    ground: 0.25,
+    radius: 0.44,
+    ground: 0.4,
     colour: LIGHT_COLOURS.muzzle,
     day: 0.25,
     hold: 2 / 62.5,
     fade: 0.03,
+    profile: 'gaussian',
   },
-  chrono: { reach: 6, height: 0.5, radius: 0.6, ground: 1, colour: LIGHT_COLOURS.chrono, day: 0.15 },
-  dominator: { reach: 10, height: 2, radius: 2, ground: 3, colour: LIGHT_COLOURS.psychic, day: 0.15 },
-  iron: { reach: 6, height: 1, radius: 1.5, ground: 2, colour: LIGHT_COLOURS.iron, day: 0.15 },
-  nuke: { reach: 12, height: 3, radius: 3, ground: 12, colour: LIGHT_COLOURS.hot, day: 0.3, hold: 0.15, fade: 2 },
-  tesla: { reach: 2, height: 0.5, radius: 0.12, ground: 1.2, colour: LIGHT_COLOURS.tesla, day: 0.2 },
-  psychic: { reach: 2, height: 0.5, radius: 0.12, ground: 1.2, colour: LIGHT_COLOURS.psychic, day: 0.2 },
-  prism: { reach: 1.8, height: 0.5, radius: 0.1, ground: 1, colour: LIGHT_COLOURS.hot, day: 0.2 },
-  temporal: { reach: 1.5, height: 0.5, radius: 0.1, ground: 0.3, colour: LIGHT_COLOURS.chrono, day: 0.15 },
-  rad: { reach: 1.5, height: 0.5, radius: 0.1, ground: 0.25, colour: [0.65, 1, 0.6], day: 0.15 },
-  eruption: { reach: 1.5, height: 0.5, radius: 0.1, ground: 0.4, colour: LIGHT_COLOURS.fire, day: 0.15 },
-  sonic: { reach: 1.5, height: 0.5, radius: 0.15, ground: 0.25, colour: [0.65, 0.9, 1], day: 0.15 },
-  magnetron: { reach: 1.5, height: 0.5, radius: 0.15, ground: 0.25, colour: LIGHT_COLOURS.psychic, day: 0.15 },
-  link: { reach: 1.5, height: 0.5, radius: 0.08, ground: 0.08, colour: LIGHT_COLOURS.psychic, day: 0 },
-  storm: { reach: 4, height: 3, radius: 0.2, ground: 6, colour: LIGHT_COLOURS.tesla, day: 0.2, hold: 0.1, fade: 0.15 },
+  chrono: {
+    reach: 6,
+    height: 0.5,
+    radius: 2.2,
+    ground: 1,
+    colour: LIGHT_COLOURS.chrono,
+    day: 0.15,
+    profile: 'gaussian',
+  },
+  dominator: {
+    reach: 10,
+    height: 2,
+    radius: 3.7,
+    ground: 3,
+    colour: LIGHT_COLOURS.psychic,
+    day: 0.15,
+    profile: 'gaussian',
+  },
+  iron: { reach: 6, height: 1, radius: 2.2, ground: 2, colour: LIGHT_COLOURS.iron, day: 0.15, profile: 'gaussian' },
+  nuke: {
+    reach: 12,
+    height: 3,
+    radius: 4.4,
+    ground: 12,
+    colour: LIGHT_COLOURS.hot,
+    day: 0.3,
+    hold: 0.15,
+    fade: 2,
+    profile: 'gaussian',
+  },
+  tesla: beam(0.7, LIGHT_COLOURS.tesla, 0.15),
+  psychic: beam(0.7, LIGHT_COLOURS.psychic, 0.15),
+  prism: beam(0.6, LIGHT_COLOURS.hot, 0.15),
+  temporal: beam(0.35, LIGHT_COLOURS.chrono, 0.1),
+  rad: beam(0.3, [0.75, 1, 0.72], 0.1),
+  eruption: beam(0.4, LIGHT_COLOURS.fire, 0.1),
+  sonic: beam(0.3, [0.75, 0.92, 1], 0.1),
+  magnetron: beam(0.3, LIGHT_COLOURS.psychic, 0.1),
+  link: beam(0.1, LIGHT_COLOURS.psychic, 0, 0.35),
+  storm: {
+    reach: 4,
+    height: 3,
+    radius: 1.5,
+    ground: 6,
+    colour: LIGHT_COLOURS.tesla,
+    day: 0.2,
+    hold: 0.1,
+    fade: 0.15,
+    profile: 'gaussian',
+  },
 } as const satisfies Record<string, LightPolicy>;
 const ANIM_POLICY: Record<string, keyof typeof REAL_LIGHT_POLICIES> = {
   FIRE01: 'fire',
@@ -127,13 +182,29 @@ export function policyLight(policy: LightPolicy, position: Point, end?: Point): 
     reach: policy.reach,
     occlude: !policy.hold || policy.hold >= 0.15,
     flicker: policy.flicker,
+    ...(policy.profile ? { profile: policy.profile } : {}),
   };
+  // A Gaussian's `ground` is its irradiance at zero distance; the falloff is all geometry (no calibration point far
+  // out on the tail, which made a 0.44-cell beam 13 times brighter at its core than its nominal value).
+  if (policy.profile === 'gaussian') {
+    const k = policy.ground / Math.max(lightLuminance(policy.colour), 1e-8);
+    light.intensity = policy.colour.map((c) => c * k) as [number, number, number];
+    return light;
+  }
   // Author tube energy at a canonical 1-cell length and nominal height, independent of the observed beam length.
   const reference: PhysicalLight = end
     ? { ...light, position: [-0.5, policy.height, 0], end: [0.5, policy.height, 0] }
     : { ...light, position: [0, policy.height, 0] };
   const receiver: Point = end ? [0, 0, 0.5] : [0.5, 0, 0];
-  const key = JSON.stringify([policy.height, policy.radius, policy.ground, policy.colour, policy.reach, !!end]);
+  const key = JSON.stringify([
+    policy.height,
+    policy.radius,
+    policy.ground,
+    policy.colour,
+    policy.reach,
+    !!end,
+    policy.profile ?? '',
+  ]);
   const cached = energyCache.get(key);
   if (cached !== undefined) {
     light.intensity = policy.colour.map((c) => c * cached) as [number, number, number];
@@ -173,33 +244,34 @@ export function animLightPolicy(
   if (row.c === 'muzzle') return { ...REAL_LIGHT_POLICIES.muzzle, hold: 2 / fps };
   if (row.c === 'explosion' || row.c === 'collapse') {
     const rho = Math.max(0.2, row.light?.[3] ?? row.s);
-    const life = row.life / fps;
+    const reach = Math.min(3, Math.max(1.9, 1.7 + rho));
     return {
-      // A fireball is a large, raised source. With a point at 0.4 + 0.3 rho and a 1.6-cell reach the light stayed
-      // under the fireball's own HD art (sandbox EXPLOLRG at night: no visible light beside it). Height, size and reach
-      // follow the art's light radius rho, so the light reaches past the fireball: EXPLOLRG about 3.5 cells.
-      height: 0.5 + 0.8 * rho,
-      radius: 0.6 * rho,
-      // Calibrated at half a cell, which lies under the fireball; the night knee bounds that core, and what shows is
-      // the shoulder 1.5-3 cells out (about +11 / +6 L* on dark grass), comparable in size to the current pools.
-      ground: 3,
-      reach: Math.min(4, Math.max(1.5, 1.5 + 2.5 * rho)),
+      // A short warm flash reaching 1.5-2.5 cells, not a pool that outlives the fireball: the art's
+      // light radius rho sets the size and the fade (0.2-0.5 s). Raised a little so it reaches past its own art.
+      height: 0.4 + 0.4 * Math.min(rho, 1.5),
+      // Width half the reach: with the cosine of a low source the flash reads (> 6 % of its peak) out to about
+      // 1.3 cells for EXPLOSML, 1.9 for EXPLOLRG and 2.3 for the largest blasts.
+      radius: 0.5 * reach,
+      ground: 1.6,
+      reach,
       colour: LIGHT_COLOURS.explosion,
-      day: 0.2,
-      // Light lives as long as the fireball art: full for its first third, fading out with the rest of the anim.
-      hold: Math.max(0.12, 0.35 * life),
-      fade: Math.max(0.25, 0.65 * life),
+      day: 0.15,
+      hold: 0.08,
+      fade: Math.min(0.5, 0.25 + 0.15 * rho),
+      profile: 'gaussian',
     };
   }
   if (row.light)
     return {
       height: 0.5,
-      radius: Math.max(0.08, row.light[3] * 0.15),
-      ground: Math.min(1, row.s),
-      colour: capLightColour([row.light[0], row.light[1], row.light[2]], 0.55),
+      radius: Math.min(0.8, Math.max(0.35, row.light[3] * 0.4)),
+      reach: Math.min(2.2, Math.max(1, row.light[3] * 1.1)),
+      ground: Math.min(0.8, row.s),
+      colour: capLightColour([row.light[0], row.light[1], row.light[2]], BEAM_LIGHT_SATURATION),
       day: 0.15,
       hold: row.life / fps,
       fade: 0.15,
+      profile: 'gaussian',
     };
   return null;
 }
@@ -225,8 +297,11 @@ export function nativeBeamLight(beam: LiveBeam): PhysicalLight {
   const psychic = beam.kind === 'bolt' && beam.colour[0] > 130;
   const policy: LightPolicy =
     beam.kind === 'bolt'
-      ? { ...REAL_LIGHT_POLICIES[psychic ? 'psychic' : 'tesla'], colour: capLightColour(beamColor(beam.colour), 0.55) }
-      : { ...REAL_LIGHT_POLICIES.prism, colour: capLightColour(beamColor(beam.colour), 0.5) };
+      ? {
+          ...REAL_LIGHT_POLICIES[psychic ? 'psychic' : 'tesla'],
+          colour: capLightColour(beamColor(beam.colour), BEAM_LIGHT_SATURATION),
+        }
+      : { ...REAL_LIGHT_POLICIES.prism, colour: capLightColour(beamColor(beam.colour), BEAM_LIGHT_SATURATION) };
   return policyLight(policy, animWorld(beam.source as LiveAnim), animWorld(beam.target as LiveAnim));
 }
 export function auxiliaryBeamLights(effects: LiveEffects): { key: string; light: PhysicalLight }[] {
@@ -235,7 +310,7 @@ export function auxiliaryBeamLights(effects: LiveEffects): { key: string; light:
     if (b.type === 'rad' && !b.sustained && b.age >= b.period) continue;
     const p: LightPolicy = {
       ...REAL_LIGHT_POLICIES[b.type],
-      colour: b.type === 'temporal' ? LIGHT_COLOURS.chrono : capLightColour(beamColor(b.color), 0.55),
+      colour: b.type === 'temporal' ? LIGHT_COLOURS.chrono : capLightColour(beamColor(b.color), BEAM_LIGHT_SATURATION),
     };
     out.push({
       key: `rad:${b.id}`,

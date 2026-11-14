@@ -242,6 +242,20 @@ export function physicalSurfaceLight(
   ).mul(nodes.referenceLevel);
 }
 
+/**
+ * Ground albedo the physical light falls on at night: the colour the ground is shown in (`shown`, after the map's
+ * night grade and moon desaturation) at the albedo's luminance, so a fire or a flash mostly brightens the ground and
+ * keeps its hue. With the ungraded albedo, warm light uncovered the grass's daytime yellow-green under the blue night
+ * grade and lit areas read as olive or straw (round-1 review, live SOV07TMD night). By day it is the albedo itself.
+ */
+export function groundLightAlbedo(albedo: ShaderNode, shown: ShaderNode, nodes: AtmosphereNodes): ShaderNode {
+  if (!nodes.realLight) return albedo;
+  const kept = shown.max(0).mul(luminance(albedo).div(luminance(shown.max(0)).max(1e-4)));
+  return mix(albedo, kept, nodes.realLight.nightWeight.mul(GROUND_LIGHT_HUE_KEEP));
+}
+/** Share of the night hue kept by physically lit ground (the rest takes the albedo's own hue). */
+export const GROUND_LIGHT_HUE_KEEP = 0.8;
+
 /** Blend at the final added term so the experimental runtime toggle restores the legacy response. */
 export function localSurfaceLight(
   legacy: ShaderNode,
