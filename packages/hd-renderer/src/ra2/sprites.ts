@@ -210,8 +210,11 @@ type GroundPass = 'main' | 'under' | 'over' | 'readOnly' | 'unit' | 'translucent
 /**
  * Largest penumbra radius (1x texels) of the enhanced look's shadow softness. Six texels laid the shadows of thin parts
  * (a crane jib, a chimney) out as faint smears; three keeps a soft golden-hour edge on a still solid shadow.
+ * Terrain-object and map-overlay shadows use the narrower terrain cap so art-shaped tree/rock shadows stay readable.
  */
 export const SHADOW_PENUMBRA_TEXELS = 3;
+/** Largest penumbra radius (1x texels) for shadows marked terrainShadow, including those on clear water. */
+export const TERRAIN_SHADOW_PENUMBRA_TEXELS = 1.25;
 /**
  * Margin (1x texels) by which the enhanced look widens the quad of a softened SHP shadow on every side. A frame's rect
  * is trimmed to its art, so the art touches all four edges; the filtered coverage reaches 1.5 texels past the art and
@@ -243,15 +246,18 @@ const PENUMBRA_TAPS: readonly (readonly [number, number])[] = Array.from({ lengt
 /**
  * Penumbra radius (1x texels) of a shadow point `offset` (world x/z from the draw point) under softness `softness`: it
  * grows with the distance from the object's base, a building's foundation (`centre`, `half`) or the draw point.
+ * Terrain shadows use the narrower cap to preserve the art's shape; other callers retain the full radius.
  */
 export function shadowPenumbraRadius(
   offset: readonly [number, number],
   softness: number,
   foundation?: { centre: readonly [number, number]; half: readonly [number, number] },
+  terrain = false,
 ): number {
   const dx = Math.max(0, Math.abs(offset[0] - (foundation?.centre[0] ?? 0)) - (foundation?.half[0] ?? 0));
   const dz = Math.max(0, Math.abs(offset[1] - (foundation?.centre[1] ?? 0)) - (foundation?.half[1] ?? 0));
-  return Math.min(SHADOW_PENUMBRA_TEXELS, softness * Math.hypot(dx, dz) * 2.2);
+  const cap = terrain ? TERRAIN_SHADOW_PENUMBRA_TEXELS : SHADOW_PENUMBRA_TEXELS;
+  return Math.min(cap, softness * Math.hypot(dx, dz) * 2.2);
 }
 
 /**
@@ -651,12 +657,17 @@ class SpriteGraph {
     const penumbraCoverage = (texel: ShaderNode, coverage: ShaderNode, px: ShaderNode, py: ShaderNode): ShaderNode => {
       const offset: ShaderNode = vec2(px.div(60).add(py.div(30)), py.div(30).sub(px.div(60)));
       const reach: ShaderNode = length(max(offset.sub(baseCentre).abs().sub(foundationHalf), vec2(0, 0)));
+      const cap: ShaderNode = select(
+        isTerrainShadow.greaterThan(0.5),
+        TERRAIN_SHADOW_PENUMBRA_TEXELS,
+        SHADOW_PENUMBRA_TEXELS,
+      );
       // Clear water: a shadow on open water has a soft edge of the full penumbra (the light scatters in the
-      // water column), so a bridge's shadow is not a hard black frame.
+      // water column), so a bridge's shadow is not a hard black frame. Terrain shadows still obey their narrower cap.
       const radius: ShaderNode = max(
         look.shadowSoftness.mul(reach).mul(2.2),
         shadowOnClearWater(positionWorld.xz, nodes).mul(SHADOW_PENUMBRA_TEXELS),
-      ).min(SHADOW_PENUMBRA_TEXELS);
+      ).min(cap);
       const lo: ShaderNode = aRect.xy;
       const hi: ShaderNode = aRect.xy.add(aRect.zw);
       const occupiedAt = (k: ShaderNode): ShaderNode => {
