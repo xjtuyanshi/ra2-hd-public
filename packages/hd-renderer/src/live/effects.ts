@@ -681,6 +681,11 @@ export class LiveEffectsDriver {
     return this.decorativeBeams.length ? [...native, ...this.decorativeBeams] : native;
   }
 
+  /** Rebuild the current beams' geometry (e.g. after the real-light toggle) without retriggering their flashes. */
+  refreshBeams(now: number): void {
+    this.effects.setBeams(now, this.beamSpecs(), false);
+  }
+
   /** Replace decorative geometry without retriggering native beam flashes on display refreshes. */
   setDecorativeBeams(now: number, beams: readonly BeamSpec[]): void {
     const state = JSON.stringify(beams);

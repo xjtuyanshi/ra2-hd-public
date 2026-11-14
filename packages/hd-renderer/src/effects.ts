@@ -1,4 +1,4 @@
-import { emissiveCoreTint, type RealEmissiveLayer, type EmissivePrimitive } from './realEmissive';
+import { EMISSIVE_BUDGET, emissiveCoreTint, type RealEmissiveLayer, type EmissivePrimitive } from './realEmissive';
 import {
   AdditiveBlending,
   Color,
@@ -878,6 +878,7 @@ export class EffectsLayer {
   get realEmissive(): RealEmissiveLayer | undefined {
     return this.emissiveLayer;
   }
+
   set realEmissive(layer: RealEmissiveLayer | undefined) {
     this.emissiveLayer = layer;
     this.beams.realEmissive = layer;
@@ -2210,6 +2211,7 @@ export class EffectsLayer {
    * blue-white impact pulse.
    */
   setBeams(now: number, beams: readonly BeamSpec[], flash = true): void {
+    this.beams.laserColour = !!this.physicalLights?.nodes.enabled.value;
     if (this.physicalLights)
       this.physicalLights.nodes.cost.measure('emissiveBuild', () => this.beams.setBeams(beams, this.enhancedBeams));
     else this.beams.setBeams(beams, this.enhancedBeams);
@@ -2465,6 +2467,8 @@ export class BeamLayer {
   readonly mesh: InstancedMesh;
   private readonly buffer = new BeamSegmentBuffer();
   realEmissive?: RealEmissiveLayer;
+  /** Real light is on: lasers draw their strand in their own colour (see laserCoreColour). */
+  laserColour = false;
 
   constructor(cameraRight: ShaderNode, cameraUp: ShaderNode, now: ShaderNode = uniform(0)) {
     const material = additive();
@@ -2547,7 +2551,9 @@ export class BeamLayer {
               to,
               width: BEAM_WIDTH,
               colour: beam.colour.toArray() as [number, number, number],
-              hot: emissiveCoreTint(beam.colour.toArray() as [number, number, number]),
+              hot: beam.bolt
+                ? emissiveCoreTint(beam.colour.toArray() as [number, number, number])
+                : laserCoreColour(beam.colour.toArray() as [number, number, number]),
               gain: 1,
               noise: beam.bolt
                 ? { mode: 1, rate: e.flickerRate, scale: e.noiseScale, amount: e.flicker, seed: 0, distance: 0 }
@@ -2556,12 +2562,25 @@ export class BeamLayer {
           }
         }
       : undefined;
-    this.buffer.set(beams, enhanced);
+    // With real light on, a laser's strand takes its own colour too (see laserCoreColour); otherwise the existing
+    // white strand stays exactly as it is.
+    this.buffer.set(beams, enhanced, this.laserColour);
     this.realEmissive?.set('native', emission);
     this.buffer.flush();
     this.mesh.count = this.buffer.count;
     this.mesh.visible = this.buffer.count > 0;
   }
+}
+
+/**
+ * Core of a laser's added emission: the beam's own colour at a radiance whose brightest channel just reaches 1 after the
+ * core gain. The original draws house-coloured lasers (Prism towers and tanks, IsHouseColor) as saturated lines in
+ * the house colour with no white core: a live SOV07TMD Prism beam measured (225, 43, 255) for an inner colour of
+ * (137, 0, 197). The pale core tint clipped to white and the beam read pink instead of violet (round-1 review).
+ */
+export function laserCoreColour(colour: readonly [number, number, number]): [number, number, number] {
+  const peak = Math.max(...colour, 1e-6);
+  return colour.map((c) => c / peak / EMISSIVE_BUDGET.core) as [number, number, number];
 }
 
 /** Reusable beam geometry, exactly matching beamSegments up to the renderer's existing capacity. */
@@ -2584,7 +2603,7 @@ export class BeamSegmentBuffer {
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   }
 
-  set(beams: readonly BeamSpec[], enhanced = false): void {
+  set(beams: readonly BeamSpec[], enhanced = false, laserColour = false): void {
     let n = 0;
     for (let beamIndex = 0; beamIndex < beams.length && n < BEAM_SEGMENTS; beamIndex++) {
       const start = n;
@@ -2593,8 +2612,10 @@ export class BeamSegmentBuffer {
         this.from.setXYZ(n, from.x, from.y, from.z);
         this.to.setXYZ(n, to.x, to.y, to.z);
         this.enhanced.setX(n, 0);
-        // Preserve the existing straight beam's white strand (its target light carries the beam colour).
-        this.colour.setXYZ(n++, 1, 1, 1);
+        // Preserve the existing straight beam's white strand (its target light carries the beam colour). With real
+        // light on, the strand takes the laser's own colour, as the original draws it (see laserCoreColour).
+        if (laserColour) this.colour.setXYZ(n++, colour.x, colour.y, colour.z);
+        else this.colour.setXYZ(n++, 1, 1, 1);
         this.onBeam?.(beams[beamIndex]!, start, n);
         continue;
       }

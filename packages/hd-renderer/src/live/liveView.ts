@@ -1477,6 +1477,7 @@ export class LiveView {
     this.hd.refreshLocalLights?.();
     this.engineLightKey = this.lightKey = null;
     if (this.current) this.updateNightSources(this.current.snapshot);
+    this.effectDriver?.refreshBeams(this.hd.seconds());
     return true;
   }
 

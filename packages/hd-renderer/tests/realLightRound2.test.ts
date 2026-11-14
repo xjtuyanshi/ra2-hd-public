@@ -22,7 +22,7 @@ import {
   physicalLampKey,
   physicalExposureFlash,
 } from '../src/ra2/realEmission';
-import { BeamLayer, BeamSegmentBuffer, EffectsLayer } from '../src/effects';
+import { BeamLayer, BeamSegmentBuffer, EffectsLayer, laserCoreColour } from '../src/effects';
 import { AtmosphereNodes } from '../src/atmosphere';
 import { LiveBeams, type LiveRadBeam } from '../src/live/beams';
 import { LiveEffectsDriver } from '../src/live/effects';
@@ -225,8 +225,9 @@ describe('RA2 source lifetime and shape preservation', () => {
       expect(primitives[i]!.from.toArray()).toEqual([...base.from.array.slice(i * 3, i * 3 + 3)]);
       expect(primitives[i]!.to.toArray()).toEqual([...base.to.array.slice(i * 3, i * 3 + 3)]);
     }
-    // The core is a pale tint of the beam's own colour (a white core read paler than the original).
-    expect(primitives.at(-1)!.hot).toEqual(emissiveCoreTint([1, 0.1, 0]));
+    // A laser's core is its own colour, never white: its brightest channel just reaches 1 after the core gain.
+    expect(primitives.at(-1)!.hot).toEqual(laserCoreColour([1, 0.1, 0]));
+    expect(Math.max(...primitives.at(-1)!.hot!) * EMISSIVE_BUDGET.core).toBeCloseTo(1, 12);
     expect(primitives.at(-1)!.colour).toEqual([1, 0.1, 0]);
     layer.setBeams([]);
     emission.update(1, true);

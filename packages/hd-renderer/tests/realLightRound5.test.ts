@@ -1,4 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import { Vector3 } from 'three/webgpu';
+import { BeamSegmentBuffer, laserCoreColour } from '../src/effects';
+import { EMISSIVE_BUDGET } from '../src/realEmissive';
 import {
   GAUSSIAN_REACH,
   lightLuminance,
@@ -91,5 +94,25 @@ describe('round 5: soft, source-sized light (round-1 review A and C)', () => {
       const l = policyLight(p, [0, p.height, 0]);
       expect(lightReach(l)).toBeLessThanOrEqual(GAUSSIAN_REACH * p.radius + 1e-12);
     }
+  });
+});
+
+describe('round 5: lasers keep the original hue (round-1 review B)', () => {
+  it('draws a laser strand white without real light and in its own colour with it; the core never turns white', () => {
+    // A BadGuy3 Prism beam: inner colour (137, 0, 197), drawn by the original as (225, 43, 255).
+    const colour = new Vector3(...[137, 0, 197].map((c) => (c / 255) ** 2.2));
+    const beams = [{ from: new Vector3(0, 1, 0), to: new Vector3(4, 1, 0), colour, bolt: false, seed: 1 }];
+    const plain = new BeamSegmentBuffer();
+    plain.set(beams);
+    expect([...plain.colour.array.slice(0, 3)]).toEqual([1, 1, 1]);
+    const real = new BeamSegmentBuffer();
+    real.set(beams, false, true);
+    expect([...real.colour.array.slice(0, 3)]).toEqual([...new Float32Array(colour.toArray())]);
+    const core = laserCoreColour(colour.toArray() as [number, number, number]);
+    expect(Math.max(...core) * EMISSIVE_BUDGET.core).toBeCloseTo(1, 12);
+    expect(core[0]! / core[2]!).toBeCloseTo(colour.x / colour.z, 12);
+  });
+  it('keeps chrono warps a small glow', () => {
+    expect(REAL_LIGHT_POLICIES.chrono.reach).toBeLessThanOrEqual(2);
   });
 });
