@@ -95,6 +95,7 @@ function fakeView() {
     outOfSight: false,
     newArtPerFrame: 1,
     hiddenUploadPixels: 0,
+    hiddenGpuBacklogMs: Infinity,
     hiddenWarmPace: { budgetMs: 12, maxGroups: 8, maxNew: 1 },
     theater: 'urban',
     warm: vi.fn(),
@@ -2041,8 +2042,8 @@ describe('HD bridge match start', () => {
     await advance(17);
     await vi.waitFor(() => expect(harness.bridge()?.live).toBe(view));
     await advance(17, 2);
-    // A stateless loading screen: unpaced builds and uploads, as behind an empty prematch state.
-    expect([view.newArtPerFrame, view.hiddenUploadPixels]).toEqual([Infinity, Infinity]);
+    // A stateless loading screen: unpaced builds and two upload strips per frame, as behind an empty prematch state.
+    expect([view.newArtPerFrame, view.hiddenUploadPixels, view.hiddenGpuBacklogMs]).toEqual([Infinity, 2 * (8 << 20), 50]);
     expect(view.hiddenWarmPace).toEqual({ budgetMs: 100, maxGroups: 64, maxNew: 8 });
     expect(harness.bridge()!.timeline.firstStateAt).toBeNull();
     // No state has arrived, but the larger native picture is already playable.
@@ -2171,8 +2172,8 @@ describe('HD bridge match start', () => {
     const view = await loadBehindLoadingScreen(harness);
     // Complete (there is nothing to draw yet), but the match has not started.
     expect(view.outOfSight).toBe(true);
-    // Nothing moves behind the loading screen: no pacing of builds and uploads.
-    expect([view.newArtPerFrame, view.hiddenUploadPixels]).toEqual([Infinity, Infinity]);
+    // Nothing moves behind the loading screen: no pacing of builds; uploads two strips per frame, GPU-paced.
+    expect([view.newArtPerFrame, view.hiddenUploadPixels, view.hiddenGpuBacklogMs]).toEqual([Infinity, 2 * (8 << 20), 50]);
     expect(view.hiddenWarmPace).toEqual({ budgetMs: 100, maxGroups: 64, maxNew: 8 });
     expect(harness.hdCanvas.style.display).toBe('none');
     expect(harness.vm.setTacticalPassthrough).not.toHaveBeenCalled();

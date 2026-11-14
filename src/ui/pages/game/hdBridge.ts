@@ -282,6 +282,14 @@ const HIDDEN_NEW_ART_PER_FRAME = 1;
 const HIDDEN_UPLOAD_PIXELS = 8 << 20;
 const HIDDEN_WARM_PACE = { budgetMs: 12, maxGroups: 8, maxNew: 1 };
 const LOADING_WARM_PACE = { budgetMs: 100, maxGroups: 64, maxNew: 8 };
+/**
+ * Out of sight the view waits while the GPU is this far behind (LiveView.hiddenGpuBacklogMs), so its uploads and
+ * frames never queue seconds of work in front of the game's own picture. Behind a loading screen it uploads two
+ * in-match strips per frame instead of whole pages: one frame that copied two 66 M pixel pages left the GPU 2.4 s
+ * behind, and the match (and its first battle picture) started inside that wait (ALL01UMD, 2026-11-14).
+ */
+const HIDDEN_GPU_BACKLOG_MS = 50;
+const LOADING_UPLOAD_PIXELS = HIDDEN_UPLOAD_PIXELS * 2;
 /** Out of sight and complete, the view only needs an occasional frame until the match starts (every Nth tick). */
 const HIDDEN_IDLE_TICKS = 12;
 /**
@@ -601,7 +609,8 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
     const emptyState = stateMap === liveMap && latestState?.objects.length === 0 && !viewHadObjects;
     const loadingPace = live.outOfSight && !nativeBattleSurface && (!viewHadState || emptyState);
     live.newArtPerFrame = loadingPace ? Infinity : HIDDEN_NEW_ART_PER_FRAME;
-    live.hiddenUploadPixels = loadingPace ? Infinity : HIDDEN_UPLOAD_PIXELS;
+    live.hiddenUploadPixels = loadingPace ? LOADING_UPLOAD_PIXELS : HIDDEN_UPLOAD_PIXELS;
+    live.hiddenGpuBacklogMs = HIDDEN_GPU_BACKLOG_MS;
     live.hiddenWarmPace = loadingPace ? LOADING_WARM_PACE : HIDDEN_WARM_PACE;
   };
   /** Whether the view of the current match was handed its remembered list (once per match). */

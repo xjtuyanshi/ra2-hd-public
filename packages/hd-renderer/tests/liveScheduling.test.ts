@@ -444,6 +444,48 @@ describe('live preparation pace', () => {
   });
 });
 
+describe('GPU backlog out of sight', () => {
+  it('skips hidden frames while the GPU queue is behind, never a shown frame, and resumes once it catches up', async () => {
+    const p = presentation(false);
+    let release!: () => void;
+    const onSubmittedWorkDone = vi.fn(() => new Promise<void>((resolve) => (release = resolve)));
+    const fields = p.view as unknown as {
+      outOfSight: boolean;
+      hiddenGpuBacklogMs: number;
+      gpuWaits: number;
+      gpuFenceAt: number | null;
+      pageUploads: { step: ReturnType<typeof vi.fn> };
+    };
+    Object.assign(p.hd, { renderer: { backend: { device: { queue: { onSubmittedWorkDone } } } } });
+    Object.assign(fields, { outOfSight: true, hiddenGpuBacklogMs: 50, gpuWaits: 0, gpuFenceAt: null });
+    p.view.render(100);
+    expect(p.hd.frame).toHaveBeenCalledTimes(1);
+    expect(onSubmittedWorkDone).toHaveBeenCalledTimes(1);
+    // 40 ms behind: within the limit, drawn; the fence already waiting is not doubled.
+    p.view.render(140);
+    expect(p.hd.frame).toHaveBeenCalledTimes(2);
+    expect(onSubmittedWorkDone).toHaveBeenCalledTimes(1);
+    expect(p.view.gpuBacklogMs(140)).toBe(40);
+    // 60 ms behind: nothing is uploaded or drawn.
+    p.view.render(160);
+    expect(p.hd.frame).toHaveBeenCalledTimes(2);
+    expect(fields.pageUploads.step).toHaveBeenCalledTimes(2);
+    expect(fields.gpuWaits).toBe(1);
+    // A shown view draws whatever the backlog.
+    fields.outOfSight = false;
+    p.view.render(170);
+    expect(p.hd.frame).toHaveBeenCalledTimes(3);
+    fields.outOfSight = true;
+    release();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(p.view.gpuBacklogMs(400)).toBe(0);
+    p.view.render(400);
+    expect(p.hd.frame).toHaveBeenCalledTimes(4);
+    expect(onSubmittedWorkDone).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe('warm-up out of sight', () => {
   it('passes the host pace to warm and updates an active warm-up before its next frame', () => {
     const p = presentation(false);
