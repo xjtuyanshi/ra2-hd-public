@@ -1751,6 +1751,10 @@ export class NativeCore {
           incompleteSinceEpochMs: this.incompleteSinceEpochMs,
           incompleteCause: this.incompleteCause,
           lastTruncatedAtEpochMs: this.lastTruncatedAtEpochMs,
+          // Cumulative publications and truncated ones (process lifetime): a reader of two reports gets the share of
+          // captures that missed in between, which tells an occasional miss from a computer too busy for HD.
+          mirrors: this.cadence.mirrors,
+          truncatedMirrors: this.cadence.truncatedMirrors,
         },
         battlefieldRepaint: {
           state: this.battlefieldRepaint,

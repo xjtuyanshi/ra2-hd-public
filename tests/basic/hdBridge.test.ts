@@ -3052,6 +3052,77 @@ describe('live original to HD transition', () => {
     harness.stop();
   });
 
+  /**
+   * After a starved fallback, the capture keeps a given share of its publications truncated while complete states arrive
+   * every `stateEveryMs` in the original picture (100 ms ticks). Returns the reveals and fallbacks after `seconds`.
+   */
+  const afterFallback = async (share: number, stateEveryMs: number, seconds: number) => {
+    const harness = setup('?hd=1', 'WebGL2', 'native');
+    harness.setFrameSize(1280, 720);
+    await goLive(harness);
+    const epochNow = () => performance.timeOrigin + performance.now();
+    let starvedSince: number | null = epochNow();
+    let mirrors = 0;
+    let truncated = 0;
+    let lastTruncated: number | null = null;
+    harness.vm.getDiagnostics.mockImplementation(async () => ({
+      native: {
+        renderHealth: {
+          unreadableSinceEpochMs: null,
+          incompleteSinceEpochMs: starvedSince,
+          incompleteCause: starvedSince === null ? null : 'time-budget',
+          lastTruncatedAtEpochMs: lastTruncated,
+          mirrors,
+          truncatedMirrors: truncated,
+        },
+      },
+    }));
+    harness.setState(null);
+    await advance(100, 30);
+    expect(harness.bridge()!.diagnostics.shown).toBe(false);
+    starvedSince = null;
+    let frame = 3;
+    let missed = 0;
+    for (let tick = 0; tick < seconds * 10; tick++) {
+      // Three publications per tick (30 a second), `share` of them truncated, spread evenly.
+      for (let i = 0; i < 3; i++) {
+        mirrors++;
+        missed += share;
+        if (missed >= 1) {
+          missed -= 1;
+          truncated++;
+          lastTruncated = epochNow();
+        }
+      }
+      frame += 3;
+      if ((tick * 100) % stateEveryMs === 0) harness.setState(crowded(frame, 300));
+      harness.nativeFrame(!!harness.bridge()!.diagnostics.shown);
+      await advance(100);
+    }
+    const transitions = harness.bridge()!.timeline.transitions;
+    const result = {
+      reveals: transitions.filter((entry) => entry.to === 'hd' && entry.reason === 'state-restored').length,
+      fallbacks: transitions.filter((entry) => entry.reason === 'capture-starved').length,
+      shown: !!harness.bridge()!.diagnostics.shown,
+    };
+    harness.stop();
+    return result;
+  };
+
+  it('returns to HD after the hold when only an occasional capture is still truncated', async () => {
+    // 2026-11-13 live (Allied 1, budget squeezed to 4 ms, load 12-17): one capture in 25 kept missing after the load
+    // ended, and the rule "no truncation for five seconds" kept the original picture for good.
+    expect(await afterFallback(0.04, 100, 30)).toEqual({ reveals: 1, fallbacks: 1, shown: true });
+  });
+
+  it('keeps the original while a third of the captures miss, although the original picture gets its states', async () => {
+    expect(await afterFallback(0.33, 100, 60)).toEqual({ reveals: 0, fallbacks: 1, shown: false });
+  });
+
+  it('keeps the original while complete states come with gaps longer than the calm gap', async () => {
+    expect(await afterFallback(0, 1000, 60)).toEqual({ reveals: 0, fallbacks: 1, shown: false });
+  });
+
   it('does not let a health report that never answers block the later checks', async () => {
     const harness = setup('?hd=1', 'WebGL2', 'native');
     harness.setFrameSize(1280, 720);

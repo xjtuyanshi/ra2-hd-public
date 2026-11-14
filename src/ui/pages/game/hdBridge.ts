@@ -102,6 +102,9 @@ interface NativeRenderHealth {
   incompleteCause?: string | null;
   /** Last truncated capture of this battle, kept across completed render states. */
   lastTruncatedAtEpochMs?: number | null;
+  /** Cumulative mirror publications and truncated ones; their differences between two reports give a miss share. */
+  mirrors?: number;
+  truncatedMirrors?: number;
 }
 
 /**
@@ -192,6 +195,18 @@ const CAPTURE_PROBE_MS = 1000;
 const STARVED_HOLD_MS = 10_000;
 const STARVED_HOLD_MAX_MS = 120_000;
 const STARVED_CALM_MS = 5_000;
+/**
+ * What "calm" means after the hold. Requiring no truncation at all kept the original picture for good on a computer
+ * that only misses now and then: on 2026-11-13 (YR Allied 1, capture budget squeezed to 4 ms with
+ * ?native-capture-budget-us, load 12-17) about one capture in 25 still missed after the load ended and HD never came
+ * back, although at that rate complete states arrive many times a second. The capture is calm when, over
+ * STARVED_CALM_MS, at most STARVED_CALM_TRUNCATED_SHARE of its publications were truncated (Allied 1 starved HD at
+ * 24-35% on 2026-11-11, and at 30% on 2026-11-13 it held for minutes before one two-second gap) and complete states
+ * kept arriving with no gap above STARVED_CALM_GAP_MS (a third of the two seconds that count as starved). Without the
+ * publication counters (an older core) the earlier rule applies: no truncation for STARVED_CALM_MS.
+ */
+const STARVED_CALM_TRUNCATED_SHARE = 0.1;
+const STARVED_CALM_GAP_MS = 750;
 /** HD shown this long without starving again starts the hold over at STARVED_HOLD_MS. */
 const STARVED_RESET_MS = 60_000;
 /**
@@ -806,14 +821,21 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
   /** Starved fallbacks of this match, and until when (performance.now()) the latest one keeps the original. */
   let starvedFallbacks = 0;
   let starvedHoldUntil = 0;
-  /** After the hold, a health report found the capture without truncations for STARVED_CALM_MS. */
+  /** After the hold, a health report found the capture calm (see STARVED_CALM_TRUNCATED_SHARE). */
   let starvedCalm = false;
+  /** Health reports read since the latest starved fallback: when, and the cumulative publication counters. */
+  let calmSamples: { at: number; mirrors: number; truncated: number }[] = [];
+  /** The newest complete state of a new logic frame (performance.now()), and since when none came later than the gap. */
+  let lastNewStateAt: number | null = null;
+  let lastNewStateFrame = -1;
+  let steadyStatesSince: number | null = null;
   /** When the view was last revealed (performance.now()); null while it is not shown. */
   let revealedSince: number | null = null;
   const resetStarved = () => {
     starvedFallbacks = 0;
     starvedHoldUntil = 0;
     starvedCalm = false;
+    calmSamples = [];
   };
   /** The notice of the current recovery: a read fault recovers, a starved capture says why it may not. */
   let recoveryText = recoveryNotice;
@@ -1055,13 +1077,38 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
     starvedFallbacks++;
     starvedHoldUntil = now + starvedHoldMs(starvedFallbacks);
     starvedCalm = false;
+    calmSamples = [];
     recoverOriginal('capture-starved', starvedNoticeFor(health));
   };
-  const captureCalm = (health: NativeRenderHealth | undefined) =>
-    typeof health?.incompleteSinceEpochMs !== 'number' &&
-    !(
-      typeof health?.lastTruncatedAtEpochMs === 'number' && sinceEpoch(health.lastTruncatedAtEpochMs) < STARVED_CALM_MS
-    );
+  /** Complete states of new logic frames: the gaps between them say whether the stream would hold HD. */
+  const noteNewState = (frame: number, now: number) => {
+    if (frame === lastNewStateFrame) return;
+    lastNewStateFrame = frame;
+    if (lastNewStateAt === null || now - lastNewStateAt > STARVED_CALM_GAP_MS) steadyStatesSince = now;
+    lastNewStateAt = now;
+  };
+  const statesSteady = (now: number) =>
+    steadyStatesSince !== null &&
+    lastNewStateAt !== null &&
+    now - lastNewStateAt <= STARVED_CALM_GAP_MS &&
+    now - steadyStatesSince >= STARVED_CALM_MS;
+  /** Whether the capture has been calm over the last STARVED_CALM_MS (see STARVED_CALM_TRUNCATED_SHARE). */
+  const captureCalm = (health: NativeRenderHealth | undefined, now: number) => {
+    if (typeof health?.incompleteSinceEpochMs === 'number') return false;
+    const mirrors = health?.mirrors,
+      truncated = health?.truncatedMirrors;
+    if (typeof mirrors !== 'number' || typeof truncated !== 'number')
+      return !(
+        typeof health?.lastTruncatedAtEpochMs === 'number' &&
+        sinceEpoch(health.lastTruncatedAtEpochMs) < STARVED_CALM_MS
+      );
+    calmSamples.push({ at: now, mirrors, truncated });
+    let base: { at: number; mirrors: number; truncated: number } | undefined;
+    while (calmSamples.length > 1 && now - calmSamples[1]!.at >= STARVED_CALM_MS) calmSamples.shift();
+    if (now - calmSamples[0]!.at >= STARVED_CALM_MS) base = calmSamples[0];
+    if (!base || mirrors <= base.mirrors || !statesSteady(now)) return false;
+    return (truncated - base.truncated) / (mirrors - base.mirrors) <= STARVED_CALM_TRUNCATED_SHARE;
+  };
   /**
    * Whether a starved fallback still keeps the original picture: during its hold, and after it until a health report
    * finds the capture calm (asked once a second). Without a health report the hold alone decides.
@@ -1074,7 +1121,7 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
       readHealth(
         now,
         (health) => {
-          if (captureCalm(health)) starvedCalm = true;
+          if (captureCalm(health, performance.now())) starvedCalm = true;
           else if (health?.incompleteCause && starvedNoticeFor(health) !== recoveryText) {
             recoveryText = starvedNoticeFor(health);
             syncPreparationNotice();
@@ -1409,6 +1456,7 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
     if (nativeMenuSurface || nativeDialogSurface) state = null;
     if (state?.map && state.view) {
       completeStateSerial++;
+      noteNewState(state.frame, performance.now());
       matchObjects = state.objects.length;
       // A complete state: the capture is keeping up again (the preparation notice says so on the next frame).
       captureStarved = false;

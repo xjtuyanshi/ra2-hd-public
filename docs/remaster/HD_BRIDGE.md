@@ -75,9 +75,14 @@ reachable (and checks what it imports); only a build shows that the bridge itsel
    time-budget miss in a smaller match is a busy computer (YR Allied 1, 271-354 objects, starved only at a machine
    load of 10 or more); an unknown cause says only that HD cannot keep up. The original then stays for a hold of
    10 s, doubled on each further fallback in the match up to 120 s (reset after 60 s of HD without one), and HD
-   returns only once a health report finds no truncated capture for 5 s (`renderHealth.lastTruncatedAtEpochMs`,
-   which outlives completed render states), so a capture that completes between truncations cannot switch the
-   picture every few seconds. The original picture stays playable throughout; before the first HD frame the same condition replaces the preparation notice (probed once a second after
+   returns only once the capture has been calm for 5 s: no open truncation episode, at most 10% of the publications
+   in those 5 s truncated (`renderHealth.mirrors` and `truncatedMirrors`, cumulative counters compared between health
+   reports read once a second), and complete states of new logic frames arriving with no gap above 0.75 s. A capture
+   that completes between frequent truncations therefore cannot switch the picture every few seconds, while an
+   occasional miss no longer keeps the original for good (2026-11-13: with the capture budget squeezed to 4 ms, about
+   one capture in 25 still missed after the load ended, and the earlier rule of no truncation at all for 5 s brought HD
+   back only after two minutes). Without the counters (an older core) that earlier rule
+   (`renderHealth.lastTruncatedAtEpochMs`) still applies. The original picture stays playable throughout; before the first HD frame the same condition replaces the preparation notice (probed once a second after
    2 s of preparation). A native dialog (save, load, options) may lead to another, lighter battle, so it clears that
    finding: the preparation probe starts over, and a capacity recovery shows its notice again only after a health
    report still says starved (no stale notice while a small save loads). Health reports time out after 2 s, so one that never answers cannot block later checks. A complete
