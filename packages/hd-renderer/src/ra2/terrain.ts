@@ -1,4 +1,4 @@
-import { groundToneNode } from '../groundTone';
+import { groundToneNode, groundToneShareNode } from '../groundTone';
 import {
   createWaterTuning,
   writeWaterTuning,
@@ -1283,20 +1283,17 @@ function createMaterials(
     roughness = mix(roughness, float(0.25), waterness);
   }
   // Keep the water inputs, refracted bed and wet shore on their original art. Only the final land share
-  // receives softened art and dressing; soften itself is independent of the mask and fades fully at night.
+  // receives softened art and dressing; soften itself is independent of the mask and fades at night like the dressing.
   const undressed = albedo;
   albedo = Fn(() => {
     const result = undressed.toVar();
-    If(nodes.groundTone.strength.greaterThan(0).and(nodes.night.lessThan(1)), () => {
+    const share = groundToneShareNode(nodes.groundTone, nodes.night).toVar();
+    If(share.greaterThan(0), () => {
       const land = undressed.toVar();
       If(nodes.groundTone.soften.greaterThan(0), () => {
         let sum: ShaderNode = vec3(0);
         for (const x of [-0.65, 0.65]) for (const y of [-0.65, 0.65]) sum = sum.add(tap(vec2(x, y)));
-        const softened = mix(
-          raw.rgb,
-          sum.mul(0.25),
-          nodes.groundTone.soften.mul(nodes.groundTone.strength).mul(float(1).sub(nodes.night)),
-        );
+        const softened = mix(raw.rgb, sum.mul(0.25), nodes.groundTone.soften.mul(share));
         const softWet = wetGround(srgbScale(softened, grade), groundWetness, paved, nodes).albedo;
         land.addAssign(softWet.sub(wet.albedo));
       });

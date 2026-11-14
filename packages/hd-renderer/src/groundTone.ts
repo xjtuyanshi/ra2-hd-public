@@ -24,14 +24,22 @@ export interface GroundToneParams {
   darkLo: number;
   darkHi: number;
   darkKeep: number;
+  /** Share of the light/shade patch gain kept on already-dark ground (darkLo..darkHi ramps it to 1). */
+  darkPatch: number;
   sunGain: number;
   shadeGain: number;
+  /** Shade gain on bare ground (sand, rock, paving): lighter than on grass, so bare shade does not turn muddy. */
+  bareShade: number;
   sunTint: [number, number, number];
   shadeTint: [number, number, number];
   grassShadeTint: [number, number, number];
   sunChroma: number;
   shadeChroma: number;
   soften: number;
+  /** Share of the whole dressing kept at full night (0 fades it out completely). */
+  nightKeep: number;
+  /** Lit-patch tint at full night (moonlight), replacing sunTint as night rises. */
+  moonTint: [number, number, number];
 }
 const W = [0.2126, 0.7152, 0.0722] as const;
 const RAD = Math.PI / 180;
@@ -86,22 +94,29 @@ export function groundToneRgb(
   night = 0,
   greenness = groundGreenness(rgb),
 ): [number, number, number] {
-  const amount = p.strength * (1 - night);
+  const amount = groundToneShare(p, night);
   if (amount === 0) return [...rgb];
+  const sunTint = p.sunTint.map((v, i) => blend(v, p.moonTint[i]!, night));
   const tint = p.shadeTint.map(
-    (v, i) => blend(v, p.sunTint[i]!, lit) * blend(1, p.grassShadeTint[i]!, (1 - lit) * greenness),
+    (v, i) => blend(v, sunTint[i]!, lit) * blend(1, p.grassShadeTint[i]!, (1 - lit) * greenness),
   );
   const tinted = rgb.map((v, i) => v * tint[i]!);
   const y = luma(rgb);
   const norm = y / Math.max(luma(tinted), 1e-6);
   const chroma = blend(p.shadeChroma, p.sunChroma, lit) * blend(p.bareChroma, 1, greenness);
-  const keep = blend(p.darkKeep, 1, smooth(p.darkLo, Math.max(p.darkHi, p.darkLo + 1e-4), y));
-  const gain = blend(1, blend(p.bareDepth, p.depth, greenness) * blend(p.shadeGain, p.sunGain, lit), keep);
+  const t = smooth(p.darkLo, Math.max(p.darkHi, p.darkLo + 1e-4), y);
+  const depth = blend(1, blend(p.bareDepth, p.depth, greenness), blend(p.darkKeep, 1, t));
+  const patch = blend(1, blend(blend(p.bareShade, p.shadeGain, greenness), p.sunGain, lit), blend(p.darkPatch, 1, t));
+  const gain = depth * patch;
   return tinted.map((v, i) => blend(rgb[i]!, Math.max(0, (y + (v * norm - y) * chroma) * gain), amount)) as [
     number,
     number,
     number,
   ];
+}
+/** Share of the dressing applied: strength, fading at night to nightKeep. */
+export function groundToneShare(p: Pick<GroundToneParams, 'strength' | 'nightKeep'>, night: number): number {
+  return p.strength * (1 - night * (1 - p.nightKeep));
 }
 
 export class GroundToneUniforms {
@@ -119,14 +134,18 @@ export class GroundToneUniforms {
   readonly darkLo = uniform(0);
   readonly darkHi = uniform(0.1);
   readonly darkKeep = uniform(1);
+  readonly darkPatch = uniform(1);
   readonly sunGain = uniform(1);
   readonly shadeGain = uniform(1);
+  readonly bareShade = uniform(1);
   readonly sunTint = uniform(new Vector3(1, 1, 1));
   readonly shadeTint = uniform(new Vector3(1, 1, 1));
   readonly grassShadeTint = uniform(new Vector3(1, 1, 1));
   readonly sunChroma = uniform(1);
   readonly shadeChroma = uniform(1);
   readonly soften = uniform(0);
+  readonly nightKeep = uniform(0);
+  readonly moonTint = uniform(new Vector3(1, 1, 1));
 
   set(p: GroundToneParams | null): void {
     if (!p) {
@@ -198,6 +217,10 @@ export function groundPatchNode(xz: ShaderNode, p: GroundToneUniforms): ShaderNo
       p.coverage.greaterThanEqual(1).select(float(1), smoothstep(threshold.sub(half), threshold.add(half), n)),
     );
 }
+/** TSL twin of groundToneShare. */
+export function groundToneShareNode(p: GroundToneUniforms, night: ShaderNode): ShaderNode {
+  return p.strength.mul(float(1).sub(night.mul(float(1).sub(p.nightKeep))));
+}
 /** Uniform branch keeps disabled materials an exact identity without evaluating noise or colour work. */
 export function groundToneNode(
   albedo: ShaderNode,
@@ -207,7 +230,8 @@ export function groundToneNode(
 ): ShaderNode {
   return Fn(() => {
     const out = vec3(albedo).toVar();
-    If(p.strength.greaterThan(0).and(night.lessThan(1)), () => {
+    const amount = groundToneShareNode(p, night).toVar();
+    If(amount.greaterThan(0), () => {
       const lit = groundPatchNode(xz, p).toVar();
       const y = dot(albedo, vec3(...W)).toVar();
       // Grass, yellow-green as well as green, so the art's alternating yellow/green tile stripes are one class (a
@@ -217,15 +241,23 @@ export function groundToneNode(
       const green = smoothstep(-0.25, -0.08, albedo.g.sub(albedo.r).div(yk))
         .mul(smoothstep(0.15, 0.35, albedo.g.sub(albedo.b).div(yk)))
         .toVar();
-      const tint = mix(p.shadeTint, p.sunTint, lit).mul(mix(vec3(1), p.grassShadeTint, float(1).sub(lit).mul(green)));
+      const tint = mix(p.shadeTint, mix(p.sunTint, p.moonTint, night), lit).mul(
+        mix(vec3(1), p.grassShadeTint, float(1).sub(lit).mul(green)),
+      );
       const tinted = albedo.mul(tint).toVar();
       // Normalise against the actual albedo, so even strongly coloured ground keeps its luminance before gain.
       const normalized = tinted.mul(y.div(dot(tinted, vec3(...W)).max(1e-6)));
       const chroma = mix(p.shadeChroma, p.sunChroma, lit).mul(mix(p.bareChroma, float(1), green));
-      const keep = mix(p.darkKeep, float(1), smoothstep(p.darkLo, p.darkHi.max(p.darkLo.add(1e-4)), y));
-      const gain = mix(float(1), mix(p.bareDepth, p.depth, green).mul(mix(p.shadeGain, p.sunGain, lit)), keep);
-      const transformed = mix(vec3(y), normalized, chroma).mul(gain).max(0);
-      out.assign(mix(albedo, transformed, p.strength.mul(float(1).sub(night))));
+      // Already-dark ground keeps darkKeep of the depth and darkPatch of the light/shade split.
+      const t = smoothstep(p.darkLo, p.darkHi.max(p.darkLo.add(1e-4)), y);
+      const depth = mix(float(1), mix(p.bareDepth, p.depth, green), mix(p.darkKeep, float(1), t));
+      const patch = mix(
+        float(1),
+        mix(mix(p.bareShade, p.shadeGain, green), p.sunGain, lit),
+        mix(p.darkPatch, float(1), t),
+      );
+      const transformed = mix(vec3(y), normalized, chroma).mul(depth.mul(patch)).max(0);
+      out.assign(mix(albedo, transformed, amount));
     });
     return out;
   })();

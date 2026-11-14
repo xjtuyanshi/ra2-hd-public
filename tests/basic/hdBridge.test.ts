@@ -1047,7 +1047,7 @@ describe('HD bridge look parameters', () => {
     const view = fakeLookView();
     await goLive(harness, view);
     expect(view.hd.settings).toMatchObject({
-      groundTone: { depth: 0.72, scale: 4.5, soften: 0.1 },
+      groundTone: { bareDepth: 0.68, scale: 2.6, soften: 0.1 },
       tone: { grade: null, density: 0, contrast: 0, chroma: [1, 1, 1], grain: 0.3, groundClarity: 0.7 },
     });
     expect(hdRenderer.applyLookPreset).not.toHaveBeenCalled();

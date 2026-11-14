@@ -1,6 +1,6 @@
 import type { GroundToneParams } from '../src/groundTone';
 
-const TRIPLES = ['sunTint', 'shadeTint', 'grassShadeTint'] as const;
+const TRIPLES = ['sunTint', 'shadeTint', 'grassShadeTint', 'moonTint'] as const;
 const NUMBERS = [
   'strength',
   'scale',
@@ -16,11 +16,14 @@ const NUMBERS = [
   'darkLo',
   'darkHi',
   'darkKeep',
+  'darkPatch',
   'sunGain',
   'shadeGain',
+  'bareShade',
   'sunChroma',
   'shadeChroma',
   'soften',
+  'nightKeep',
 ] as const;
 /** Sandbox-only ground overrides, after look/tone selection. Tints are linear multiplier triples. */
 export function applyGroundOverrides(ground: GroundToneParams | null, overrides: string | null): void {

@@ -1691,14 +1691,19 @@ frames (above); live GI, Initiate and Slave comparisons remain `UNVERIFIED`.
 
 `hd-tone=lush` in the game bridge, or `&tone=lush` in the FX sandbox, enables a separate terrain-material
 stage (`src/groundTone.ts`, RA2 data in `src/ra2/lushTone.ts`). It deepens the ground with olive shade,
-golden light and broad, soft, irregular light patches anchored to world xz (one unit is one map cell).
+golden-orange light and dappled, irregular light patches anchored to world xz (one unit is one map cell).
 It changes light and colour only. Units/buildings retain their colour and brightness; cliffs share the
-ground transform. Lunar is untouched, unknown theatres use temperate. Night fades out the material change.
+ground transform. Lunar is untouched, unknown theatres use temperate. At night the change fades to `nightKeep`
+(temperate 0.5) and the lit patches take the cool `moonTint` instead of `sunTint`, so night ground only gets deeper.
 The existing default and moist1–3 selections retain their behaviour; switching away clears `groundTone`.
 
 `HdSettings.groundTone` defaults to null. `AtmosphereNodes.groundTone` owns one uniform per parameter:
 `strength`, `scale`, `detailScale`, `detailMix`, `stretch`, `angle`, `coverage`, `softness`, `depth`,
-`bareDepth`, `bareChroma`, `darkLo`, `darkHi`, `darkKeep`, `sunGain`, `shadeGain`, `sunTint`, `shadeTint`, `grassShadeTint`, `sunChroma`, `shadeChroma`, `soften`.
+`bareDepth`, `bareChroma`, `darkLo`, `darkHi`, `darkKeep`, `darkPatch`, `sunGain`, `shadeGain`, `bareShade`, `sunTint`,
+`shadeTint`, `grassShadeTint`, `sunChroma`, `shadeChroma`, `soften`, `nightKeep`, `moonTint`.
+`bareShade` is the shade gain on non-green ground (lighter than grass shade, so shaded sand stays light);
+`darkPatch` is the share of the light/shade split kept on already-dark ground (jungle floors), next to
+`darkKeep` for the overall depth.
 Angles are degrees, scales are world units, and tints are linear RGB multipliers normalised against the
 albedo's luminance. `coverage` approximates lit area share; zero/one give all shade/sun. `softness` controls
 the transition width. Two-octave integer-hash value noise uses no camera or time input. `soften` mixes

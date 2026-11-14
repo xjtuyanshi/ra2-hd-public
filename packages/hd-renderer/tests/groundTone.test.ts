@@ -22,7 +22,7 @@ const params = () => lushTheatre('temperate')!;
 const luma = (rgb: readonly number[]) => rgb.reduce((s, x, i) => s + x * [0.2126, 0.7152, 0.0722][i]!, 0);
 
 describe('ground tone reference', () => {
-  it('is exactly identity at strength zero or full night, including HDR input', () => {
+  it('is exactly identity at strength zero or at full night without a night share, including HDR input', () => {
     for (const rgb of [
       [0, 0, 0],
       [0.1, 0.4, 0.2],
@@ -30,8 +30,20 @@ describe('ground tone reference', () => {
     ] as const)
       for (const lit of [0, 0.3, 1]) {
         expect(groundToneRgb(rgb, lit, { ...params(), strength: 0 })).toEqual(rgb);
-        expect(groundToneRgb(rgb, lit, params(), 1)).toEqual(rgb);
+        expect(groundToneRgb(rgb, lit, { ...params(), nightKeep: 0 }, 1)).toEqual(rgb);
       }
+  });
+  it('keeps nightKeep of the dressing at full night with moonlit (not golden) patches, never brightening grass', () => {
+    const p = params(),
+      green = [0.2, 0.4, 0.1] as const;
+    expect(p.nightKeep).toBeGreaterThan(0);
+    const night = groundToneRgb(green, 1, p, 1);
+    const full = groundToneRgb(green, 1, { ...p, sunTint: p.moonTint }, 0);
+    night.forEach((v, i) => expect(v).toBeCloseTo(green[i]! + (full[i]! - green[i]!) * p.nightKeep, 12));
+    for (const lit of [0, 0.5, 1]) expect(luma(groundToneRgb(green, lit, p, 1))).toBeLessThan(luma(green));
+    // Moonlight is cooler than sunlight: blue over red rises in the lit patches.
+    const day = groundToneRgb(green, 1, p, 0);
+    expect(night[2] / night[0]).toBeGreaterThan(day[2] / day[0]);
   });
   it('normalises tints on coloured albedo, leaving depth/gains to control luminance', () => {
     const p = {
@@ -40,6 +52,7 @@ describe('ground tone reference', () => {
       bareDepth: 1,
       bareChroma: 1,
       shadeGain: 1,
+      bareShade: 1,
       sunGain: 1,
       sunChroma: 1,
       shadeChroma: 1,
@@ -51,7 +64,7 @@ describe('ground tone reference', () => {
     ] as const)
       for (const lit of [0, 0.4, 1]) expect(luma(groundToneRgb(rgb, lit, p))).toBeCloseTo(luma(rgb), 12);
     // Bare-ground depth and the dark-ground keep have their own tests; here grass takes depth times the patch gain.
-    const g = { ...params(), bareDepth: params().depth, darkKeep: 1 };
+    const g = { ...params(), bareDepth: params().depth, darkKeep: 1, darkPatch: 1 };
     const c = [0.3, 0.4, 0.25] as const;
     for (const lit of [0, 1]) {
       const out = groundToneRgb(c, lit, g);
@@ -70,7 +83,15 @@ describe('ground tone reference', () => {
     expect(ratio([0.72, 0.51, 0.19])).toBeCloseTo(p.bareDepth * p.sunGain, 12);
     const keep = params();
     const dark = [0.03, 0.05, 0.02] as const;
-    expect(ratio(dark, keep)).toBeCloseTo(1 + (keep.depth * keep.sunGain - 1) * keep.darkKeep, 12);
+    expect(ratio(dark, keep)).toBeCloseTo(
+      (1 + (keep.depth - 1) * keep.darkKeep) * (1 + (keep.sunGain - 1) * keep.darkPatch),
+      12,
+    );
+    // Bare ground in shade takes its own lighter gain, so shaded sand stays light instead of turning muddy.
+    const shade = (rgb: readonly [number, number, number]) => luma(groundToneRgb(rgb, 0, p)) / luma(rgb);
+    expect(shade([0.72, 0.51, 0.19])).toBeCloseTo(p.bareDepth * p.bareShade, 12);
+    expect(shade([0.3, 0.42, 0.08])).toBeCloseTo(p.depth * p.shadeGain, 12);
+    expect(p.bareDepth * p.bareShade).toBeGreaterThan(p.depth * p.shadeGain);
     expect(ratio([0.3, 0.42, 0.08], keep)).toBeCloseTo(keep.depth * keep.sunGain, 12);
   });
   it('gates the extra grass tint on greenness and only in shade; fades continuously at night', () => {
@@ -81,8 +102,9 @@ describe('ground tone reference', () => {
     expect(groundToneRgb(grey, 0, p)).toEqual(groundToneRgb(grey, 0, neutral));
     expect(groundToneRgb(green, 1, p)).toEqual(groundToneRgb(green, 1, neutral));
     expect(groundToneRgb(green, 0, p)[1]).toBeGreaterThan(groundToneRgb(green, 0, neutral)[1]);
-    groundToneRgb(green, 0.4, p, 0.5).forEach((v, i) =>
-      expect(v).toBeCloseTo((green[i]! + groundToneRgb(green, 0.4, p)[i]!) / 2, 12),
+    const q = { ...p, nightKeep: 0, moonTint: p.sunTint };
+    groundToneRgb(green, 0.4, q, 0.5).forEach((v, i) =>
+      expect(v).toBeCloseTo((green[i]! + groundToneRgb(green, 0.4, q)[i]!) / 2, 12),
     );
   });
   it('is deterministic across negative world coordinates and camera-independent sampling order', () => {
@@ -149,7 +171,7 @@ describe('lush policy and sandbox', () => {
     expect(settings.tone).toBeNull();
     const p = params();
     p.sunTint[0] = 99;
-    expect(params().sunTint[0]).toBe(1.1);
+    expect(params().sunTint[0]).toBe(1.32);
     for (const style of ['off', 'moist1', 'moist2', 'moist3'] as const) {
       applyMoistTone(settings, 'temperate', 'lush');
       applyMoistTone(settings, 'temperate', style);
@@ -194,9 +216,20 @@ describe('lush policy and sandbox', () => {
     const p = params();
     applyGroundOverrides(
       p,
-      'depth:0.7,scale:4,angle:-25,soften:0.8,sunTint:1.2/1/0.7,shadeTint:0.9/1/1,grassShadeTint:0.8/1/0.7',
+      'depth:0.7,scale:4,angle:-25,soften:0.8,sunTint:1.2/1/0.7,shadeTint:0.9/1/1,grassShadeTint:0.8/1/0.7,' +
+        'bareShade:0.8,darkPatch:0.5,nightKeep:0.3,moonTint:0.9/1/1.1',
     );
-    expect(p).toMatchObject({ depth: 0.7, scale: 4, angle: -25, soften: 0.8, sunTint: [1.2, 1, 0.7] });
+    expect(p).toMatchObject({
+      depth: 0.7,
+      scale: 4,
+      angle: -25,
+      soften: 0.8,
+      sunTint: [1.2, 1, 0.7],
+      bareShade: 0.8,
+      darkPatch: 0.5,
+      nightKeep: 0.3,
+      moonTint: [0.9, 1, 1.1],
+    });
     for (const s of [
       'unknown:2',
       'grain:1',

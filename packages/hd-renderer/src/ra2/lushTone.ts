@@ -10,46 +10,57 @@ export interface LushTheatre extends GroundToneParams {
 // Only terrain materials change colour: units and buildings keep their brightness.
 const temperate: LushTheatre = {
   strength: 1,
-  // Broad soft patches, a few cells across and elongated along one iso diagonal, like dappled sun and cloud shade.
-  scale: 4.5,
-  detailScale: 1.3,
-  detailMix: 0.3,
-  stretch: 2.2,
+  // Dappled light: patches two to three cells across (roughly 100-400 device px at view 2.5), a little elongated,
+  // with a strong second octave so they break up rather than read as broad cloud shadow.
+  scale: 2.6,
+  detailScale: 0.8,
+  detailMix: 0.5,
+  stretch: 1.4,
   angle: 30,
-  coverage: 0.45,
+  coverage: 0.38,
   softness: 0.35,
   // Grass much deeper (the final frame about 20 L* darker), bare sand/rock less so, so it stays warm and light.
-  depth: 0.6,
-  bareDepth: 0.85,
+  depth: 0.56,
+  bareDepth: 0.92,
   bareChroma: 1,
   // Jungle floors are already about as deep as the reference: they keep most of their light and take the colour.
   darkLo: 0.1,
   darkHi: 0.3,
   darkKeep: 0.25,
-  sunGain: 1.05,
-  shadeGain: 0.38,
-  // Golden light in the lit patches, deep green in the shade. Chroma gains stay near 1: stronger gains amplified the
-  // art's alternating yellow/green tile stripes into visible diagonal bands.
-  sunTint: [1.1, 1, 0.78],
-  shadeTint: [0.92, 1, 0.95],
-  grassShadeTint: [0.8, 1, 0.75],
-  sunChroma: 1,
+  darkPatch: 0.6,
+  sunGain: 1.06,
+  shadeGain: 0.37,
+  bareShade: 0.82,
+  // Golden-orange light in the lit patches (lit-patch R/G about 1.2, as in the reference), deep olive in the shade.
+  // Tints are luminance-normalised; a blue cut below about 0.6 with more chroma turned the light lemon yellow, a red
+  // push with chroma at or below 1 turned it beige. Shade chroma stays moderate: stronger gains amplified the art's
+  // alternating yellow/green tile stripes into visible diagonal bands.
+  sunTint: [1.32, 1, 0.62],
+  // Cool shade (sky light): bare sand in shade stays light and bluish instead of turning muddy brown; grass
+  // takes it back to deep olive through grassShadeTint.
+  shadeTint: [0.86, 0.97, 1.16],
+  grassShadeTint: [0.92, 1.03, 0.57],
+  sunChroma: 1.12,
   shadeChroma: 1.15,
   // A light touch: soften 0.5 with a grain cut of 0.5 turned grass velvety at 1:1.
   soften: 0.12,
   grain: 0.3,
   groundClarity: 0.7,
+  // At night half the dressing stays, with cool moonlit patches instead of golden ones: deeper, never brighter.
+  nightKeep: 0.5,
+  moonTint: [0.94, 1, 1.1],
 };
 const urban: LushTheatre = {
   ...temperate,
-  // Deeper, slightly cool pavement (reads damp), lawns follow the grass shade tint.
-  depth: 0.72,
-  bareDepth: 0.8,
-  sunGain: 1,
-  shadeGain: 0.6,
-  sunTint: [1.04, 1, 0.9],
-  shadeTint: [0.94, 1, 1.06],
-  shadeChroma: 1.1,
+  // Deeper, cool, slightly more saturated pavement (reads damp slate rather than dry grey); lawns as temperate. The
+  // light/shade split stays small on paving: a strong one drew tan and blue stains on the concrete.
+  bareDepth: 0.68,
+  bareShade: 0.86,
+  bareChroma: 1.15,
+  sunGain: 1.02,
+  sunTint: [1.14, 1, 0.82],
+  shadeTint: [0.9, 0.97, 1.12],
+  grassShadeTint: [0.9, 1.03, 0.58],
   soften: 0.1,
 };
 export const LUSH_THEATRES: Record<Theater, LushTheatre | null> = {
@@ -58,26 +69,34 @@ export const LUSH_THEATRES: Record<Theater, LushTheatre | null> = {
   newurban: urban,
   snow: {
     ...temperate,
-    // Cold blue-white light, deeper blue shade; the snow itself only a little deeper.
+    // Cold blue-white light, deep blue shade patches; the snow itself only a little deeper.
     depth: 0.9,
     bareDepth: 0.9,
     sunGain: 1.02,
     shadeGain: 0.7,
+    bareShade: 0.74,
     sunTint: [0.98, 1, 1.04],
-    shadeTint: [0.88, 0.96, 1.15],
+    shadeTint: [0.84, 0.95, 1.22],
     grassShadeTint: [1, 1, 1],
-    shadeChroma: 1.2,
+    sunChroma: 1,
+    shadeChroma: 1.3,
     soften: 0.1,
   },
   desert: {
     ...temperate,
-    // Warm light, cooler shade, sand keeps most of its brightness.
+    // Warm orange light, cool (sky-lit) shade so shaded sand does not turn muddy brown; broader, calmer patches.
+    scale: 3.4,
+    detailMix: 0.35,
+    softness: 0.4,
+    coverage: 0.4,
     depth: 0.8,
-    bareDepth: 0.8,
+    bareDepth: 0.85,
+    bareShade: 0.66,
+    sunGain: 1.1,
     shadeGain: 0.62,
-    sunTint: [1.08, 1, 0.85],
-    shadeTint: [0.9, 0.97, 1.1],
-    grassShadeTint: [0.85, 1, 0.8],
+    sunTint: [1.2, 1, 0.7],
+    shadeTint: [0.8, 0.95, 1.28],
+    grassShadeTint: [0.9, 1.03, 0.62],
     sunChroma: 1.05,
     shadeChroma: 1.1,
     bareChroma: 1.05,
