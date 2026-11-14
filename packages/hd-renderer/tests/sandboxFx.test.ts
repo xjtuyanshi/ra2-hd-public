@@ -230,7 +230,8 @@ describe('sandbox final tone wiring', () => {
     expect(hd.settings.tone).toMatchObject({
       density: 0.3,
       chroma: [1.4, 1.2, 1],
-      grade: { gradeContrast: 0.2, gradeBalance: [0.99, 1, 1] },
+      // Temperate keeps the look's balance and replaces its shadow tint.
+      grade: { gradeContrast: 0.2, gradeBalance: hd.settings.gradeBalance, gradeShadowTint: [0.85, 1.1, 0.85] },
     });
   });
 });

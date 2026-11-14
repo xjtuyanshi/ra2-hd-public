@@ -32,19 +32,24 @@ export interface MoistTheatre {
 // 128 / 0.31 / 0.18 and its lighter patches 97 / 0.49 / 0.16; sand 62-70; the wet band beside clear water 89 / 0.58 /
 // 0.19; snow whites 185-218, shallow water 208, deep water 222.
 /**
- * Reference A's look, classified by patch (FinalToneParams.keyRadius), not by pixel:
- * - sun: vivid lit yellow-green ground a little towards gold and a little deeper (Lab hue of base sunlit grass
- *   104 -> 99; a highlight gain below 1 or a larger shift turned it pale straw, which reads dry);
- * - shade: vivid mid-dark green (chroma gate 0.18: not the muted jungle, nor the wet band beside the water) towards
- *   deep green and deeper. Sun/shade patch L* difference ends near A's 20; more (exposure -0.16) outlined the map's
- *   tile-variant patches as hard camouflage blots;
- * - teal: the look's blue-green jungle shade back towards the original's olive (Lab hue 128 -> 123; original 122);
+ * Reference A's look, classified by patch (FinalToneParams.keyRadius), not by pixel. A is a green-dominant picture with
+ * golden highlights: its sunlit grass is Lab hue 104 (the current look is already there), only its brightest tenth is
+ * golden (101), and its grass as a whole is greener (110) than the current look (107). What the look lacks is depth and
+ * chroma relative to lightness, not a warmer sun.
+ * - gold: only the brightest vivid yellow-green patches (encoded luma 0.6 -> 0.7, the top ~15% of a sunlit lawn) a
+ *   little towards gold and deeper. Warming the whole upper half (sun window from luma 0.45, a warmer balance and
+ *   highlight tint) turned the lawn ochre: sunlit hue 99, all-grass 104.6, a third of the grass below hue 102;
+ * - shade: vivid dark and middle green (chroma gate 0.18: not the muted jungle, nor the wet band beside the water,
+ *   up to luma 0.72) towards deep green and deeper. Its reach into the middle keeps the lawn's body green; a larger
+ *   shift (10) or a shade-only reach overshot A's sun/shade hue split (11) and outlined the map's tile-variant
+ *   patches; exposure -0.16 drew them as hard camouflage blots;
+ * - teal: the look's blue-green jungle shade back towards the original's olive (Lab hue 128 -> 125; original 122);
  * - muted: low-chroma lit ground (the wet band beside clear water, the jungle's lighter patches) warmer and a little
  *   lighter, so the band beside the water is not muddied and the jungle reads sunlit rather than dusk.
  */
 const temperateShifts: ToneHueShift[] = [
-  { centre: 88, width: 40, minChroma: 0.15, minLuma: 0.45, shift: -3, exposure: -0.06 },
-  { centre: 105, width: 40, minChroma: 0.18, maxLuma: 0.64, shift: 10, exposure: -0.08 },
+  { centre: 88, width: 40, minChroma: 0.15, minLuma: 0.6, shift: -4, exposure: -0.06 },
+  { centre: 105, width: 40, minChroma: 0.18, maxLuma: 0.72, shift: 7, exposure: -0.09 },
   { centre: 135, width: 40, minChroma: 0.06, shift: -8 },
   { centre: 88, width: 44, minChroma: 0.06, maxChroma: 0.22, minLuma: 0.45, maxLuma: 0.75, shift: -5, exposure: 0.1 },
 ];
@@ -63,16 +68,14 @@ const urban: MoistTheatre = {
 };
 export const MOIST_THEATRES: Record<Theater, MoistTheatre> = {
   temperate: {
-    // Deep green shade and warm golden sunlight instead of the look's grey-cool shade and bleached highlights. Part of
-    // the depth comes from the sun/shade exposures (vivid grass only); the global density stays low so dark maps
-    // (jungle) stay sunlit.
-    balance: [0.99, 1, 1],
+    // Deep green shade instead of the look's grey-cool shade; the look's own balance and highlight tint already give
+    // reference A's sunlit hue (a warmer balance and highlight tint yellowed the whole lawn). Part of the depth comes
+    // from the gold/shade exposures (vivid grass only); the global density stays low so dark maps (jungle) stay sunlit.
     shadowTint: [0.85, 1.1, 0.85],
-    highlightTint: [1.25, 1.02, 0.7],
     density: 0.1,
     contrast: 0.2,
     pivot: 0.42,
-    // Golden light needs its chroma: a highlight gain below 1 turned the warmed sunlit grass pale straw.
+    // Richer colour is the moist part (grass C*/L* 0.76 -> 1.0, A 1.15); a highlight gain below 1 read pale straw.
     chroma: [1.35, 1.18, 1.12],
     hueShifts: temperateShifts,
     grain: 0.25,

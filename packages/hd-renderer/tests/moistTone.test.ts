@@ -80,7 +80,10 @@ describe('RA2 moist tone data', () => {
     settings.gradeBalance = [0.9, 1, 1.2];
     applyMoistTone(settings, 'temperate', 'moist1');
     expect(settings.tone!.grade!.gradeContrast).toBe(0.2);
-    expect(settings.tone!.grade!.gradeBalance[0]).toBeCloseTo(0.9 + (0.99 - 0.9) * MOIST_LEVEL_SCALE.moist1, 12);
+    // Temperate keeps the look's (overridden) balance; snow replaces it in proportion to the level.
+    expect(settings.tone!.grade!.gradeBalance).toEqual([0.9, 1, 1.2]);
+    applyMoistTone(settings, 'snow', 'moist1');
+    expect(settings.tone!.grade!.gradeBalance[0]).toBeCloseTo(0.9 + (0.97 - 0.9) * MOIST_LEVEL_SCALE.moist1, 12);
     applyToneOverrides(settings.tone, 'density:0.3,grain:0.6,objectShare:0.7,chroma:1.3/1.2/1');
     expect(settings.tone).toMatchObject({ density: 0.3, grain: 0.6, objectShare: 0.7, chroma: [1.3, 1.2, 1] });
     for (const s of ['grade:1', 'night:1', 'unknown:2', 'grain:NaN', 'density', 'chroma:1/2', 'chroma:1/2/NaN'])
