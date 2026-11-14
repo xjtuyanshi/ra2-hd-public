@@ -1,4 +1,3 @@
-import { ALIVE } from '../livingWorld';
 import {
   abs,
   color,
@@ -464,7 +463,7 @@ export function clearWaterLook(
   );
   // The mirrored scene: at a cliff only the foot of the rock is mirrored (fading within about 0.4 cells) and in the
   // water's own colour, so tall walls do not smear brown far out over the deep water.
-  let mirror: ShaderNode = nodes.alive.shadeWith(sky, ALIVE.waterSkyWeight);
+  let mirror: ShaderNode = nodes.alive.shadeWith(sky, nodes.alive.waterSky);
   let objectMirror: ShaderNode = float(0);
   let objectColour: ShaderNode = vec3(0);
   if (inputs.reflection) {
@@ -477,7 +476,7 @@ export function clearWaterLook(
     const coverage = inputs.reflection.coverage
       .mul(CLEAR_WATER.mirrorKeep)
       .mul(mix(float(1), smoothstep(0.45, 0.05, edge), hard));
-    mirror = mix(nodes.alive.shadeWith(sky, ALIVE.waterSkyWeight), toned, coverage);
+    mirror = mix(nodes.alive.shadeWith(sky, nodes.alive.waterSky), toned, coverage);
     // Bridges, piers and ships: at the clear look's low Fresnel strength their mirror image vanished into the bright
     // water body and the bridge seemed to float. Where the mirror holds an object, it replaces up to objectReflection
     // of the water, as in the enhanced look's OBJECT_REFLECT; cliffs keep their short, water-toned foot image.

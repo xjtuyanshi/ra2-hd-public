@@ -1,4 +1,3 @@
-import { ALIVE } from '../livingWorld';
 import {
   Fn,
   abs,
@@ -334,8 +333,8 @@ function classicWaterLook(inputs: WaterLookInputs, nodes = DEFAULT_ATMOSPHERE_NO
     : null;
   const mirrored =
     reflected && inputs.reflection
-      ? mix(nodes.alive.shadeWith(sky, ALIVE.waterSkyWeight), reflected, inputs.reflection.coverage)
-      : nodes.alive.shadeWith(sky, ALIVE.waterSkyWeight);
+      ? mix(nodes.alive.shadeWith(sky, nodes.alive.waterSky), reflected, inputs.reflection.coverage)
+      : nodes.alive.shadeWith(sky, nodes.alive.waterSky);
   // Tight, sparse sun glints only; a broad sheen is what reads as plastic.
   const sunDot = max(dot(r, uniforms.sunDirection), 0);
   const glint = pow(sunDot, 2400).mul(1.2).mul(uniforms.sunColor).mul(float(1).sub(uniforms.rain));
@@ -916,8 +915,8 @@ function enhancedWaterLook(inputs: WaterLookInputs, nodes = DEFAULT_ATMOSPHERE_N
   body = body.mul(mix(vec3(1), vec3(...E.bodyTint).mul(E.bodyScale), open));
   const mirrored: ShaderNode =
     reflected && inputs.reflection
-      ? mix(nodes.alive.shadeWith(skyMirror, ALIVE.waterSkyWeight), reflected, inputs.reflection.coverage)
-      : nodes.alive.shadeWith(skyMirror, ALIVE.waterSkyWeight);
+      ? mix(nodes.alive.shadeWith(skyMirror, nodes.alive.waterSky), reflected, inputs.reflection.coverage)
+      : nodes.alive.shadeWith(skyMirror, nodes.alive.waterSky);
   // Sun glitter: the sun mirrored in ripple facets, a tight lobe (small bright sparkles, bloomed) over a faint wider one;
   // gathered in gusts, none in rain or right at the bank.
   const sunDot: ShaderNode = max(dot(r, uniforms.sunDirection), 0);
@@ -1700,8 +1699,8 @@ export function bedWaterLook(inputs: BedWaterInputs, nodes = DEFAULT_ATMOSPHERE_
     : null;
   const mirrored: ShaderNode =
     reflected && inputs.reflection
-      ? mix(nodes.alive.shadeWith(waterSky, ALIVE.waterSkyWeight), reflected, inputs.reflection.coverage)
-      : nodes.alive.shadeWith(waterSky, ALIVE.waterSkyWeight);
+      ? mix(nodes.alive.shadeWith(waterSky, nodes.alive.waterSky), reflected, inputs.reflection.coverage)
+      : nodes.alive.shadeWith(waterSky, nodes.alive.waterSky);
   const sunDot: ShaderNode = max(dot(r, uniforms.sunDirection), 0);
   let glitter: ShaderNode = pow(sunDot, 600)
     .mul(tuning.glitterGain)
@@ -1965,12 +1964,12 @@ export function bedWaterLook(inputs: BedWaterInputs, nodes = DEFAULT_ATMOSPHERE_
   const reflectedLight: ShaderNode =
     detail && reflected && inputs.reflection
       ? mix(
-          nodes.alive.shadeWith(sheen ? sheen.sky.mul(sheen.strength) : waterSky.mul(strength), ALIVE.waterSkyWeight),
+          nodes.alive.shadeWith(sheen ? sheen.sky.mul(sheen.strength) : waterSky.mul(strength), nodes.alive.waterSky),
           reflected.mul(max(sheen ? max(strength, sheen.strength) : strength, open.mul(OBJECT_REFLECT))),
           inputs.reflection.coverage.mul(OBJECT_COVERAGE),
         )
       : sheen
-        ? nodes.alive.shadeWith(sheen.sky.mul(sheen.strength), ALIVE.waterSkyWeight)
+        ? nodes.alive.shadeWith(sheen.sky.mul(sheen.strength), nodes.alive.waterSky)
         : mirrored.mul(strength);
   const emission: ShaderNode = reflectedLight
     .add(nodes.alive.shadeWith(uniforms.sunColor.mul(glitter), 1))
@@ -1978,8 +1977,8 @@ export function bedWaterLook(inputs: BedWaterInputs, nodes = DEFAULT_ATMOSPHERE_
     .add(lights)
     .mul(waterness)
     .mul(reflectionLevel)
-    .add(nodes.alive.shadeWith(sandSheen, ALIVE.waterSkyWeight))
-    .add(nodes.alive.shadeWith(sheetSheen, ALIVE.waterSkyWeight))
+    .add(nodes.alive.shadeWith(sandSheen, nodes.alive.waterSky))
+    .add(nodes.alive.shadeWith(sheetSheen, nodes.alive.waterSky))
     .mul(float(1).sub(foam));
   const roughness: ShaderNode = mix(mix(float(BEACH_WET.roughness), float(BED_SWASH.roughness), sheet), float(1), open);
   const gloss: ShaderNode = wetness.mul(float(1).sub(open)).mul(float(1).sub(foam));

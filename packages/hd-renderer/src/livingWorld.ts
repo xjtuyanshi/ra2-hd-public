@@ -52,13 +52,16 @@ export interface CloudShape {
   darkening: number;
   fineWeight: number;
   stretch: number;
+  /** Share of the land shadow (darkening and tint) taken by the water body/seabed and by sky reflection. */
+  waterBodyWeight: number;
+  waterSkyWeight: number;
 }
 
 /**
  * `soft` keeps the reviewed field (13-cell patches, ~2.7-cell edge, 22% core). `deep` is for small/phone views
  * (about ten cells across), where soft patches are larger than the frame and read as overall dimming: 6/14-cell
  * lattices give patches of about seven cells with lit gaps inside one view, a 0.04..0.16 threshold tightens the edge
- * to about one cell, and the core darkens by 33%. Drift, morph, tint and water weights are shared.
+ * to about one cell, and the core darkens by 33%; water takes most of that shadow. Drift, morph and tint are shared.
  */
 export const ALIVE_CLOUD_SHAPES: Readonly<Record<AlivePreset, Readonly<CloudShape>>> = Object.freeze({
   soft: Object.freeze({
@@ -69,6 +72,8 @@ export const ALIVE_CLOUD_SHAPES: Readonly<Record<AlivePreset, Readonly<CloudShap
     darkening: ALIVE.cloudDarkening,
     fineWeight: ALIVE.cloudFineWeight,
     stretch: ALIVE.cloudStretch,
+    waterBodyWeight: ALIVE.waterBodyWeight,
+    waterSkyWeight: ALIVE.waterSkyWeight,
   }),
   deep: Object.freeze({
     scale: 6,
@@ -78,6 +83,11 @@ export const ALIVE_CLOUD_SHAPES: Readonly<Record<AlivePreset, Readonly<CloudShap
     darkening: 0.33,
     fineWeight: 0.75,
     stretch: 1.35,
+    // Owner 2026-11-13: clouds must also show on the water. Body/seabed 0.85 (core 0.72) and sky reflection 0.95
+    // (core 0.69) keep the shadow continuous across the coast with land (0.67); glints stay at 1.0. The attenuation is
+    // a palette-domain multiply with the shared faint cool tint, so the turquoise hue is kept (no murky stain).
+    waterBodyWeight: 0.85,
+    waterSkyWeight: 0.95,
   }),
 });
 
