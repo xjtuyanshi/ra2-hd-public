@@ -4,6 +4,7 @@ import type { FramePostProcess } from '../../../graphics/framePostProcess';
 import type { VmFrame } from '../../../vm86/win32';
 import { validFrameOverlay } from '../../../graphics/frameOverlayData';
 import { FrameOverlayPass } from '../../../graphics/frameOverlay';
+import { FrameMarkPass, FrameMarkReplacer, frameMarkVertices, type FrameMarkSet } from '../../../graphics/frameMarks';
 import { spatialUpscaleShader } from './spatialUpscale';
 import { fsrRcasShader, fsrUpscaleShader } from './fsrUpscale';
 import { ScalefxUpscale } from './scalefxUpscale';
@@ -115,6 +116,11 @@ interface FrameBackend {
    * inside its draw (8 to 125 ms measured), which is the frame the HD view replaces the original picture in.
    */
   prepareTransparentKey(): void;
+  /**
+   * Sharp art for fixed native marks in the keyed picture (src/graphics/frameMarks.ts); null keeps every native mark.
+   * Applies only on the keyed path; failures restore the native marks of that picture and disable the art.
+   */
+  setMarkArt(art: FrameMarkArt | null): void;
   draw(
     frame: VmFrame,
     targetWidth: number,
@@ -122,6 +128,12 @@ interface FrameBackend {
     cursorPresentation?: VmCursorPresentation,
     cursorFrame?: VmFrame,
   ): void;
+}
+
+/** Validated mark templates and their decoded atlas; the caller keeps the bitmap alive while it is set. */
+export interface FrameMarkArt {
+  set: FrameMarkSet;
+  atlas: TexImageSource;
 }
 
 /**
@@ -172,6 +184,7 @@ export function createVmFrameRenderer(
   let transparentKey: FrameKey | null = null;
   let transparentRects: readonly FrameRect[] = [];
   let smoothRect: FrameRect | null = null;
+  let markArt: FrameMarkArt | null = null;
   return {
     get backend() {
       return backend.backend;
@@ -202,6 +215,7 @@ export function createVmFrameRenderer(
       replacement.setTransparentKey(transparentKey);
       replacement.setTransparentRects(transparentRects);
       replacement.setSmoothRect(smoothRect);
+      replacement.setMarkArt(markArt);
       backend.destroy();
       backend = replacement;
       mode = next;
@@ -232,6 +246,10 @@ export function createVmFrameRenderer(
     },
     prepareTransparentKey() {
       if (!destroyed) backend.prepareTransparentKey();
+    },
+    setMarkArt(art) {
+      markArt = art;
+      if (!destroyed) backend.setMarkArt(art);
     },
     draw(...args) {
       if (!destroyed) backend.draw(...args);
@@ -297,6 +315,11 @@ class WebGlIndexedFrameRenderer implements FrameBackend {
   private overlayPass: FrameOverlayPass | null = null;
   private overlaySource: VmFrame | null = null;
   private overlayPicture: VmFrame | null = null;
+  private markPass: FrameMarkPass | null = null;
+  private markReplacer: FrameMarkReplacer | null = null;
+  private markSource: VmFrame | null = null;
+  private markPicture: { frame: VmFrame; vertices: Float32Array } | null = null;
+  private markCount = -1;
 
   get upscaleStatus(): string | null {
     return this.ai?.status ?? (this.spatialUpscale || this.fsr || this.scalefx ? this.spatialStatus : null);
@@ -537,7 +560,9 @@ class WebGlIndexedFrameRenderer implements FrameBackend {
     const { gl } = this;
     if (this.transparentKey) {
       const replacement = this.prepareOverlay(frame);
-      this.drawKeyed(replacement ?? frame, this.transparentKey, targetWidth, targetHeight);
+      const marked = this.prepareMarks(replacement ?? frame, this.transparentKey);
+      this.drawKeyed(marked?.frame ?? replacement ?? frame, this.transparentKey, targetWidth, targetHeight);
+      let native = false;
       if (replacement) {
         try {
           this.overlayPass!.draw();
@@ -545,6 +570,24 @@ class WebGlIndexedFrameRenderer implements FrameBackend {
           // The original plane is complete even when device rendering fails after preparation.
           this.drawKeyed(frame, this.transparentKey, targetWidth, targetHeight);
           this.overlayPicture = null;
+          native = true;
+        }
+      }
+      if (marked && !native) {
+        try {
+          this.markPass!.draw(marked.vertices);
+        } catch {
+          // Restore this picture's native marks (and any validated journal replacement) and stop using the art.
+          this.drawKeyed(replacement ?? frame, this.transparentKey, targetWidth, targetHeight);
+          if (replacement) {
+            try {
+              this.overlayPass!.draw();
+            } catch {
+              this.drawKeyed(frame, this.transparentKey, targetWidth, targetHeight);
+              this.overlayPicture = null;
+            }
+          }
+          this.setMarkArt(null);
         }
       }
       this.drawSmoothRegion(frame, targetWidth, targetHeight);
@@ -627,6 +670,47 @@ class WebGlIndexedFrameRenderer implements FrameBackend {
     this.postProcess(targetWidth, targetHeight);
     this.punchTransparentRect(frame, targetWidth, targetHeight);
     this.drawCursor(frameCursor(cursorFrame), cursorFrame, cursorPresentation);
+  }
+
+  setMarkArt(art: FrameMarkArt | null): void {
+    this.markPass?.destroy();
+    this.markPass = null;
+    this.markReplacer = null;
+    this.markSource = null;
+    this.markPicture = null;
+    if (!art || this.destroyed) return this.reportMarks(-1);
+    try {
+      this.markPass = new FrameMarkPass(this.gl, art.atlas);
+      this.markReplacer = new FrameMarkReplacer(art.set);
+    } catch {
+      this.markPass = null;
+    }
+    this.reportMarks(this.markPass ? 0 : -1);
+  }
+
+  /** The key's picture with matched marks cleared, plus their art quads; null when nothing matched. */
+  private prepareMarks(frame: VmFrame, key: FrameKey): { frame: VmFrame; vertices: Float32Array } | null {
+    if (!this.markPass || !this.markReplacer || !frame.rgb565 || frame.rgba) return null;
+    if (this.markSource === frame) return this.markPicture;
+    this.markSource = frame;
+    this.markPicture = null;
+    const clean = this.markReplacer.prepare(frame.rgb565, frame.width, frame.height, key.rect, key.rgb565 & 0xffff);
+    const matches = clean ? this.markReplacer.matches : [];
+    this.reportMarks(matches.length);
+    if (!clean) return null;
+    this.markPicture = {
+      frame: { ...frame, rgb565: clean, overlayJournal: undefined },
+      vertices: frameMarkVertices(matches, this.markReplacer.set, frame.width, frame.height),
+    };
+    return this.markPicture;
+  }
+
+  /** Development evidence: number of marks replaced in the last keyed picture (-1 off), only written on change. */
+  private reportMarks(count: number): void {
+    if (count === this.markCount || !this.canvas.dataset) return;
+    this.markCount = count;
+    if (count < 0) delete this.canvas.dataset.markArt;
+    else this.canvas.dataset.markArt = String(count);
   }
 
   private prepareOverlay(frame: VmFrame): VmFrame | null {
@@ -880,6 +964,11 @@ class WebGlIndexedFrameRenderer implements FrameBackend {
     this.overlayPass = null;
     this.overlaySource = null;
     this.overlayPicture = null;
+    this.markPass?.destroy();
+    this.markPass = null;
+    this.markReplacer = null;
+    this.markSource = null;
+    this.markPicture = null;
     this.uploadedFrame = null;
     this.uploadedCursor = null;
   }
@@ -959,6 +1048,7 @@ class CanvasFrameRenderer implements FrameBackend {
   setSmoothRect(): void {}
   setTransparentKey(): void {}
   prepareTransparentKey(): void {}
+  setMarkArt(): void {}
 
   clear(): void {
     if (this.destroyed) return;

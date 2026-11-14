@@ -30,7 +30,7 @@ For unresolved state, capture the actual leaf draw arguments on each route befor
 | Selection brackets                  | `DrawExtras 0x6F5190`; building front branch `0x6F53A8..0x6F5E10`; rear `DrawBehind 0x6F60D0`, helpers `0x6F5EF0/0x6F6030`                     | Selected `+0x83`, type/building bounds and the engine's projected corners; capture computed endpoints and native color/clip, not sprite extents                                                                       | Gate bracket helper calls only for an accepted object/publication; front and rear are one complete replacement. Mobile borders are owned by the health-bar row. Unresolved geometry leaves both native halves. |
 | Control-group numbers               | `DrawPips 0x709A90`; group branch `0x70A6FD..0x70A980`; fill `0x70A940`, outline `0x70A951`, text `0x70A97B`                                   | Group `+0x214` maps 0..9 to printed 1..9,0; owner RGB `+0x56F9`; actual text bounds, clip and font flags `0x49`; shared field reader and draw capture                                                                 | Replace the number's background, outline and text together, never all `DrawPips`. Failure retains all three native components.                                                                                 |
 | Passenger/ammo/cargo/occupancy pips | `DrawPips 0x709A90` / vt `+0x450`; additional draw virtual `+0x458 = 0x70AA60`                                                                 | Actual pip kind/count/max/frame/spacing/remap and conditional visibility; passengers `+0x114` alone is insufficient. Capture emitted `PIPS/PIPS2/PIPBRD` commands and validate type-specific reads                    | Leaf SHP calls need classification before gating; no whole-method suppression. Keep all native pips until complete per-object support.                                                                         |
-| Veterancy                           | `0x70A990` / vt `+0x454`; SHP leaf `0x70AA4F`                                                                                                  | Rank state `+0x150`, selected frame, anchor and native visibility; read verified rank predicates or capture the emitted frame                                                                                         | Gate only this SHP call after source-frame binding is verified; unknown rank/frame stays native.                                                                                                               |
+| Veterancy                           | `0x70A990` / vt `+0x454`; SHP leaf `0x70AA4F`                                                                                                  | `PIPS.SHP` frame 14 veteran, 15 elite (19 for a third predicate) at the bracket anchor; sharp art by exact pixel match (below), no game patch                                                                         | Gate only this SHP call after source-frame binding is verified; unknown rank/frame stays native.                                                                                                               |
 | Drag band                           | `TacticalClass 0x6DA180`; `DrawRectEx` call `0x6DA21E`                                                                                         | Tactical `+0xD90/+0xD94` start, `+0xD98/+0xD9C` end, native active test, inclusive bounds, palette-derived color and ViewBounds                                                                                       | Gate the one rectangle leaf, retaining native drag processing. Missing/torn state keeps the full native rectangle.                                                                                             |
 | Placement grid                      | Tactical `0x6D5030`, before/after object passes                                                                                                | Pending type, native cell-validity results, foundation, elevation, exact `PLACE.SHP` frames and clip; draw capture on both routes, not host feasibility recomputation                                                 | Exact leaf sites and their side effects remain unresolved; gate neither pass until both emitted cell sets are complete. Native grid remains whole.                                                             |
 | Target/action lines                 | Mobile vt `+0x438 = 0x4DC060`; building `0x459E60`; action timer `0x70D150`, flag `0x843108`                                                   | Native target/destination/focus, displayed endpoints/color/style, visibility timer and planning state; command reader supplies references, draw capture supplies display decisions                                    | Leaf line gates remain unresolved; never suppress order processing or advance the timer from host time. Failed publication retains native lines.                                                               |
@@ -138,6 +138,28 @@ building bodies; this does not establish whole-building native fallback or corre
 paired pictures and source/present mismatches. Conservative invalidation can leave only a subset of otherwise
 supported bars eligible in a given draw. Disconnect closes capture, leaving inert observers and their executable
 storage owned until process exit. Live screenshots and measurements must establish actual coverage and fidelity.
+
+## Sharp art for fixed native marks
+
+In the keyed HD view the page draws the native overlay picture with nearest sampling at the display scale (2.5 device
+pixels per game pixel on the owner's screen), so small diagonal marks keep their game-pixel stair steps. Fixed
+single-frame marks are replaced without any game patch. `src/graphics/frameMarks.ts` (generic) takes templates: the
+exact RGB565 pattern one source frame writes plus art. Inside the key rectangle a match needs every opaque template
+pixel unchanged. Matched pixels become the key colour in a copy of that picture and the art is drawn over the same
+native box with premultiplied alpha, after any validated draw-journal replacement and before the cursor.
+Anything drawn over a mark later breaks the exact match, so that mark keeps its native pixels. Candidates sharing
+opaque pixels resolve to the template with more opaque pixels (an elite stack contains the veteran chevron).
+Nothing is erased by guessed rectangle or colour. Mark art failure redraws that picture natively and disables the art;
+the original view, Canvas 2D and unkeyed frames never use it.
+
+Game policy is data in `packages/ra2-assets/src/games/yrUi.ts`: YR rank marks are `PIPS.SHP` frames 14 (veteran) and
+15 (elite) drawn by `0x70A990` through the shape leaf `0x70AA4F` with `PALETTE.PAL` colours. `pnpm hd:ui -- marks`
+writes `_ui/marks/marks.json` (native patterns) and `marks.png` (each frame's crop enlarged 4x by repeated Scale2x:
+same colours, outline and size, only finer diagonal steps) into a farm; both are derived game data outside Git.
+The page loads them in development HD sessions unless `native-mark-art=0`; the console handle
+`__nativeMarkArt.enable(false)` restores native marks for A/B checks. The canvas `data-mark-art` attribute reports
+the number of marks replaced in the last keyed picture. Mark templates must stay distinctive: small or repeated
+pieces such as health ticks, pips that overlap each other, lines and text are not suitable for exact matching.
 
 ## Building occlusion and fidelity
 

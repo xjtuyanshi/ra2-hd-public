@@ -7,6 +7,7 @@ import { fsrUpscaleMode, spatialUpscaleEnabled } from '../../src/ui/pages/game/s
 import type { VmFrame } from '../../src/vm86/win32';
 import { validFrameOverlay, type FrameOverlayJournal } from '../../src/graphics/frameOverlayData';
 import { frameOverlayVertices } from '../../src/graphics/frameOverlay';
+import { parseFrameMarkManifest } from '../../src/graphics/frameMarks';
 
 class FakeCanvas {
   width = 0;
@@ -181,6 +182,9 @@ class FakeWebGl {
     return { name };
   }
   pixelStorei(): void {}
+  generateMipmap(): void {
+    this.calls.push('generateMipmap');
+  }
   viewport(): void {
     this.calls.push('viewport');
   }
@@ -352,6 +356,68 @@ describe('atomic native overlay presentation', () => {
       },
     ];
     expect(validFrameOverlay(frame, journal)).toBe(false);
+  });
+});
+
+describe('sharp native mark art', () => {
+  const KEY = 0xf81f;
+  const set = parseFrameMarkManifest(
+    {
+      version: 1,
+      scale: 4,
+      file: 'marks.png',
+      marks: [
+        { id: 'mark', width: 2, height: 1, pixels: [0xffe0, 0xfc00], atlas: { x: 0, y: 0, width: 8, height: 4 } },
+      ],
+    },
+    8,
+    4,
+  )!;
+  function picture(): VmFrame {
+    const rgb565 = new Uint16Array(16).fill(KEY);
+    rgb565[5] = 0xffe0;
+    rgb565[6] = 0xfc00;
+    return { ...indexedFrame(4, 4), rgb565 };
+  }
+
+  it('uploads the cleared plane and draws the art only on the keyed path', () => {
+    const gl = new FakeWebGl();
+    const canvas = { getContext: () => gl, dataset: {} as Record<string, string> };
+    const renderer = createVmFrameRenderer(canvas as unknown as HTMLCanvasElement);
+    renderer.setMarkArt({ set, atlas: {} as TexImageSource });
+    const frame = picture();
+    renderer.draw(frame, 10, 10);
+    expect(gl.uploads.at(-1)?.at(-1)).toBe(frame.rgb565);
+    renderer.setTransparentKey({ rect: { x: 0, y: 0, width: 4, height: 4 }, rgb565: KEY });
+    const draws = () => gl.calls.filter((call) => call === 'drawArrays').length;
+    const before = draws();
+    renderer.draw(frame, 10, 10);
+    const clean = gl.uploads.at(-1)?.at(-1) as Uint16Array;
+    expect(clean).not.toBe(frame.rgb565);
+    expect([clean[5], clean[6]]).toEqual([KEY, KEY]);
+    expect(frame.rgb565![5]).toBe(0xffe0);
+    expect(draws() - before).toBe(2);
+    expect(canvas.dataset.markArt).toBe('1');
+    renderer.setMarkArt(null);
+    renderer.draw(picture(), 10, 10);
+    expect(canvas.dataset.markArt).toBeUndefined();
+    renderer.destroy();
+  });
+
+  it('restores the native marks when the art cannot be drawn', () => {
+    const gl = new FakeWebGl();
+    const renderer = createVmFrameRenderer({ getContext: () => gl } as unknown as HTMLCanvasElement);
+    renderer.setMarkArt({ set, atlas: {} as TexImageSource });
+    renderer.setTransparentKey({ rect: { x: 0, y: 0, width: 4, height: 4 }, rgb565: KEY });
+    vi.spyOn(gl, 'isContextLost').mockReturnValue(true);
+    const frame = picture();
+    renderer.draw(frame, 10, 10);
+    expect(gl.uploads.at(-1)?.at(-1)).toBe(frame.rgb565);
+    const next = picture();
+    vi.spyOn(gl, 'isContextLost').mockReturnValue(false);
+    renderer.draw(next, 10, 10);
+    expect(gl.uploads.at(-1)?.at(-1)).toBe(next.rgb565);
+    renderer.destroy();
   });
 });
 

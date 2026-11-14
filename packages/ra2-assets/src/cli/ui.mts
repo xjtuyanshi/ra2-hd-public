@@ -5,9 +5,9 @@ import { parseArgs } from 'node:util';
 import { ShpFile } from 'ra2-formats';
 import { YR_UI, yrCameos, yrTabStrips } from '../games/yrUi.ts';
 import { GameInstall } from '../node/install.ts';
-import { writeCameos, writeCursor, writeUiStrip } from '../node/ui.ts';
+import { writeCameos, writeCursor, writeMarks, writeUiStrip } from '../node/ui.ts';
 
-const usage = 'usage: ui <cameos|cursor|tabs> --game <install> --out <dir> [--shape <file>] [--palette <file>]';
+const usage = 'usage: ui <cameos|cursor|tabs|marks> --game <install> --out <dir> [--shape <file>] [--palette <file>]';
 try {
   const { values, positionals } = parseArgs({
     args: process.argv.slice(2).filter((a) => a !== '--'),
@@ -26,7 +26,7 @@ try {
     !values.game ||
     !values.out ||
     positionals.length !== 1 ||
-    !['cameos', 'cursor', 'tabs'].includes(command ?? '')
+    !['cameos', 'cursor', 'tabs', 'marks'].includes(command ?? '')
   ) {
     console.log(usage);
     if (!values.help) process.exitCode = 2;
@@ -66,6 +66,19 @@ try {
       }
       writeFileSync(join(out, 'tabs.json'), JSON.stringify(index, null, 2));
       console.log(JSON.stringify({ strips: strips.length, sides: index, out }));
+    } else if (command === 'marks') {
+      const file = values.shape ?? YR_UI.markShape,
+        palette = values.palette ?? YR_UI.markPalette;
+      const bytes = install.read(file);
+      if (!bytes) throw new Error(`Missing mark shape ${file}`);
+      console.log(
+        JSON.stringify({
+          ...writeMarks({ out, shape: ShpFile.parse(bytes), palette: install.palette(palette), marks: YR_UI.marks }),
+          file,
+          palette,
+          out,
+        }),
+      );
     } else {
       const file = values.shape ?? YR_UI.cursorShape,
         palette = values.palette ?? YR_UI.cursorPalette;
