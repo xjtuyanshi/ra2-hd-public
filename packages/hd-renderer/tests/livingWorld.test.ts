@@ -249,6 +249,11 @@ describe('deterministic cloud field', () => {
     const luminance = (c: readonly number[]) => c[0]! * 0.2126 + c[1]! * 0.7152 + c[2]! * 0.0722;
     expect(luminance(cloudShadowColour(1, 1, 1, 1, deep))).toBeCloseTo(0.67, 12);
     expect(cloudShadowColour(0, 1, 1, 1, deep)).toEqual([1, 1, 1]);
+    // Water keeps most of the deep shadow so it stays continuous across the coast; hue is a near-neutral multiply.
+    const body = cloudShadowColour(1, 1, 1, deep.waterBodyWeight, deep);
+    expect(luminance(body)).toBeCloseTo(1 - 0.85 * 0.33, 12);
+    expect(luminance(cloudShadowColour(1, 1, 1, deep.waterSkyWeight, deep))).toBeCloseTo(1 - 0.95 * 0.33, 12);
+    expect(Math.max(...body) / Math.min(...body)).toBeLessThan(1.04);
     const edges: number[] = [],
       chords: number[] = [];
     for (const axis of [0, 1])
@@ -427,12 +432,15 @@ describe('renderer-local living-world uniforms', () => {
       expect(alive.cloudDarkening.value).toBe(0.33);
       expect(alive.cloudLattice.value.toArray()).toEqual([1 / 6, 1 / 14, 0.04, 0.16]);
       expect(alive.cloudForm.value.toArray()).toEqual([0.75, 1 / 1.35]);
+      expect([alive.waterBody.value, alive.waterSky.value]).toEqual([0.85, 0.95]);
       mirror.alive.copyValuesFrom(alive);
+      expect(mirror.alive.waterBody.value).toBe(0.85);
       expect(mirror.alive.cloudLattice.value.toArray()).toEqual(alive.cloudLattice.value.toArray());
       expect(mirror.alive.cloudDarkening.value).toBe(0.33);
       alive.set({ preset: 'soft' });
       alive.update(4, 0.6, 0, 0, false);
       expect(alive.cloudStrength.value).toBeCloseTo(ALIVE.cloudDarkening, 12);
+      expect([alive.waterBody.value, alive.waterSky.value]).toEqual([ALIVE.waterBodyWeight, ALIVE.waterSkyWeight]);
       expect(alive.cloudLattice.value.toArray()).toEqual([
         1 / ALIVE.cloudScale,
         1 / ALIVE.cloudLargeScale,

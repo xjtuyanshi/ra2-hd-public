@@ -140,6 +140,9 @@ export class LivingWorldNodes {
   readonly cloudLattice = uniform(latticeOf(ALIVE_CLOUD_SHAPES.soft)).setName('aliveCloudLattice');
   readonly cloudForm = uniform(formOf(ALIVE_CLOUD_SHAPES.soft)).setName('aliveCloudForm');
   readonly cloudDarkening = uniform(ALIVE_CLOUD_SHAPES.soft.darkening).setName('aliveCloudDarkening');
+  /** Preset water shares of the land shadow: body/seabed and sky reflection (glints always take all of it). */
+  readonly waterBody = uniform(ALIVE_CLOUD_SHAPES.soft.waterBodyWeight).setName('aliveWaterBody');
+  readonly waterSky = uniform(ALIVE_CLOUD_SHAPES.soft.waterSkyWeight).setName('aliveWaterSky');
   readonly shadowAt = (xz: ShaderNode): ShaderNode =>
     cloudShadow(xz, this.clock, this.windDirection, this.cloudStrength, this.cloudLattice, this.cloudForm);
   // One VarNode per material builder shares all optical terms. Branching consumers (sprites) append it at
@@ -160,6 +163,8 @@ export class LivingWorldNodes {
     latticeOf(shape, this.cloudLattice.value);
     formOf(shape, this.cloudForm.value);
     this.cloudDarkening.value = shape.darkening;
+    this.waterBody.value = shape.waterBodyWeight;
+    this.waterSky.value = shape.waterSkyWeight;
     this.cloudStrength.value = this.options.clouds
       ? this.options.cloud * shape.darkening * aliveDayWeight(night, overcast, airless)
       : 0;
@@ -174,6 +179,8 @@ export class LivingWorldNodes {
     this.cloudLattice.value.copy(source.cloudLattice.value);
     this.cloudForm.value.copy(source.cloudForm.value);
     this.cloudDarkening.value = source.cloudDarkening.value;
+    this.waterBody.value = source.waterBody.value;
+    this.waterSky.value = source.waterSky.value;
     this.windAmplitude.value = source.windAmplitude.value;
     this.debugCloud.value = source.debugCloud.value;
   }

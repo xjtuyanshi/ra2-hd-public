@@ -339,7 +339,10 @@ ten cells and soft patches (8-cell chord, 2.7-cell edge) cover most of the frame
 Deep uses 6/14-cell lattices, weights 0.75/0.25, stretch 1.35 and a 0.04..0.16 threshold: on the same CPU sample,
 about **35%** of samples have factor < 0.97, mean darkening is about **9.2%**, the core is **0.67** (33%), the
 median 5..95% edge is **1.0** cell and the half-coverage chord **4.4** cells, so whole patches with lit gaps fit
-one view. Drift, morph, tint and the water weights are shared (water body core 0.934, sky 0.85 under deep).
+one view. Drift, morph and tint are shared. Deep also gives water most of the land shadow, so a cloud stays
+continuous across the coast (owner request): body/seabed weight **0.85** (core 0.72), sky reflection and wet sheen
+**0.95** (core 0.69), glints 1.0. It is the same palette-domain multiply with the faint cool tint, so the clear water
+keeps its turquoise hue. The water weights are uniforms (`aliveWaterBody`, `aliveWaterSky`) set by the preset.
 The shape is a set of renderer-local uniforms (`aliveCloudLattice`, `aliveCloudForm`, `aliveCloudDarkening`), so
 switching presets does not rebuild a material; the soft values reproduce the former constant expression.
 Drift is **1.5 cells/second** along `environment.windDirection`; the slow coordinate morph is only **0.35 cells**
@@ -356,7 +359,8 @@ map/night grading; separate engine ore glints retain their emission. Units, infa
 land factor, with no additional cloud darkening. Already-lit mirror captures are not cloud-shaded again.
 No painter key, analytic depth or silhouette code changes.
 
-Water uses `shadowWith` / `shadeWith(colour, weight)` to interpolate **both** darkening and tint toward identity:
+Water uses `shadowWith` / `shadeWith(colour, weight)` to interpolate **both** darkening and tint toward identity
+(soft preset values below; deep values above):
 body/seabed **0.20** (core luminance multiplier 0.956), analytic sky reflection and wet sky sheen **0.45**
 (core 0.901), sun glints/sparkle/glitter **1.0**. Whole-map ground and per-tile fallback mix the body weight by
 existing waterness; the procedural sandbox seabed uses submergence. Classic, enhanced, bed and clear paths keep
