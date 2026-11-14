@@ -320,7 +320,9 @@ describe('r186 vertex and uniform binding budget', () => {
           );
           expect(enhanced, mesh.name).toBeGreaterThan(alpha);
           if (mesh === layer.groundPasses[1]) {
-            expect(fragmentShader).toMatch(/spriteInfantryShadowPull = mix\([^\n]+0\.028,[^\n]+step\( 0\.22,/);
+            // Infantry keeps its five ranks and solid-core pull; ordinary shadows take the exclusive margin.
+            expect(fragmentShader).toMatch(/= mix\( \( 0\.019 \+ \( floor\([^\n]+\* 0\.002 \) \), 0\.028, step\( 0\.22,/);
+            expect(fragmentShader).toMatch(/clamp\( spriteShadowRankCoverage, 0\.0, 1\.0 \) \* 32\.0 \) \+ 0\.5 \) \) \* 0\.00025 \) \) \+ 0\.000125 \)/);
           }
         }
       } finally {
@@ -341,12 +343,41 @@ describe('r186 vertex and uniform binding budget', () => {
         // The depth rank must consume the blended penumbra, with its taps inside the softness/water branch.
         const blend = fragmentShader.indexOf('spriteShadowRankCoverage = mix(');
         const guard = fragmentShader.lastIndexOf('object.testShadowSoftness > 0.0001', blend);
-        const rank = fragmentShader.indexOf('clamp( spriteShadowRankCoverage, 0.0, 1.0 ) * 16.0');
+        const rank = fragmentShader.indexOf('clamp( spriteShadowRankCoverage, 0.0, 1.0 ) * 32.0');
         expect(guard).toBeGreaterThan(-1);
         expect(blend).toBeGreaterThan(guard);
         expect(rank).toBeGreaterThan(blend);
         expect(/texture(?:Load|Sample\w*)\(/.test(fragmentShader.slice(guard, blend))).toBe(true);
         expect(fragmentShader.slice(blend, rank)).toContain('smoothstep( 0.3, 1.5,');
+      } finally {
+        dispose(layer.mesh);
+        hd?.color.dispose();
+        hd?.remap.dispose();
+      }
+    }
+  });
+
+  it('builds a depth-only shadow pre-pass with the same pull, the alpha-test cut and no colour graph', () => {
+    const source = cache();
+    for (const hd of [null, { color: texture(), remap: texture() }]) {
+      const layer = new SpriteLayer(source, [], 1, undefined, hd);
+      try {
+        const pre = layer.shadowDepthPass;
+        const [under, over] = layer.groundPasses;
+        expect(pre.material.colorWrite).toBe(false);
+        expect(pre.material.depthWrite).toBe(true);
+        expect(pre.material.alphaTest).toBe(0);
+        expect(pre.parent).toBe(layer.mesh);
+        expect(pre.renderOrder).toBeGreaterThan(under!.renderOrder);
+        expect(pre.renderOrder).toBeLessThan(over!.renderOrder);
+        const { fragmentShader } = assertLimits(pre);
+        // The pre-pass ranks by the same softened coverage, without the colour pass's exclusive margin...
+        expect(fragmentShader).toContain('spriteShadowRankCoverage = mix(');
+        expect(fragmentShader).toMatch(/clamp\( spriteShadowRankCoverage, 0\.0, 1\.0 \) \* 32\.0 \) \+ 0\.5 \) \) \* 0\.00025 \) \) \+ 0\.0 \)/);
+        // ...writes only where the colour pass's alpha test keeps the shadow, and skips the colour graph.
+        expect(fragmentShader).toMatch(/clamp\( spriteShadowRankCoverage, 0\.0, 1\.0 \) \* min\([^\n]+\) >= 0\.04/);
+        expect(fragmentShader).toContain('+ ( 0.05 / ( render.cameraFar - render.cameraNear ) )');
+        expect(fragmentShader).not.toContain('spriteInfantryShadowAlpha');
       } finally {
         dispose(layer.mesh);
         hd?.color.dispose();

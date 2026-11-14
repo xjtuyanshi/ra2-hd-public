@@ -16,6 +16,7 @@ import {
   shadowStretch,
   shadowTransform,
   spriteLookFor,
+  TERRAIN_SHADOW_MAX_STRETCH,
 } from '../src/ra2/spriteLook';
 import type { ShaderNode } from '../src/tsl';
 import { InstancedQuad } from '../src/instancedQuad';
@@ -88,6 +89,19 @@ describe('enhanced look: terrain-object shadows', () => {
     expect(length(m.shadowMatrix.value)).toBeCloseTo(stretch, 9);
     expect(m.terrainShadowMatrix.value.toArray()).toEqual([1, 0, 0, 1]);
     expect(Math.abs(turn(m.shadowMatrix.value))).toBeGreaterThan(0.1);
+  });
+
+  it('turns terrain shadows again, capped at TERRAIN_SHADOW_MAX_STRETCH, only when terrainFollow asks for it', () => {
+    const stretch = shadowStretch(34, 1.4);
+    const sun = new Vector3(Math.cos(0.6), 0.55, Math.sin(0.6)).normalize();
+    const m = look();
+    setShadowTransforms(m, sun, stretch, 1, 1);
+    expect(length(m.terrainShadowMatrix.value)).toBeCloseTo(TERRAIN_SHADOW_MAX_STRETCH, 9);
+    expect(turn(m.terrainShadowMatrix.value)).toBeCloseTo(turn(m.shadowMatrix.value), 9);
+    setShadowTransforms(m, sun, stretch, 1, 0);
+    expect(m.terrainShadowMatrix.value.toArray()).toEqual([1, 0, 0, 1]);
+    setShadowTransforms(m, sun, stretch, 0, 1);
+    expect(m.terrainShadowMatrix.value.toArray()).toEqual([1, 0, 0, 1]);
   });
 
   it('keeps the art shape at shorter stretches and resets both matrices at follow zero', () => {

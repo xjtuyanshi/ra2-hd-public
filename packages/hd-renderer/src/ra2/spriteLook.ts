@@ -76,6 +76,13 @@ export function relightFactorUpper(sunGain: number): number {
 /** Maximum sun-following stretch at neutral shadowLength, relative to the art's own shadow (readability). */
 export const MAX_SHADOW_STRETCH = 2;
 
+/**
+ * Longest sun-following stretch of a terrain object's (tree's) or map overlay's SHP shadow when the look turns them
+ * at all (HdSettings.terrainShadowFollow > 0; Build 12 behaviour). At the cinematic look's 1.6x the stippled tree
+ * shadows read as smears beside the original's compact ones (Seattle ALL03UMD, stage8 v2s1 A/B).
+ */
+export const TERRAIN_SHADOW_MAX_STRETCH = 1.3;
+
 /** Wet paving reflects a faint image; even stacked look gains must not turn it into a second building. */
 export const WET_REFLECTION_MAX_OPACITY = 0.25;
 
@@ -578,17 +585,27 @@ export function followedShadowNode(p: ShaderNode, m: ShaderNode): ShaderNode {
 }
 
 /**
- * Uploads the sun transform and the identity for terrain objects/map overlays (except high decks): their shadows
- * keep the art's own shape like buildings, while still taking the look's darkness and penumbra softness.
+ * Uploads the sun transform, and the one for terrain objects/map overlays (except high decks). By default
+ * (`terrainFollow` 0, owner rule 2026-11-13: no shape changes) theirs is the identity: their shadows keep the art's
+ * own shape, length and direction like buildings, while still taking the look's darkness and penumbra softness.
+ * `terrainFollow` > 0 turns them with the sun again, stretched at most TERRAIN_SHADOW_MAX_STRETCH (Build 12).
  */
 export function setShadowTransforms(
   look: Pick<SpriteLookState, 'shadowMatrix' | 'terrainShadowMatrix'>,
   current: Vector3,
   stretch: number,
   follow: number,
+  terrainFollow = 0,
 ): void {
   shadowTransform(current, stretch, follow, look.shadowMatrix.value);
-  look.terrainShadowMatrix.value.set(1, 0, 0, 1);
+  if (terrainFollow > 0 && follow > 0)
+    shadowTransform(
+      current,
+      Math.min(stretch, TERRAIN_SHADOW_MAX_STRETCH),
+      follow * Math.min(1, terrainFollow),
+      look.terrainShadowMatrix.value,
+    );
+  else look.terrainShadowMatrix.value.set(1, 0, 0, 1);
 }
 
 /** Degrees -> unit ground vector helper for CPU-side updates (see HdRenderer). */

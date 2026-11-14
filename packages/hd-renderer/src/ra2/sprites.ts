@@ -10,6 +10,7 @@ import {
   InterleavedBufferAttribute,
   LessDepth,
   MeshBasicNodeMaterial,
+  NoBlending,
   NormalBlending,
   type OrthographicCamera,
   type Texture,
@@ -205,7 +206,7 @@ function instanceRank(s: SpriteInstance): number {
 }
 
 /** Draw passes of a sprite layer: the main one, and the enhanced look's ground passes (SpriteLayer.groundPasses). */
-type GroundPass = 'main' | 'under' | 'over' | 'readOnly' | 'unit' | 'translucent';
+type GroundPass = 'main' | 'under' | 'overDepth' | 'over' | 'readOnly' | 'unit' | 'translucent';
 
 /**
  * Largest penumbra radius (1x texels) of the enhanced look's shadow softness. Six texels laid the shadows of thin parts
@@ -293,21 +294,57 @@ export function shadowPenumbraCoverage(
  * How far (world units along the view) the enhanced look's 'over' pass pulls SHP shadows and wet reflections in front
  * of their ground plane. Everything stays behind an upright card's base (CARD_CLEARANCE) and ahead of the ground
  * at every sample of 4x MSAA down to 1 engine px per pixel (the farthest sample, 0.375 px from the pixel centre, sees
- * ground 0.0153 nearer); zoomed further out, the nearest samples of a pixel can miss its shadow. Shadows step up with
- * their drawn (softened) coverage in sixteen steps: a later, denser shadow still darkens an earlier fringe.
+ * ground 0.0153 nearer); zoomed further out, the nearest samples of a pixel can miss its shadow. Ordinary SHP
+ * shadows are pulled by their drawn (softened) coverage in SHADOW_PULL_LEVELS steps (shadowGroundPull); infantry
+ * footprints keep five coverage levels and their solid-core pull.
  */
 export const GROUND_PULL = { shadow: [0.019, 0.027], infantryCore: 0.028, reflection: 0.0285 } as const;
-/** Coverage intervals of ordinary SHP shadows; 0..16 pulls share the same per-pixel ground plane. */
-export const SHADOW_PULL_LEVELS = 16;
+/**
+ * Coverage steps of an ordinary shadow's pull. Shadows in the same step tie exactly, so the first one to draw blocks
+ * the others (see SHADOW_EXCLUSIVE_PULL); a continuous pull let two nearly equal dense shadows both pass along the
+ * line where their coverages cross (near-black specks in the willow overlap, XMP27T8 sandbox). With 32 steps the
+ * drawn shadow is within 1/32 coverage of the densest (about 2% of the ground's brightness at most).
+ */
+export const SHADOW_PULL_LEVELS = 32;
+/**
+ * Extra pull of an ordinary shadow's colour fragment over the depth the 'overDepth' pre-pass wrote for it: half a
+ * coverage step. The pre-pass leaves the pull of the densest step at each sample; in the 'over' pass only a fragment
+ * of that step passes LessDepth, and the first one to draw moves the depth on by the margin, so every later shadow
+ * there fails: overlapping shadows darken a pixel once, by the densest one (max, not A over B). Pre-pass and colour
+ * pass run the same coverage code; half a step (1.25e-4 of a 400-unit view range) is several depth-buffer steps.
+ */
+export const SHADOW_EXCLUSIVE_PULL = (GROUND_PULL.shadow[1] - GROUND_PULL.shadow[0]) / SHADOW_PULL_LEVELS / 2;
 
-/** CPU twin of the over-pass rank: use the coverage actually drawn, including its penumbra. */
-export function shadowPullRank(softenedCoverage: number): number {
-  return Math.floor(Math.min(1, Math.max(0, softenedCoverage)) * SHADOW_PULL_LEVELS + 0.5);
+/** Coverage step (0..SHADOW_PULL_LEVELS) of an ordinary shadow's drawn (softened) coverage. */
+export function shadowPullRank(coverage: number): number {
+  return Math.floor(Math.min(1, Math.max(0, coverage)) * SHADOW_PULL_LEVELS + 0.5);
 }
 
-/** World-space ground pull for an ordinary shadow's level (0..SHADOW_PULL_LEVELS). */
-export function shadowGroundPull(level: number): number {
-  return GROUND_PULL.shadow[0] + (level * (GROUND_PULL.shadow[1] - GROUND_PULL.shadow[0])) / SHADOW_PULL_LEVELS;
+/** CPU twin of the over pass's ordinary-shadow pull: `coverage` is the drawn (softened) one; `drawn`: colour pass. */
+export function shadowGroundPull(coverage: number, drawn = false): number {
+  const step = (GROUND_PULL.shadow[1] - GROUND_PULL.shadow[0]) / SHADOW_PULL_LEVELS;
+  return GROUND_PULL.shadow[0] + shadowPullRank(coverage) * step + (drawn ? SHADOW_EXCLUSIVE_PULL : 0);
+}
+
+/**
+ * CPU model of one sample of the enhanced look's ordinary SHP shadows, drawn in `order` over the ground, each with its
+ * drawn coverage and opacity: the pre-pass keeps the largest pull, then the colour pass draws the first fragment
+ * within SHADOW_EXCLUSIVE_PULL of it. Returns the ground's remaining brightness (1 = unshadowed).
+ */
+export function overPassSample(order: readonly { coverage: number; opacity: number }[], alphaTest = 0.04): number {
+  const alpha = (s: { coverage: number; opacity: number }): number => Math.min(1, Math.max(0, s.coverage)) * s.opacity;
+  const drawn = order.filter((s) => alpha(s) >= alphaTest);
+  let depth = 0;
+  for (const s of drawn) depth = Math.min(depth, -shadowGroundPull(s.coverage));
+  let light = 1;
+  for (const s of drawn) {
+    const d = -shadowGroundPull(s.coverage, true);
+    if (d < depth) {
+      depth = d;
+      light *= 1 - alpha(s);
+    }
+  }
+  return light;
 }
 
 /**
@@ -504,7 +541,10 @@ class SpriteGraph {
   readonly materialPage: ShaderNode;
   /** Per-instance anchor code of capture-enabled layers, for the materials that are captured. */
   captureCode: ShaderNode | null = null;
-  readonly materials: Record<'main' | 'readOnly' | 'unit' | 'translucent' | 'under' | 'over', MeshBasicNodeMaterial>;
+  readonly materials: Record<
+    'main' | 'readOnly' | 'unit' | 'translucent' | 'under' | 'overDepth' | 'over',
+    MeshBasicNodeMaterial
+  >;
 
   constructor(cache: Ra2Cache, features: SpriteGraphFeatures) {
     const nodes = cache.nodes ?? DEFAULT_ATMOSPHERE_NODES;
@@ -1254,7 +1294,9 @@ class SpriteGraph {
     // camera and target actually rendering (onBeforeRender below), so a pass with another camera (a reflection's
     // mirrored one) gets its own.
     const planeCoefficients = this.planeCoefficients;
-    const planeDepth = Fn(() => {
+    // 'overDepth' (pre-pass, no colour) and 'over' share this code, so both compute the same pull for one fragment.
+    const planeDepth = (pass: 'overDepth' | 'over'): ShaderNode =>
+      Fn(() => {
       // The anchor's height, snapped to 1/64 level so interpolation rounding can never split one plane in two.
       const level: ShaderNode = round(aAnchor.y.div(LEVEL_HEIGHT).mul(64)).div(64).mul(LEVEL_HEIGHT);
       const c: ShaderNode = planeCoefficients;
@@ -1275,22 +1317,44 @@ class SpriteGraph {
         const py: ShaderNode = aParams.y.add(vCard.mul(aRect.w));
         rankCoverage.assign(penumbraCoverage(texel, indexedCoverage, px, py));
       });
-      const shadowLevel: ShaderNode = floor(clamp(rankCoverage, 0, 1).mul(SHADOW_PULL_LEVELS).add(0.5));
-      // Infantry retains its existing five coverage ranks, HD alpha and solid-core ramp.
-      const rankedCoverage: ShaderNode = select(
-        isInfantryShadow.greaterThan(0.5),
-        floor(clamp(coverage, 0, 1).mul(4).add(0.5)).div(4),
-        shadowLevel.div(SHADOW_PULL_LEVELS),
-      );
+      // Ordinary shadows: pulled by the coverage actually drawn, in SHADOW_PULL_LEVELS steps (shadowGroundPull). The
+      // pre-pass writes that pull for the densest one; the colour pass adds SHADOW_EXCLUSIVE_PULL, so only the first
+      // shadow of the densest step darkens the pixel. Infantry retains its existing five coverage ranks, HD alpha and
+      // solid-core ramp (it may darken a shadow).
+      const ordinary: ShaderNode = float(GROUND_PULL.shadow[0])
+        .add(
+          floor(clamp(rankCoverage, 0, 1).mul(SHADOW_PULL_LEVELS).add(0.5)).mul(
+            (GROUND_PULL.shadow[1] - GROUND_PULL.shadow[0]) / SHADOW_PULL_LEVELS,
+          ),
+        )
+        .add(pass === 'over' ? SHADOW_EXCLUSIVE_PULL : 0);
       // A solid infantry core must pass an earlier half-colour shadow, even when its filtered coverage is only .22.
       // Keep this ahead of ordinary shadow coverage ranks and behind both wet reflections and upright card feet.
-      const shadowPull: ShaderNode = mix(
-        float(GROUND_PULL.shadow[0]).add(rankedCoverage.mul(GROUND_PULL.shadow[1] - GROUND_PULL.shadow[0])),
-        GROUND_PULL.infantryCore,
-        isInfantryShadow.mul(step(INFANTRY_SHADOW_RAMP.to, coverage)),
+      const shadowPull: ShaderNode = select(
+        isInfantryShadow.greaterThan(0.5),
+        mix(
+          float(GROUND_PULL.shadow[0]).add(
+            floor(clamp(coverage, 0, 1).mul(4).add(0.5)).mul((GROUND_PULL.shadow[1] - GROUND_PULL.shadow[0]) / 4),
+          ),
+          GROUND_PULL.infantryCore,
+          step(INFANTRY_SHADOW_RAMP.to, coverage),
+        ),
+        ordinary,
       ).toVar('spriteInfantryShadowPull');
-      const pull: ShaderNode = select(isReflection.greaterThan(0.5), float(GROUND_PULL.reflection), shadowPull);
-      return ground.sub(pull.div(cameraFar.sub(cameraNear)));
+      const range: ShaderNode = cameraFar.sub(cameraNear);
+      if (pass === 'over') {
+        const pull: ShaderNode = select(isReflection.greaterThan(0.5), float(GROUND_PULL.reflection), shadowPull);
+        return ground.sub(pull.div(range));
+      }
+      // Pre-pass: only ordinary shadows the colour pass will draw (alpha test) write; everything else (reflections,
+      // infantry footprints, transparent texels of the padded quad) lies behind the ground and fails the depth test,
+      // so the pass leaves no depth where the colour pass leaves none.
+      const opacity: ShaderNode = look.shadowDarkness.mul(SHADOW_OPACITY).min(0.9);
+      const writes: ShaderNode = isShadow
+        .greaterThan(0.5)
+        .and(isInfantryShadow.lessThan(0.5))
+        .and(clamp(rankCoverage, 0, 1).mul(opacity).greaterThanEqual(material.alphaTest));
+      return select(writes, ground.sub(shadowPull.div(range)), ground.add(float(0.05).div(range)));
     })();
     const passMaterial = (pass: GroundPass): MeshBasicNodeMaterial => {
       const m = new MeshBasicNodeMaterial();
@@ -1305,8 +1369,16 @@ class SpriteGraph {
         m.depthNode = cardDepth();
         m.depthWrite = false;
       } else {
-        m.depthNode = planeDepth;
+        m.depthNode = planeDepth(pass === 'overDepth' ? 'overDepth' : 'over');
         m.depthFunc = LessDepth;
+      }
+      if (pass === 'overDepth') {
+        // Depth only: the depth node itself rejects what the colour pass's alpha test would (see planeDepth), so the
+        // pass skips the colour graph (and its penumbra taps) altogether.
+        m.colorNode = vec4(0, 0, 0, 1);
+        m.alphaTest = 0;
+        m.colorWrite = false;
+        m.blending = NoBlending;
       }
       return m;
     };
@@ -1316,6 +1388,7 @@ class SpriteGraph {
       unit: unitMaterial,
       translucent: translucentMaterial,
       under: passMaterial('under'),
+      overDepth: passMaterial('overDepth'),
       over: passMaterial('over'),
     };
     // Upright cards have an outline of their own for the frame's outline pass (silhouette.ts), one per draw point:
@@ -1383,6 +1456,11 @@ export class SpriteLayer {
    * on). They share this layer's instance buffers.
    */
   readonly groundPasses: InstancedQuad[];
+  /**
+   * The enhanced look's depth-only pre-pass of ordinary SHP shadows ('overDepth', between 'under' and 'over'; shown
+   * with the ground passes): it leaves the densest shadow's pull at every sample so the 'over' pass darkens once.
+   */
+  readonly shadowDepthPass: InstancedQuad;
   /**
    * Palette sprites' scene light level (display-referred instances bypass it) and the camera basis the cards face:
    * the uniforms of this layer's shader graph, shared by every layer of the same cache and features.
@@ -1539,18 +1617,21 @@ export class SpriteLayer {
     this.translucentMesh.renderOrder = NATIVE_UNIT_RENDER_ORDER + 0.001;
     this.mesh.add(this.translucentMesh);
 
-    this.groundPasses = (['under', 'over'] as const).map((pass, i) => {
+    // Just before this layer's own pass, whatever renderOrder its owner gives the layer later. Layers that share a
+    // renderOrder (the object and cell layers of every atlas page) draw all their 'under' passes, then all their
+    // shadow depth pre-passes, then all their 'over' passes: overlapping shadows of different pages darken once too.
+    const passOrder = { under: -0.02, overDepth: -0.015, over: -0.01 } as const;
+    const [under, shadowDepth, over] = (['under', 'overDepth', 'over'] as const).map((pass) => {
       const passMesh = quad(material[pass], `ra2-sprites-${pass}`);
       passMesh.visible = false;
-      // Just before this layer's own pass, whatever renderOrder its owner gives the layer later.
       Object.defineProperty(passMesh, 'renderOrder', {
-        get: () => main.renderOrder - 0.02 + i * 0.01,
+        get: () => main.renderOrder + passOrder[pass],
         set: () => {},
         configurable: true,
       });
       this.mesh.add(passMesh);
       look.groundPasses.add(passMesh);
-      if (pass === 'over')
+      if (pass !== 'under')
         // The ground plane's depth coefficients are set per draw from the camera and target actually rendering
         // (see SpriteGraph), so a pass with another camera (a reflection's mirrored one) gets its own.
         passMesh.onBeforeRender = (renderer, _scene, camera, _geometry, drawn) => {
@@ -1562,7 +1643,10 @@ export class SpriteLayer {
         };
       return passMesh;
     });
-    const passes = [this.readOnlyMesh, this.unitMesh, this.translucentMesh, ...this.groundPasses];
+    this.groundPasses = [under!, over!];
+    this.shadowDepthPass = shadowDepth!;
+    const lookPasses = [under!, shadowDepth!, over!];
+    const passes = [this.readOnlyMesh, this.unitMesh, this.translucentMesh, ...lookPasses];
     this.mesh.material.addEventListener('dispose', () => {
       for (const passMesh of passes) passMesh.material.dispose();
     });
@@ -1572,7 +1656,7 @@ export class SpriteLayer {
       this.translucentMesh.dispose();
       capture?.setCaptured(this.mesh, false);
       capture?.setCaptured(this.unitMesh, false);
-      for (const passMesh of this.groundPasses) {
+      for (const passMesh of lookPasses) {
         look.groundPasses.delete(passMesh);
         passMesh.dispose();
       }

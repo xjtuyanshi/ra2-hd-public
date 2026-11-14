@@ -164,6 +164,12 @@ export interface HdSettings extends CinematicGradeParams {
   glass: number;
   occlusion: number;
   shadowFollow: number;
+  /**
+   * Whether trees and map overlays (rocks, fences, crates, rubble, low bridges, walls; not high decks) follow the sun
+   * like vehicles: 0 (default, owner rule 2026-11-13) keeps their art's shadow shape, length and direction like
+   * buildings; 1 turns them with the sun, stretched at most TERRAIN_SHADOW_MAX_STRETCH (the Build 12 look).
+   */
+  terrainShadowFollow: number;
   shadowSoftness: number;
   wetReflections: number;
   /** HD source irradiance and emitter glow gain: 0 = none, 1 = authored strength. */
@@ -784,6 +790,7 @@ export class HdRenderer {
     glass: 0,
     occlusion: 0,
     shadowFollow: 0,
+    terrainShadowFollow: 0,
     shadowSoftness: 0,
     wetReflections: 0,
     sourceLights: 0,
@@ -2112,7 +2119,7 @@ export class HdRenderer {
     const stretch = shadowStretch(state.keyElevation, follow > 0 ? look.shadowLength.value : 1);
     look.shadowFollow.value = follow;
     look.shadowSoftness.value = s.shadowSoftness * day * Math.max(1, stretch);
-    setShadowTransforms(look, dir, stretch, follow);
+    setShadowTransforms(look, dir, stretch, follow, s.terrainShadowFollow);
     // Voxel units' engine-style shadows (voxelShadow.ts) turn and stretch by the same amount, about their own
     // direction, so vehicles agree with the buildings around them.
     if (follow > 0) {
