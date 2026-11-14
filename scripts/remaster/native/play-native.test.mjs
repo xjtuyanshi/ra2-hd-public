@@ -161,6 +161,13 @@ test('missing game configuration produces a useful error before any startup', as
   await assert.rejects(runLauncher([], {}), /RA2_NATIVE_GAME_DIR/);
 });
 
+test('--hd-option accepts only hd- pilot flags and never replaces the shared play look', async () => {
+  for (const bad of [[], ['sr=1'], ['hd-water=classic'], ['hd-sprite'], ['hd-sprite=1&x=2']])
+    await assert.rejects(runLauncher(['--hd-option', ...bad], {}), /--hd-option/);
+  // A valid pilot flag passes argument parsing and stops at the missing game copy.
+  await assert.rejects(runLauncher(['--hd-option', 'hd-sprite=1'], {}), /RA2_NATIVE_GAME_DIR/);
+});
+
 test('missing HD library is reported in Chinese without changing the game copy', async (t) => {
   const { dir, target } = await fixture(t);
   await writeFile(target, 'player DLL');
