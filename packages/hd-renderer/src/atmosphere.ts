@@ -98,6 +98,7 @@ export class AtmosphereNodes extends SceneLightingUniforms {
 
   /** Mirror a renderer's inputs into layers created before its world was known, without replacing their nodes. */
   copyValuesFrom(source: AtmosphereNodes): void {
+    this.alive.copyValuesFrom(source.alive);
     this.sceneTerrainMul.value.copy(source.sceneTerrainMul.value);
     this.sceneObjectMul.value.copy(source.sceneObjectMul.value);
     this.sceneSunShadow.value = source.sceneSunShadow.value;

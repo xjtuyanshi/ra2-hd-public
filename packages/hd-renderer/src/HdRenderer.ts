@@ -70,6 +70,7 @@ import { applyMaterialFallbacks, failedPipelineMaterials, type PipelineHost } fr
 import { installAsyncPipelines, type AsyncPipelines } from './asyncPipelines';
 import { showOnly, warmGroups, WarmSlicer, type WarmSliceLimits } from './warmSlices';
 import { resolveSceneLighting, type SceneLighting } from './sceneLighting';
+import type { AliveChange, AliveOptions } from './livingWorld';
 import { Mist, MIST_CAP } from './mist';
 import { ObjectLayer } from './objects';
 import { SILHOUETTE_LEVELS, SILHOUETTE_SEARCH, silhouetteOf, silhouetteSmooth } from './silhouette';
@@ -1018,6 +1019,11 @@ export class HdRenderer {
     return this.terrain?.setWaterLook?.(style);
   }
 
+  /** All living-world graphs are warmed with the view; this changes uniforms only. */
+  setAlive(change: AliveChange): Readonly<AliveOptions> {
+    return this.nodes.alive.set(change);
+  }
+
   async init(world?: HdWorld): Promise<void> {
     await this.renderer.init();
     // Static map previews use the same analytic cards as live matches; atmosphere must retain geometry depth there too.
@@ -1456,7 +1462,9 @@ export class HdRenderer {
         (display as { getTextureNode?: () => ShaderNode }).getTextureNode?.() ?? convertToTexture(display);
       display = silhouetteSmooth(finished, scenePass.getTextureNode('physicalDepth'), this.outlineSearch);
     }
-    this.pipeline.outputNode = display;
+    // Reuse the existing display pass and physical depth: no debug render target, grading, or extra pass.
+    // This branch is uniform-only and does not evaluate the cloud field while debug is disabled.
+    this.pipeline.outputNode = this.nodes.alive.debugView(display, world.xz, visible);
   }
 
   applySettings(): void {
@@ -1763,6 +1771,13 @@ export class HdRenderer {
     this.mist.update(this.view.camera);
 
     const now = this.seconds();
+    this.nodes.alive.update(
+      now,
+      env.windDirection,
+      light.night,
+      Math.max(rainAmount, snowAmount, scene.overcast),
+      airless,
+    );
     const right = this.cameraRight.setFromMatrixColumn(this.view.camera.matrixWorld, 0);
     const up = this.cameraUp.setFromMatrixColumn(this.view.camera.matrixWorld, 1);
     const toCamera = this.toCamera.setFromMatrixColumn(this.view.camera.matrixWorld, 2);

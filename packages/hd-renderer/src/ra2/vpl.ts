@@ -355,13 +355,14 @@ class VoxelLightingModel extends PhysicalLightingModel {
     private readonly state: VoxelLightingState,
     private readonly gains: VoxelMeshGains,
     private readonly sceneMultiplier: ShaderNode,
+    private readonly cloud: ShaderNode,
   ) {
     super();
   }
 
   override finish(builder: NodeBuilder): void {
     super.finish(builder);
-    finishSceneLighting(builder, this.sceneMultiplier);
+    finishSceneLighting(builder, this.sceneMultiplier, this.cloud);
   }
 
   override direct({
@@ -404,6 +405,7 @@ class VoxelMaterial extends MeshStandardNodeMaterial {
   /** The light gains of the mesh being drawn (voxelMeshGains). */
   gains!: VoxelMeshGains;
   sceneMultiplier!: ShaderNode;
+  cloudShadow: ShaderNode = float(1);
   override copy(source: this): this {
     super.copy(source);
     // Three copies initialized fields only; these lighting inputs are assigned after construction.
@@ -413,12 +415,13 @@ class VoxelMaterial extends MeshStandardNodeMaterial {
     this.look = source.look;
     this.gains = source.gains;
     this.sceneMultiplier = source.sceneMultiplier;
+    this.cloudShadow = source.cloudShadow;
     // A clone draws the palette and the part its source draws (opacity and native-depth variants of one unit).
     inheritSlotBinder(this, source);
     return this;
   }
   override setupLightingModel(): PhysicalLightingModel {
-    return new VoxelLightingModel(this.raw, this.matp, this.state, this.gains, this.sceneMultiplier);
+    return new VoxelLightingModel(this.raw, this.matp, this.state, this.gains, this.sceneMultiplier, this.cloudShadow);
   }
 }
 
@@ -492,6 +495,7 @@ function createGraph(
   // Every part mesh drawn with a material of this graph carries its unit's silhouette code (see VoxelUnit).
   const material = setSilhouette(new VoxelMaterial());
   material.sceneMultiplier = nodes.sceneObjectMul;
+  material.cloudShadow = nodes.alive.shadow;
   material.state = state;
   const look = (material.look = spriteLookFor(nodes));
   const gains = (material.gains = voxelMeshGains(state, look));
@@ -550,9 +554,8 @@ function createGraph(
     .mul(1 / Math.PI)
     .mul(float(0.55).add(max(n.y, 0).mul(0.45)))
     .mul(meshLocalLight);
-  const sceneShade: ShaderNode = sceneLitColour(
-    mix(moonlit(lit, nodes), lit, paint).mul(voxelFill),
-    nodes.sceneObjectMul,
+  const sceneShade: ShaderNode = nodes.alive.shade(
+    sceneLitColour(mix(moonlit(lit, nodes), lit, paint).mul(voxelFill), nodes.sceneObjectMul),
   );
   let shaded: ShaderNode = sceneShade.add(localLightHeadroom(sceneShade, lit.mul(local), nodes.localLightCap)).mul(ao);
   let uncovered: ShaderNode = float(1);
@@ -569,9 +572,8 @@ function createGraph(
     const projState = voxelProjectionFor(nodes);
     const formAo: ShaderNode = poweredOcclusion(float(1).sub(occlusion.mul(projState.formAO.clamp())), gains.aoPower);
     const colour: ShaderNode = srgbScale(projected.colour, level.div(projState.levelRef.max(0.01))).mul(formAo);
-    const projectedScene: ShaderNode = sceneLitColour(
-      mix(moonlit(colour, nodes), colour, projected.paint).mul(voxelFill),
-      nodes.sceneObjectMul,
+    const projectedScene: ShaderNode = nodes.alive.shade(
+      sceneLitColour(mix(moonlit(colour, nodes), colour, projected.paint).mul(voxelFill), nodes.sceneObjectMul),
     );
     const projectedShade: ShaderNode = projectedScene.add(
       localLightHeadroom(projectedScene, colour.mul(local), nodes.localLightCap),

@@ -245,9 +245,9 @@ describe('terrain material texture budget', () => {
       expect(mirrors).toHaveLength(2);
       expect(mirrors.filter((texture) => (texture as { isDepthTexture?: boolean }).isDepthTexture)).toHaveLength(1);
       expect(textures.length).toBeLessThan(MAX_SAMPLED_TEXTURES);
-      // The zone travels with the contact shade in one vertex attribute.
+      // Mirror zone and grass eligibility travel with contact shade in one vertex attribute.
       const contact = build.mesh.geometry.getAttribute('contact');
-      expect(contact.itemSize).toBe(2);
+      expect(contact.itemSize).toBe(3);
     },
   );
 

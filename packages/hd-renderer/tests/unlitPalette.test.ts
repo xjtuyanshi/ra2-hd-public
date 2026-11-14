@@ -138,11 +138,12 @@ describe('house converter sprites in the sprite layer', () => {
     const layer = new SpriteLayer(cache(), [
       { ...base, houseConverter: true },
       { ...base, houseConverter: true, indexedHousePaint: true, gradeExempt: true },
+      { ...base, houseConverter: true, indexedHousePaint: true, gradeExempt: true, windSway: true },
       { ...base, indexedHousePaint: true },
       base,
     ]);
     const anchor = (layer as unknown as { anchor: DirtyAttribute }).anchor;
-    expect([0, 1, 2, 3].map((i) => anchor.array[i * anchor.itemSize + 5])).toEqual([4, 7, 2, 0]);
+    expect([0, 1, 2, 3, 4].map((i) => anchor.array[i * anchor.itemSize + 5])).toEqual([4, 7, 15, 2, 0]);
   });
 
   it('is reset by the pool and carried by a held picture', () => {

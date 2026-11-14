@@ -116,6 +116,8 @@ export interface SpriteInstance {
    * original light indices (240-254) then show at their palette colour, untouched by map, scene and look light.
    */
   houseConverter?: boolean;
+  /** Explicit tree-class eligibility from the game adapter; no other cards bend. */
+  windSway?: boolean;
   /** World units to pull the card towards the camera so terrain around the base never cuts it (see cardPush). */
   push: number;
   shadow: boolean;
@@ -591,9 +593,11 @@ class SpriteGraph {
       'flat',
       'either',
     );
-    // Three independent bits share this existing component; no extra instance attribute or vertex buffer is needed.
-    const houseConverter: ShaderNode = step(3.5, aLighting.z).toVar('spriteHouseConverter');
-    const lightingBits: ShaderNode = aLighting.z.sub(houseConverter.mul(4)).toVar('spriteLightingBits');
+    // Four independent bits share this component; wind adds no vertex buffer or binding.
+    const treeWind: ShaderNode = step(7.5, aLighting.z).toVar('spriteTreeWind');
+    const converterBits: ShaderNode = aLighting.z.sub(treeWind.mul(8)).toVar('spriteConverterBits');
+    const houseConverter: ShaderNode = step(3.5, converterBits).toVar('spriteHouseConverter');
+    const lightingBits: ShaderNode = converterBits.sub(houseConverter.mul(4)).toVar('spriteLightingBits');
     const indexedHousePaint: ShaderNode = step(1.5, lightingBits).toVar('spriteIndexedHousePaint');
     const aGradeExempt: ShaderNode = lightingBits.sub(indexedHousePaint.mul(2)).toVar('spriteGradeExempt');
     const aFlags: ShaderNode = attribute('spriteFlags', 'vec4');
@@ -813,7 +817,17 @@ class SpriteGraph {
         const card = aAnchor
           .add(this.cameraRight.mul(px.div(ppu)))
           .sub(this.cameraUp.mul(py.div(ppu)))
-          .add(this.toCamera.mul(pushAmount));
+          .add(this.toCamera.mul(pushAmount))
+          .toVar();
+        // Apply only AFTER native placement, with no integer snapping. Camera-plane displacement cannot change
+        // anchor/painter depth or the native depth template. The trunk's bottom vertex remains exactly fixed.
+        If(nodes.alive.windAmplitude.greaterThan(0), () => {
+          If(treeWind.greaterThan(0.5).and(aFlat.lessThan(0.5)), () => {
+            const sway = nodes.alive.sway(aAnchor, float(1).sub(gv));
+            card.addAssign(this.cameraRight.mul(sway.div(ppu)));
+            card.addAssign(this.cameraUp.mul(sway.mul(gu.sub(0.5)).mul(0.08).div(ppu)));
+          });
+        });
         // Ground decal: invert the engine projection at the anchor's height (1 px right = (1/60, -1/60) cells,
         // 1 px down = (1/30, 1/30) cells), so the art covers exactly the same screen pixels while lying on the ground.
         // Ground-crystal decals (ore cells whose art spills over the cell edge) overlap their neighbours in one plane.
@@ -866,6 +880,8 @@ class SpriteGraph {
     // One colour graph per material (the main pass and the enhanced look's ground passes below).
     const colourNode = (): ShaderNode =>
       Fn(() => {
+        // Declare once before lit/unlit/relight siblings; a factor first used inside select's lit branch is unsafe.
+        nodes.alive.shadow.toStack();
         const texel = vec2(aRect.x.add(u.mul(aRect.z)), aRect.y.add(v.mul(aRect.w))).toVar();
         const atlasUv = texel.div(atlasSize);
         const paletteColour = (i: ShaderNode): ShaderNode =>
@@ -963,7 +979,7 @@ class SpriteGraph {
         const shade = (c: ShaderNode, paint: ShaderNode): ShaderNode => {
           const lit: ShaderNode = objectLit(c);
           const base = mix(moonlit(lit, nodes), lit, paint).mul(this.light);
-          const eventBase = sceneLitColour(base, sceneMultiplier);
+          const eventBase = nodes.alive.shade(sceneLitColour(base, sceneMultiplier));
           return select(
             isUnlit.greaterThan(0.5),
             c.mul(look.unlitBaseLight),
@@ -1130,10 +1146,12 @@ class SpriteGraph {
               .mul(look.sunLight)
               .mul(gradeLight)
               .mul(look.glass.mul(core).mul(occlusion));
-            const sky: ShaderNode = sceneLitColour(pane.sky.mul(occlusion).mul(gradeLight), sceneMultiplier);
+            const sky: ShaderNode = nodes.alive.shade(
+              sceneLitColour(pane.sky.mul(occlusion).mul(gradeLight), sceneMultiplier),
+            );
             const relit: ShaderNode = mix(base, sky, reflectance)
-              .add(sceneLitColour(highlight, sceneMultiplier))
-              .add(sceneLitColour(glint, sceneMultiplier));
+              .add(nodes.alive.shade(sceneLitColour(highlight, sceneMultiplier)))
+              .add(nodes.alive.shade(sceneLitColour(glint, sceneMultiplier)));
             result.assign(select(flatArt, result, vec4(relit.add(litGlow), litAlpha)));
             const isDecal: ShaderNode = step(0.5, aFlat).mul(float(1).sub(step(1.5, aFlat)));
             const crystal: ShaderNode = aFlags.w.mul(isDecal).mul(m.has);
@@ -1217,6 +1235,11 @@ class SpriteGraph {
         // Unlit palette colours of house-converter art skip what the engine skips for them: map and scene light, the
         // night grade, window glow and the enhanced look's relight, occlusion and highlights (shadows, contact shades
         // and reflections are other instance kinds and keep share 0). They are mixed in after the picture tint below.
+        // Ore's authored self-light still bypasses map/night grading, but cloud cover is a surface shadow.
+        // House-converter lamps remain emitted light and are mixed in separately below.
+        If(isUnlit.greaterThan(0.5), () => {
+          result.rgb.assign(nodes.alive.shade(result.rgb));
+        });
         unlitShareOut.assign(unlitShare);
         // Black shadow/contact RGB naturally darkens the already transformed receiver. Only cast-shadow coverage
         // fades under overcast (decorative rain/snow sun share, scene-event overcast); foundation contact shades and
@@ -1732,7 +1755,7 @@ export class SpriteLayer {
         this.anchor.setComponent(
           i,
           5,
-          (s.gradeExempt ? 1 : 0) + (s.indexedHousePaint ? 2 : 0) + (s.houseConverter ? 4 : 0),
+          (s.gradeExempt ? 1 : 0) + (s.indexedHousePaint ? 2 : 0) + (s.houseConverter ? 4 : 0) + (s.windSway ? 8 : 0),
         );
         const tinted = !s.shadow && !s.kind;
         this.anchor.setComponent(i, 6, tinted ? (s.tintLight ?? 1) : 1);

@@ -8,12 +8,14 @@ import {
   Vector3,
   type NodeBuilder,
 } from 'three/webgpu';
-import { Fn, If, sRGBTransferEOTF, sRGBTransferOETF, uniform } from 'three/tsl';
+import { Fn, If, float, sRGBTransferEOTF, sRGBTransferOETF, uniform } from 'three/tsl';
 import type { AtmosphereProfile } from './contract';
 import type { ShaderNode } from './tsl';
+import { LivingWorldNodes, shadeCloudColour } from './livingWorldNodes';
 
 /** Renderer-local scene multipliers are independent of the authored map-grade weight and all adaptation inputs. */
 export class SceneLightingUniforms {
+  readonly alive = new LivingWorldNodes();
   readonly sceneTerrainMul = uniform(new Color(1, 1, 1)).setName('sceneTerrainMul');
   readonly sceneObjectMul = uniform(new Color(1, 1, 1)).setName('sceneObjectMul');
   /** Cast shadows disappear under an event's overcast sky; contact occlusion still anchors objects. */
@@ -33,26 +35,36 @@ export function sceneLitColour(colour: ShaderNode, multiplier: ShaderNode): Shad
 }
 
 /** Physical materials call this after sun/sky lighting and before three adds their separate emissive term. */
-export function finishSceneLighting(builder: NodeBuilder, multiplier: ShaderNode): void {
+export function finishSceneLighting(builder: NodeBuilder, multiplier: ShaderNode, cloud: ShaderNode = float(1)): void {
   const { outgoingLight } = builder.context as { outgoingLight: ShaderNode };
-  outgoingLight.assign(sceneLitColour(outgoingLight, multiplier));
+  outgoingLight.assign(shadeCloudColour(sceneLitColour(outgoingLight, multiplier), cloud));
 }
 
 class SceneLightingModel extends PhysicalLightingModel {
-  constructor(private readonly multiplier: ShaderNode) {
+  constructor(
+    private readonly multiplier: ShaderNode,
+    private readonly cloud: ShaderNode,
+  ) {
     super();
   }
   override finish(builder: NodeBuilder): void {
     super.finish(builder);
-    finishSceneLighting(builder, this.multiplier);
+    finishSceneLighting(builder, this.multiplier, this.cloud);
   }
 }
 
 /** Ordinary physical material whose emitted light remains independent of the scene's palette transform. */
 export class SceneLitMaterial extends MeshStandardNodeMaterial {
   sceneMultiplier!: ShaderNode;
+  cloudShadow: ShaderNode = float(1);
+  override copy(source: this): this {
+    super.copy(source);
+    this.sceneMultiplier = source.sceneMultiplier;
+    this.cloudShadow = source.cloudShadow;
+    return this;
+  }
   override setupLightingModel(): PhysicalLightingModel {
-    return new SceneLightingModel(this.sceneMultiplier);
+    return new SceneLightingModel(this.sceneMultiplier, this.cloudShadow);
   }
 }
 

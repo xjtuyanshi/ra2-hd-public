@@ -189,6 +189,7 @@ function createTerrainMaterial(
 ): MeshStandardNodeMaterial {
   const material = new SceneLitMaterial();
   material.sceneMultiplier = nodes.sceneTerrainMul;
+  material.cloudShadow = nodes.alive.shadow;
   const weights = attribute('terrainWeights', 'vec4');
   const p = positionWorld;
 
@@ -197,7 +198,7 @@ function createTerrainMaterial(
   const detail = mx_noise_float(p.mul(3.1)).mul(0.5).add(0.5);
   const grain = mx_noise_float(p.mul(14.0)).mul(0.5).add(0.5);
 
-  const grass = mix(color(0x3f5a22), color(0x6f8a34), macro).mul(mix(0.82, 1.08, detail));
+  const grass = nodes.alive.grass(mix(color(0x3f5a22), color(0x6f8a34), macro).mul(mix(0.82, 1.08, detail)), float(1));
   const dirt = mix(color(0x5b4632), color(0x7a6147), detail).mul(mix(0.9, 1.05, grain));
   const sand = mix(color(0xb9a57a), color(0xd6c396), macro).mul(mix(0.92, 1.04, grain));
   const asphalt = mix(color(0x2b2c2e), color(0x3a3b3d), grain).mul(mix(0.9, 1.1, macro));
@@ -222,6 +223,7 @@ function createTerrainMaterial(
   // Below the waterline the seabed turns dark and silty.
   const submerged = smoothstep(waterY + 0.02, waterY - 0.25, p.y);
   albedo = mix(albedo, color(0x4a4a3a), submerged.mul(0.6));
+  material.cloudShadow = nodes.alive.shadowWith(mix(float(1), nodes.alive.waterBody, submerged));
 
   let roughness: ShaderNode = mix(float(0.92), float(0.72), weights.x.add(weights.y).min(1));
   roughness = mix(roughness, float(0.8), steep);

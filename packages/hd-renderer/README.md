@@ -318,6 +318,92 @@ b01..b08: noon, map-driven default, dusk, night, night rain, fires, day rain, la
 regression framings), `atmobase` (the same framings without parameters older builds ignore, for before/after
 comparisons) and `atmoperf` (frame cost, see below).
 
+## Living world (hd-alive)
+
+Opt in to **clouds only** with `hd-alive=1` on the live game URL, or `alive=1` in either sandbox.
+Tree sway and grass ripple require the additional `alive-wind=1`; that flag alone enables nothing.
+Defaults and launcher presets stay unchanged. Like `hd-water`, these are URL options, without INI settings.
+Tunables in both entries: `alive-cloud=1` (shadow strength scale, 0..2; 0 disables clouds),
+`alive-sway=1` (explicit wind amplitude, 0..3), `alive-speed=1` (renderer clock speed, 0..4),
+`alive-preset=soft|deep` (cloud shape and core depth; default `soft`, unknown values keep the current preset).
+Tunables alone do not enable animation. `alive-debug=cloud` shows the raw **land** factor as encoded grey
+(0.78 patch core, exactly 1.0 gap at clear noon), bypassing exposure, grading and art colours in the existing
+display pass; shrouded ground stays black. Use it with the alive flag. It creates no render target or pass.
+
+In the live bench, `window.__fx.live.setAlive(true)` enables clouds and disables wind without reloading.
+`setAlive({wind: true})` explicitly enables wind, preserving the other settings and tuning;
+`setAlive({clouds: true, wind: true})` enables both. `setAlive(false)` disables clouds, wind and debug.
+`LiveViewOptions.alive` and `HdRenderer.setAlive` accept the same boolean or partial options
+(`clouds`, `preset`, `wind`, `cloud`, `sway`, `speed`, `debugCloud`). The game bridge and both sandboxes share the
+parser; in the game, `window.__hdBridge.live.setAlive({ clouds: true, preset: 'deep' })` switches at run time.
+
+`src/livingWorldNodes.ts` shares one world-XZ cloud field across terrain/cliffs/shore, decals, sprites, voxel
+materials and every water look. Two non-repeating gradient-noise octaves use 13/26-cell lattices, weights 0.8/0.2,
+an along-wind stretch of 1.4, and a 0.07..0.23 smooth threshold. No third octave or cloud texture is added.
+The CPU reference samples a 400 x 400-cell square at one-cell spacing, at 0/4/8/12 renderer seconds and wind
+angle 0.6: **27.28..27.61%** of samples have factor < 0.97, mean palette-domain darkening is **4.61..4.66%**,
+and the core is **0.78**. Tests scan both map axes at 0.1-cell spacing to bound the median 5..95% edge width
+to 2..3 cells (measured 2.7) and median half-coverage chord to 8..12 cells (measured 8.1; a patch-size proxy,
+not a fixed circular diameter).
+Small camera crops have variable coverage; these area statistics do not establish frame-average luma.
+
+The `deep` preset (`ALIVE_CLOUD_SHAPES.deep`) is for small views such as a phone, where a default view spans about
+ten cells and soft patches (8-cell chord, 2.7-cell edge) cover most of the frame, so they read as overall dimming.
+Deep uses 6/14-cell lattices, weights 0.75/0.25, stretch 1.35 and a 0.04..0.16 threshold: on the same CPU sample,
+about **35%** of samples have factor < 0.97, mean darkening is about **9.2%**, the core is **0.67** (33%), the
+median 5..95% edge is **1.0** cell and the half-coverage chord **4.4** cells, so whole patches with lit gaps fit
+one view. Drift, morph and tint are shared. Deep also gives water most of the land shadow, so a cloud stays
+continuous across the coast (owner request): body/seabed weight **0.85** (core 0.72), sky reflection and wet sheen
+**0.95** (core 0.69), glints 1.0. It is the same palette-domain multiply with the faint cool tint, so the clear water
+keeps its turquoise hue. The water weights are uniforms (`aliveWaterBody`, `aliveWaterSky`) set by the preset.
+The shape is a set of renderer-local uniforms (`aliveCloudLattice`, `aliveCloudForm`, `aliveCloudDarkening`), so
+switching presets does not rebuild a material; the soft values reproduce the former constant expression.
+Drift is **1.5 cells/second** along `environment.windDirection`; the slow coordinate morph is only **0.35 cells**
+(0.07/0.09 radians/second), small relative to the edge width. Clouds fade with night and overcast/precipitation;
+airless maps disable animation. All motion uses the renderer clock, including frozen-clock `__fx.advance(ms)`.
+
+The default land core is 0.78 (22% darkening), scaled by `alive-cloud` and the day/weather weight. The upper
+strength tuning is an explicit artistic override of that default depth. Attenuation stays in the sRGB/palette
+domain before converting back to linear light. The gentler cool tint is (0.98, 0.99, 1.01), normalized by Rec.709
+luminance, and fades with coverage. Clear/off remains exactly (1,1,1); debug stays untinted grey.
+Clouds attenuate scene sun/sky/fill after the scene palette transform. Local lamp/fire/explosion light, emitted
+panes and house-converter lamps stay additive. Ore's authored self-light receives cloud cover while bypassing
+map/night grading; separate engine ore glints retain their emission. Units, infantry and voxels use the same
+land factor, with no additional cloud darkening. Already-lit mirror captures are not cloud-shaded again.
+No painter key, analytic depth or silhouette code changes.
+
+Water uses `shadowWith` / `shadeWith(colour, weight)` to interpolate **both** darkening and tint toward identity
+(soft preset values below; deep values above):
+body/seabed **0.20** (core luminance multiplier 0.956), analytic sky reflection and wet sky sheen **0.45**
+(core 0.901), sun glints/sparkle/glitter **1.0**. Whole-map ground and per-tile fallback mix the body weight by
+existing waterness; the procedural sandbox seabed uses submergence. Classic, enhanced, bed and clear paths keep
+the clear body colour while dimming reflected sunlight. The transparent sandbox plane shades its separate optical
+terms once and does not multiply the already-lit seabed beneath it. Mirror objects retain their captured light.
+
+A single `.toVar()` factor is shared per material builder; sprite colour roots explicitly put its initialization
+before lit/unlit/relight branches. The named cloud function initializes to one on every invocation, with an early
+uniform branch around noise while clouds are off. Weighted shading also skips colour conversion at identity.
+Generated WGSL/GLSL tests verify the neutral initializer, unconditional sprite assignment and one field call per
+material; binding-budget fixtures cover sprite, terrain, water, voxel and reflection variants. This removes repeated
+field evaluations across water's optical terms without extra texture reads or a full-screen pass. Terrain/water
+overdraw across separate materials still evaluates each drawn fragment independently.
+
+Wind is off by default. While off, its uniform branch skips gust/phase/hash/power arithmetic; there is no per-tree
+CPU work. When explicitly on, stock `TREEdd`/`TIBTREdd` tree cards get camera-plane shear/tilt (bottom pinned,
+height exponent 1.4): +/-3.8 native pixels idle, +/-6.2 at gust peaks, scaled by `alive-sway`, with 2.6..3.4-second
+per-cell idle periods. The analytic gust shares cloud drift (8.5-cell wavelength, about 5.67-second period).
+It costs hash, phase/gust sine and height-power arithmetic per eligible vertex; tree shadows and wet reflection
+quads stay fixed. Unknown/modded names, rocks, posts and procedural sandbox trees stay rigid.
+Grass ripple costs an analytic gust and colour multiply per eligible fragment, without another texture read:
+about +/-5% luminance on clear/rough green temperate/urban art, with the mask in the existing contact attribute.
+Roads, shore, rock, sand-coloured texels, snow, desert and lunar art stay unchanged.
+
+Switches change uniforms only: no new pipeline on toggle, render pass or resource owner. Chimney smoke remains
+omitted. GPU cost (**<= +0.5 ms at 1080p** target), exact off-state pixels versus baseline **6b34e81**, actual frame
+luma, cross-material agreement, glint dropout, unit readability, leaf-card integrity and phone-video motion remain
+**UNVERIFIED** until Claude's same-scene renders and `HdRenderer.benchmark(N)`. CPU math and shader/layout tests
+do not establish rendered pixels or GPU timing.
+
 ## Scene lighting events
 
 `LiveSnapshot.lighting` carries the engine's current ambient, selected ground/level terms, normal RGB, raw event

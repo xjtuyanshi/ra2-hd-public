@@ -80,7 +80,13 @@ export const CLEAR_WATER = {
 } as const;
 
 /** One ground world unit is one cell (world.ts); eight metres per cell is the chosen visual scale. */
-export const CLEAR_SURFACE = { tileMetres: 26, metresPerCell: 8, timeScale: 0.6, normalGain: 1.7, viewStretch: 1.5 } as const;
+export const CLEAR_SURFACE = {
+  tileMetres: 26,
+  metresPerCell: 8,
+  timeScale: 0.6,
+  normalGain: 1.7,
+  viewStretch: 1.5,
+} as const;
 /** WaterMesh.getNoise: divisor (x,z), signed scroll rate (tiles per surface-clock second), equal weights. */
 export const CLEAR_LAYERS = [
   [103, 103, 1 / 17, 1 / 29],
@@ -436,11 +442,7 @@ export function clearWaterLook(
   );
   // Night: the moonlight is blue; a greener, brighter body keeps the water a dark teal, never black navy.
   const nightBody = body.mul(vec3(5.0, 3.4, 1.9));
-  body = mix(
-    body,
-    mix(nightBody, vec3(dot(nightBody, vec3(0.2126, 0.7152, 0.0722))), 0.1),
-    night,
-  );
+  body = mix(body, mix(nightBody, vec3(dot(nightBody, vec3(0.2126, 0.7152, 0.0722))), 0.1), night);
 
   // The RTS camera is orthographic: one view direction for the whole screen (IsoCamera, 30 degree pitch), so the
   // glitter is spread by the waves alone instead of gathering on one side of the screen.
@@ -461,7 +463,7 @@ export function clearWaterLook(
   );
   // The mirrored scene: at a cliff only the foot of the rock is mirrored (fading within about 0.4 cells) and in the
   // water's own colour, so tall walls do not smear brown far out over the deep water.
-  let mirror: ShaderNode = sky;
+  let mirror: ShaderNode = nodes.alive.shadeWith(sky, nodes.alive.waterSky);
   let objectMirror: ShaderNode = float(0);
   let objectColour: ShaderNode = vec3(0);
   if (inputs.reflection) {
@@ -474,7 +476,7 @@ export function clearWaterLook(
     const coverage = inputs.reflection.coverage
       .mul(CLEAR_WATER.mirrorKeep)
       .mul(mix(float(1), smoothstep(0.45, 0.05, edge), hard));
-    mirror = mix(sky, toned, coverage);
+    mirror = mix(nodes.alive.shadeWith(sky, nodes.alive.waterSky), toned, coverage);
     // Bridges, piers and ships: at the clear look's low Fresnel strength their mirror image vanished into the bright
     // water body and the bridge seemed to float. Where the mirror holds an object, it replaces up to objectReflection
     // of the water, as in the enhanced look's OBJECT_REFLECT; cliffs keep their short, water-toned foot image.
@@ -566,7 +568,7 @@ export function clearWaterLook(
   body = mix(body.mul(float(1).sub(strength.mul(open)).sub(objectShare)), color(0xe8eeec), foam);
   const emission = mirror
     .mul(strength)
-    .add(sparkle)
+    .add(nodes.alive.shadeWith(sparkle, 1))
     .add(lights)
     .mul(open)
     .add(objectColour.mul(objectShare))
