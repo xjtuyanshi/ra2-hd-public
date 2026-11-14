@@ -399,6 +399,15 @@ window.__fx.live.setRealLight(true); // Physical response on the same determinis
 window.__fx.live.render();
 ```
 
+In the game page the development bridge offers the same switch and a light dump:
+`__hdBridge.light.set(false|true)`, `__hdBridge.light.stats()` (pool sizes) and `__hdBridge.light.top(n)` (the
+strongest pooled lights: pool, key, position, luminance times segment length).
+
+Each light's reach follows from its strength (`lightReach`, threshold `REAL_LIGHT_THRESHOLD`) but is capped at
+`REAL_LIGHT_REACH` (6 cells, or 4 source radii for large events); the window still takes it smoothly to zero there.
+Uncapped, a sustained Tesla tank bolt derived a 26-cell reach in a live SOV07TMD night fight, and its faint tail
+summed into a pale wash over the whole screen.
+
 `setRealLight` returns false on a view created without `realLight`; enabling new graphs requires creating an
 opted-in view. `src/realLight.ts` owns generic point and finite-segment lights, source-sized attenuation, bounded
 pools, terrain-relative ground/upper directional MRT layers, irradiance-only knees, and the scalar ground fallback.

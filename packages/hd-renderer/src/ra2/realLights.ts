@@ -37,7 +37,7 @@ export interface LightPolicy {
   flicker?: number;
   continuous?: boolean;
 }
-/** Sustained beams and waves (rad, temporal, sonic, magnetron) lowered: several 8-cell beams summed into a pale wash in the bench. Bolt and laser ground values doubled from DESIGN 3.5 after sandbox r3: at 0.9 the blue lane under a Tesla bolt barely read at night. */
+/** Sustained beams and waves (rad, temporal, sonic, magnetron) lowered: several 8-cell beams summed into a pale wash in the bench. Bolt and laser ground values: DESIGN 3.5 had 0.9/0.8 (the blue lane under a sandbox Tesla bolt barely read at night); 1.8/1.4 summed into a wash under sustained live Tesla tank fire, so 1.2/1.0. */
 export const REAL_LIGHT_POLICIES = {
   fire: { height: 0.4, radius: 0.25, ground: 0.8, colour: LIGHT_COLOURS.fire, day: 0, flicker: 0.18, continuous: true },
   burning: {
@@ -49,14 +49,14 @@ export const REAL_LIGHT_POLICIES = {
     flicker: 0.18,
     continuous: true,
   },
-  muzzle: { height: 0.5, radius: 0.1, ground: 0.6, colour: LIGHT_COLOURS.hot, day: 0.25, hold: 2 / 62.5, fade: 0.03 },
+  muzzle: { height: 0.5, radius: 0.1, ground: 0.4, colour: LIGHT_COLOURS.hot, day: 0.25, hold: 2 / 62.5, fade: 0.03 },
   chrono: { height: 0.5, radius: 0.6, ground: 1, colour: LIGHT_COLOURS.chrono, day: 0.15 },
   dominator: { height: 2, radius: 2, ground: 3, colour: LIGHT_COLOURS.psychic, day: 0.15 },
   iron: { height: 1, radius: 1.5, ground: 2, colour: LIGHT_COLOURS.iron, day: 0.15 },
   nuke: { height: 3, radius: 3, ground: 12, colour: LIGHT_COLOURS.hot, day: 0.3, hold: 0.15, fade: 2 },
-  tesla: { height: 0.5, radius: 0.12, ground: 1.8, colour: LIGHT_COLOURS.tesla, day: 0.2 },
-  psychic: { height: 0.5, radius: 0.12, ground: 1.8, colour: LIGHT_COLOURS.psychic, day: 0.2 },
-  prism: { height: 0.5, radius: 0.1, ground: 1.4, colour: LIGHT_COLOURS.hot, day: 0.2 },
+  tesla: { height: 0.5, radius: 0.12, ground: 1.2, colour: LIGHT_COLOURS.tesla, day: 0.2 },
+  psychic: { height: 0.5, radius: 0.12, ground: 1.2, colour: LIGHT_COLOURS.psychic, day: 0.2 },
+  prism: { height: 0.5, radius: 0.1, ground: 1, colour: LIGHT_COLOURS.hot, day: 0.2 },
   temporal: { height: 0.5, radius: 0.1, ground: 0.3, colour: LIGHT_COLOURS.chrono, day: 0.15 },
   rad: { height: 0.5, radius: 0.1, ground: 0.25, colour: [0.65, 1, 0.6], day: 0.15 },
   eruption: { height: 0.5, radius: 0.1, ground: 0.4, colour: LIGHT_COLOURS.fire, day: 0.15 },
@@ -151,12 +151,15 @@ export function animLightPolicy(
     return {
       height: 0.4 + 0.3 * rho,
       radius: 0.3 * rho,
-      // Sandbox r2: 1.2 rho^0.7 lit only the ground under the blast art itself (EXPLOLRG covers ~1.5 cells).
-      ground: 2.4 * rho ** 0.7,
+      // Sandbox r2: 1.2 rho^0.7 lit only the ground under the blast art itself (EXPLOLRG covers ~1.5 cells). Live
+      // SOV07TMD night r4: with 2.4 and a fade of life + 0.6 s, sustained cannon fire summed into a steady 8-10 cell
+      // wash; 1.1 and a fade of half the art's life + 0.25 s keep each blast a flash that dies with its art (1.7 still
+      // lit a bright 6-cell yellow pool around a burning tank under SOV07TMD's very dark night).
+      ground: 1.1 * rho ** 0.7,
       colour: LIGHT_COLOURS.explosion,
       day: 0.2,
       hold: 0.12,
-      fade: row.life / fps + 0.6,
+      fade: (0.5 * row.life) / fps + 0.25,
     };
   }
   if (row.light)

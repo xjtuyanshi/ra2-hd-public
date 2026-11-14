@@ -2062,6 +2062,28 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
         const f = live?.hd.realLightField;
         return f ? Object.fromEntries([...f.pools].map(([k, p]) => [k, p.size])) : null;
       },
+      /** The strongest pooled lights by luminance (x segment length): key, position, luminance. */
+      top(n = 12) {
+        const f = live?.hd.realLightField;
+        if (!f) return null;
+        return [...f.pools]
+          .flatMap(([pool, entries]) =>
+            [...entries].map(([key, t]) => ({
+              pool,
+              key,
+              at: t.light.position.map((v) => Math.round(v * 10) / 10),
+              end: t.light.end?.map((v) => Math.round(v * 10) / 10),
+              lum:
+                Math.round(
+                  (0.2126 * t.light.intensity[0] + 0.7152 * t.light.intensity[1] + 0.0722 * t.light.intensity[2]) *
+                    (t.light.end ? Math.hypot(...t.light.end.map((v, i) => v - t.light.position[i]!)) : 1) *
+                    1000,
+                ) / 1000,
+            })),
+          )
+          .sort((a, b) => b.lum - a.lum)
+          .slice(0, n);
+      },
     },
     toggle() {
       if (stopped) return enabled;

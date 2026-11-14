@@ -6,6 +6,7 @@ import { buildingLightSources } from '../src/live/buildingLights';
 import { engineLightDelta } from '../../ra2-assets/src/lights';
 import { AtmosphereNodes } from '../src/atmosphere';
 import {
+  REAL_LIGHT_REACH,
   RealLightField,
   RealLightNodes,
   lightMoment,
@@ -79,9 +80,17 @@ describe('physical light CPU twins', () => {
   });
   it('derives cutoff from intensity and source radius, with a smooth UE4 window', () => {
     const r = lightReach(point);
-    expect(lightLuminance(point.intensity) / (r * r + point.radius ** 2)).toBeCloseTo(REAL_LIGHT_THRESHOLD, 12);
+    if (r < REAL_LIGHT_REACH.cells)
+      expect(lightLuminance(point.intensity) / (r * r + point.radius ** 2)).toBeCloseTo(REAL_LIGHT_THRESHOLD, 12);
     expect(lightReach({ ...point, intensity: [0, 0, 0] })).toBe(0);
-    expect(lightReach({ ...point, intensity: [3.2, 2.4, 1.6] })).toBeGreaterThan(r);
+    const weak = { ...point, intensity: [0.02, 0.02, 0.02] as [number, number, number] };
+    const rw = lightReach(weak);
+    expect(lightLuminance(weak.intensity) / (rw * rw + weak.radius ** 2)).toBeCloseTo(REAL_LIGHT_THRESHOLD, 12);
+    expect(lightReach({ ...weak, intensity: [0.06, 0.05, 0.04] })).toBeGreaterThan(rw);
+    // Strong sources stop at the cap (scaled by source size for large events), still windowed smoothly to zero.
+    expect(lightReach({ ...point, intensity: [50, 50, 50] })).toBe(
+      Math.max(REAL_LIGHT_REACH.cells, REAL_LIGHT_REACH.perRadius * point.radius),
+    );
     expect(lightWindow(0)).toBe(1);
     expect(lightWindow(1)).toBe(0);
     expect(lightWindow(2)).toBe(0);

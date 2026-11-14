@@ -71,10 +71,22 @@ export interface PhysicalLight {
 }
 export const segmentLength = (l: PhysicalLight): number =>
   l.end ? Math.hypot(...l.end.map((v, i) => v - l.position[i]!)) : 0;
-/** Conservative unwindowed scalar threshold; window reaches exactly zero at this derived distance. */
+/**
+ * Reach cap in cells, scaled by source size for large events. Live SOV07TMD night (2026-11-14): a sustained Tesla
+ * tank bolt (luminance x length about 4) derived a 26-cell reach; its faint inverse-distance tail summed into a pale
+ * wash over the whole screen under night exposure. The window still takes every light smoothly to zero at the cap.
+ */
+export const REAL_LIGHT_REACH = { cells: 6, perRadius: 4 } as const;
+/** Conservative unwindowed scalar threshold, capped; the window reaches exactly zero at this derived distance. */
 export function lightReach(l: PhysicalLight): number {
-  return Math.sqrt(
-    Math.max(0, (lightLuminance(l.intensity) * (l.end ? segmentLength(l) : 1)) / REAL_LIGHT_THRESHOLD - l.radius ** 2),
+  return Math.min(
+    Math.max(REAL_LIGHT_REACH.cells, REAL_LIGHT_REACH.perRadius * l.radius),
+    Math.sqrt(
+      Math.max(
+        0,
+        (lightLuminance(l.intensity) * (l.end ? segmentLength(l) : 1)) / REAL_LIGHT_THRESHOLD - l.radius ** 2,
+      ),
+    ),
   );
 }
 export function lightWindow(t: number): number {
