@@ -849,10 +849,14 @@ class PageMesh {
         .and(aStyle.z.sub(sceneLit.mul(2)).greaterThan(0.5))
         .select(float(1), float(0))
         .mul(float(1).sub(sceneLit));
-      // A card lit like the engine's anim (sceneLit) takes its cell's object light through ANIM.PAL's rows first.
-      const cellLit: ShaderNode = sceneLit
-        .greaterThan(0.5)
-        .select(srgbScale(art, animShadeNode(objectLevelAt(layer.mapLight, aAnchor.xz))), art);
+      // A card lit like the engine's anim (sceneLit) takes its cell's object light through ANIM.PAL's rows first. A
+      // mix, not a select: a branch around this colour put the palette taps' implicit-derivative texture reads in
+      // non-uniform control flow, and the card was not drawn at all (sandbox, WebGPU).
+      const cellLit: ShaderNode = mix(
+        art,
+        srgbScale(art, animShadeNode(objectLevelAt(layer.mapLight, aAnchor.xz))),
+        sceneLit,
+      );
       // Native Top cloud art remains bright over black shroud; it does not inherit the event's scene illumination.
       const lit: ShaderNode =
         pass === 'top' ? art.mul(vec3(layer.displayScale)) : mix(cellLit.mul(layer.light), art.mul(FX_GLOW), fire);
@@ -1110,9 +1114,11 @@ class HdPageMesh {
       // The scene-lit share: a sceneLit card first takes its cell's object light through ANIM.PAL's rows (animShade),
       // like the engine; without it the gas drew at its full palette colour over ground the map darkens (ALL01UMD,
       // object level 0.78: about 1.27x the original's red). Other cards keep the plain scene light.
-      const cellLit: ShaderNode = sceneLit
-        .greaterThan(0.5)
-        .select(paletteLightNode(colour, rgba.a, animShadeNode(objectLevelAt(layer.mapLight, aAnchor.xz))), colour);
+      const cellLit: ShaderNode = mix(
+        colour,
+        paletteLightNode(colour, rgba.a, animShadeNode(objectLevelAt(layer.mapLight, aAnchor.xz))),
+        sceneLit,
+      );
       const lit =
         pass === 'top'
           ? colour.mul(vec3(layer.displayScale))
