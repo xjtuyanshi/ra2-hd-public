@@ -70,8 +70,17 @@ export function buildWater(
       .add(0.5);
     const lapping = smoothstep(0.06, 0.0, depth).mul(foamNoise.mul(1.4).sub(0.2));
     const foam = smoothstep(0.28, 0.0, depth).mul(smoothstep(0.3, 0.75, foamBand.mul(foamNoise).add(lapping)));
-    const lit = mix(body, sky, fresnel).add(glint);
-    const withFoam = mix(lit, uniforms.ambient.add(uniforms.sunColor.mul(0.8)), clamp(foam, 0, 1));
+    // Shade each optical term once. The transparent plane does not re-shade the seabed beneath it.
+    const lit = mix(
+      nodes.alive.shadeWith(body, nodes.alive.waterBody),
+      nodes.alive.shadeWith(sky, nodes.alive.waterSky),
+      fresnel,
+    ).add(nodes.alive.shadeWith(glint, 1));
+    const withFoam = mix(
+      lit,
+      nodes.alive.shadeWith(uniforms.ambient.add(uniforms.sunColor.mul(0.8)), nodes.alive.waterBody),
+      clamp(foam, 0, 1),
+    );
 
     // Terrain above the waterline already hides the plane by depth test, except along the map's cut edges.
     const wet = smoothstep(-0.005, 0.005, signedDepth);

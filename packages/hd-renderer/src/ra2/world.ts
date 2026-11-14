@@ -32,6 +32,7 @@ import { buildSmoothVoxelGeometry } from './voxelSmoothGeometry';
 import { projectionParts, voxelProjectionLibrary, type VoxelProjectionLibrary } from './voxelProjection';
 import { frameInclusiveBottom, terrainObjectDepth } from './nativeDepth';
 import { TerrainObjectCards } from './terrainObjectCards';
+import { isLivingTree } from './livingTrees';
 
 /** A battlefield the HD renderer can draw: terrain, optional water, and everything standing on it. */
 export interface HdWorld {
@@ -304,6 +305,7 @@ export async function loadRa2World(
       flat,
       glint: object.kind === 'overlay' && flat && lighting === 'none' ? 1 : undefined,
       unlit: isUnlitMapOverlay(object),
+      windSway: !flat && isLivingTree(object),
       lighting,
       houseConverter: mapObjectUsesHouseConverter(object.kind, entry.terrainPalette, entry.palette),
       // A deck is lit at its own height, four levels above the owner cell on the river (bridgeDepth.ts).

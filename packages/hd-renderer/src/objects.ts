@@ -35,8 +35,11 @@ export class ObjectLayer {
     for (const material of [this.dark, this.steel, this.concrete])
       material.sceneMultiplier = atmosphereNodes.sceneObjectMul;
     for (const material of [this.bark, this.leaves]) material.sceneMultiplier = atmosphereNodes.sceneTerrainMul;
+    for (const material of [this.dark, this.steel, this.concrete, this.bark, this.leaves])
+      material.cloudShadow = atmosphereNodes.alive.shadow;
     const windows = new SceneLitMaterial({ color: 0x1b2430, roughness: 0.2, metalness: 0.1 });
     windows.sceneMultiplier = atmosphereNodes.sceneObjectMul;
+    windows.cloudShadow = atmosphereNodes.alive.shadow;
     this.windows = windows;
     // Warm window light that flickers slightly per pane at night.
     const flicker = mx_noise_float(positionLocal.mul(4)).mul(0.25).add(0.75);
@@ -75,6 +78,7 @@ export class ObjectLayer {
     if (!material) {
       const created = metal(house < 0 ? 0x8a8a80 : HOUSE_COLORS[house % HOUSE_COLORS.length]!, 0.45, 0.4);
       created.sceneMultiplier = this.atmosphereNodes.sceneObjectMul;
+      created.cloudShadow = this.atmosphereNodes.alive.shadow;
       material = created;
       this.houseMaterials.set(house, material);
     }

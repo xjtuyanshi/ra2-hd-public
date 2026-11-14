@@ -257,12 +257,13 @@ class RemasterLighting extends PhysicalLightingModel {
     private readonly state: VoxelPbrState,
     private readonly gains: VoxelMeshGains,
     private readonly sceneMultiplier: ShaderNode,
+    private readonly cloud: ShaderNode,
   ) {
     super();
   }
   override finish(builder: NodeBuilder): void {
     super.finish(builder);
-    finishSceneLighting(builder, this.sceneMultiplier);
+    finishSceneLighting(builder, this.sceneMultiplier, this.cloud);
   }
   override start(builder: NodeBuilder): void {
     super.start(builder);
@@ -290,6 +291,7 @@ class RemasterMaterial extends MeshStandardNodeMaterial {
   /** The light gains of the mesh being drawn (vpl.ts voxelMeshGains). */
   gains!: VoxelMeshGains;
   sceneMultiplier!: ShaderNode;
+  cloudShadow: ShaderNode = float(1);
   override copy(source: this): this {
     super.copy(source);
     // Three's clone constructs an empty subclass; NodeMaterial.copy skips its undefined custom fields.
@@ -299,6 +301,7 @@ class RemasterMaterial extends MeshStandardNodeMaterial {
     this.look = source.look;
     this.gains = source.gains;
     this.sceneMultiplier = source.sceneMultiplier;
+    this.cloudShadow = source.cloudShadow;
     // A clone draws the palette its source draws (opacity and native-depth variants of one unit).
     inheritSlotBinder(this, source);
     return this;
@@ -307,7 +310,7 @@ class RemasterMaterial extends MeshStandardNodeMaterial {
     return this.envNode ? new SpecularSky(this.envNode) : null;
   }
   override setupLightingModel(): PhysicalLightingModel {
-    return new RemasterLighting(this.ao, this.state, this.gains, this.sceneMultiplier);
+    return new RemasterLighting(this.ao, this.state, this.gains, this.sceneMultiplier, this.cloudShadow);
   }
 }
 
@@ -319,6 +322,7 @@ function createGraph(
   const state = voxelPbrFor(nodes);
   const material = nodes.own(setSilhouette(new RemasterMaterial()));
   material.sceneMultiplier = nodes.sceneObjectMul;
+  material.cloudShadow = nodes.alive.shadow;
   const lut = textureSlot();
   material.name = 'voxel-remaster';
   material.state = state;
