@@ -1,3 +1,5 @@
+import { capOverlaySource, type EmissivePrimitive } from '../realEmissive';
+import { firingHead, physicalBuildingKey, physicalLampKey, physicalExposureFlash } from '../ra2/realEmission';
 import { hdInfantryPageIsBare } from '../ra2/infantryArt';
 import {
   BoxGeometry,
@@ -93,7 +95,12 @@ import {
 import { LiveEffectsDriver, smokeOnVehicle, type EffectStyle, type LiveAnim, type LiveEffects } from './effects';
 import { LiveBeams } from './beams';
 import { CAPTURABLE_BUILDINGS, EXTRA_LIGHT, NORMALIZED_BUILDINGS, SMOKE_SYSTEMS } from './effectTable';
-import { BuildingLightGate, buildingLightOverlay, buildingLightSources } from './buildingLights';
+import {
+  BuildingLightGate,
+  buildingLightOverlay,
+  buildingLightSources,
+  buildingLightPlacements,
+} from './buildingLights';
 import {
   buildingPhysicalLight,
   engineLampLights,
@@ -1039,15 +1046,16 @@ export class LiveView {
   private readonly sceneMedianZ: number;
 
   private scenePresentation(lighting: Ra2SceneLighting | null | undefined, skyFlash = 0): SceneLighting | null {
-    if (!lighting) return null;
+    if (!lighting) return this.hd.nodes?.realLight?.enabled.value ? physicalExposureFlash(null, skyFlash) : null;
     const mapLight = this.world.mapLight;
-    return ra2SceneLighting(
+    const scene = ra2SceneLighting(
       mapLight?.lighting ?? this.state.map.lighting,
       lighting,
       this.sceneMedianZ,
       skyFlash,
       mapLight?.base,
     );
+    return this.hd.nodes?.realLight?.enabled.value ? physicalExposureFlash(scene, skyFlash) : scene;
   }
 
   /**
@@ -1161,7 +1169,7 @@ export class LiveView {
         fade: 0.35,
       });
     };
-    this.liveBeams = new LiveBeams(hd.effects.cameraRight, hd.effects.cameraUp, hd.effects.now);
+    this.liveBeams = new LiveBeams(hd.effects.cameraRight, hd.effects.cameraUp, hd.effects.now, hd.realEmissive);
     this.root.add(this.liveBeams.mesh);
     this.effectDriver.hasHdArt = (type) => !!this.effectArt?.hdAnim(type);
     this.effectDriver.artWidth = (type) => {
@@ -1795,6 +1803,15 @@ export class LiveView {
     const night = profile?.kind === 'night' || hour < 6 || hour > 19;
     const active = !!this.hd.nodes?.realLight?.enabled.value && night;
     this.world.mapLight?.setPhysicalSources(active);
+    const lighting = this.world.mapLight?.base ?? this.state.map.lighting;
+    const buildings = snapshot?.objects ?? [];
+    const buildingKey = physicalBuildingKey(
+      buildings,
+      (b) => this.shroud.isLocationShrouded(b.x, b.y, b.z),
+      this.library?.revision ?? 0,
+    );
+    const lampKey = `${buildingKey}|${physicalLampKey(snapshot?.lighting?.sources ?? this.cache.lights?.lights ?? [])}|${lighting.ambient},${lighting.red},${lighting.green},${lighting.blue},${lighting.ground},${lighting.level}|${this.hd.atmosphere.lights}`;
+    if (buildingKey === this.physicalOccluderKey && lampKey === this.physicalLampKey) return;
     const engine = snapshot?.lighting?.sources;
     const sources = engine
       ? engine.map((s) => ({
@@ -1804,14 +1821,13 @@ export class LiveView {
           tint: s.tint,
         }))
       : (this.cache.lights?.lights ?? []);
-    const lighting = this.world.mapLight?.base ?? this.state.map.lighting;
     const artHeads: LampArtHead[] = [];
     for (const o of snapshot?.objects ?? []) {
       const type = this.library?.type(o.type);
       if (o.nativeHidden || type?.invisible || !isLampArt(o.type)) continue;
       const sprite =
         type?.sprite && (this.library?.library.sprites[type.sprite] ?? this.cache.manifest.sprites[type.sprite]);
-      const frame = sprite && (sprite.frames[o.buildingFrame ?? 0] ?? sprite.frames[0]);
+      const frame = sprite && sprite.frames[0];
       if (frame) artHeads.push({ x: o.x / 256, z: o.y / 256, height: lampArtHead(frame.offset[1]) });
     }
     // Terrain lamp art can be separate from the engine's invisible light-source building.
@@ -1821,28 +1837,27 @@ export class LiveView {
       const frame = o.sprite && this.cache.manifest.sprites[o.sprite]?.frames[o.frame ?? 0];
       if (frame) artHeads.push({ x: o.x + 0.5, z: o.y + 0.5, height: lampArtHead(frame.offset[1]) });
     }
-    const occluders: BuildingOccluder[] = [];
-    for (const b of snapshot?.objects ?? []) {
-      if (b.kind !== 'building' || b.nativeHidden || this.shroud.isLocationShrouded(b.x, b.y, b.z)) continue;
-      const type = this.library?.type(b.type);
-      const sprite = type?.sprite && this.library?.library.sprites[type.sprite];
-      const frame = sprite && (sprite.frames[b.buildingFrame ?? 0] ?? sprite.frames[0]);
-      if (!frame || !type?.foundation || type.invisible) continue;
-      const top = Math.max(
-        0,
-        (15 - frame.offset[1] - type.drawOffset[1]) / (Math.cos(Math.PI / 6) * PIXELS_PER_CELL_EDGE),
-      );
-      occluders.push({
-        x: Math.floor(b.x / 256),
-        z: Math.floor(b.y / 256),
-        width: type.foundation[0],
-        depth: type.foundation[1],
-        top: (b.z / 104) * LEVEL_HEIGHT + top,
-      });
-    }
-    const occluderKey = JSON.stringify(occluders);
-    if (occluderKey !== this.physicalOccluderKey) {
-      this.physicalOccluderKey = occluderKey;
+    if (buildingKey !== this.physicalOccluderKey) {
+      const occluders: BuildingOccluder[] = [];
+      for (const b of snapshot?.objects ?? []) {
+        if (b.kind !== 'building' || b.nativeHidden || this.shroud.isLocationShrouded(b.x, b.y, b.z)) continue;
+        const type = this.library?.type(b.type);
+        const sprite = type?.sprite && this.library?.library.sprites[type.sprite];
+        const frame = sprite && sprite.frames[0];
+        if (!frame || !type?.foundation || type.invisible) continue;
+        const top = Math.max(
+          0,
+          (15 - frame.offset[1] - type.drawOffset[1]) / (Math.cos(Math.PI / 6) * PIXELS_PER_CELL_EDGE),
+        );
+        occluders.push({
+          x: Math.floor(b.x / 256),
+          z: Math.floor(b.y / 256),
+          width: type.foundation[0],
+          depth: type.foundation[1],
+          top: (b.z / 104) * LEVEL_HEIGHT + top,
+        });
+      }
+      this.physicalOccluderKey = buildingKey;
       field.setOccluders(ra2LightOccluders(this.world.width, this.world.height, this.cache.height, occluders));
       if (!this.physicalGroundSet) {
         this.physicalGroundSet = true;
@@ -1855,9 +1870,8 @@ export class LiveView {
       }
     }
     const heads = sources.map((s) => nearestLampHead(s, artHeads));
-    const key = JSON.stringify([sources, lighting, heads, this.hd.atmosphere.lights]);
-    if (key !== this.physicalLampKey) {
-      this.physicalLampKey = key;
+    if (lampKey !== this.physicalLampKey) {
+      this.physicalLampKey = lampKey;
       field.setStatic(
         this.hd.atmosphere.lights ? sources.flatMap((s, i) => engineLampLights(s, lighting, heads[i])) : [],
       );
@@ -1875,6 +1889,8 @@ export class LiveView {
     const nativeDetail = this.options?.nativeDetail ?? 'ignore';
     if (snapshot) this.buildingLightGate.update(snapshot.objects, snapshot.frame, now, nativeDetail);
     if (!(this.hd.settings.sourceLights > 0)) {
+      this.updateFiringHeads(snapshot, !!this.hd.nodes?.realLight?.enabled.value);
+      if (this.hd.realEmissive) this.hd.realEmissive.legacyEnergy = 0;
       if (this.hd.realLightField) {
         this.activeSourceKeys.clear();
         this.hd.realLightField.retain('source', this.activeSourceKeys);
@@ -1921,14 +1937,99 @@ export class LiveView {
       }
     this.hd.realLightField?.retain('source', physicalKeys);
     const visibleLights = this.hd.nodes?.realLight?.enabled.value ? lights.filter((l) => l.type !== 'TESLA') : lights;
-    const overlay = buildingLightOverlay(visibleLights, snapshot?.frame ?? 0, now, {
+    const camera = {
       right: this.hd.emissiveOverlay.cameraRight.value,
       up: this.hd.emissiveOverlay.cameraUp.value,
       toCamera: this.hd.emissiveOverlay.toCamera.value,
-    });
+    };
+    const physical = !!this.hd.nodes?.realLight?.enabled.value;
+    const overlay = {
+      discs: [] as import('../emissiveOverlay').EmissiveDisc[],
+      strokes: [] as import('../emissiveOverlay').EmissiveStroke[],
+    };
+    let energy = 0;
+    if (physical) {
+      // A source's sphere and all its filaments share one cap, rather than one cap per segment.
+      for (const light of visibleLights) {
+        const original = buildingLightOverlay([light], snapshot?.frame ?? 0, now, camera);
+        const capped = capOverlaySource(original.discs, original.strokes, PIXELS_PER_CELL_EDGE);
+        overlay.discs.push(...capped.discs);
+        overlay.strokes.push(...capped.strokes);
+        energy += capped.energy;
+      }
+    } else Object.assign(overlay, buildingLightOverlay(visibleLights, snapshot?.frame ?? 0, now, camera));
+    if (this.hd.realEmissive) this.hd.realEmissive.legacyEnergy = energy;
     this.hd.emissiveOverlay.setDiscs(overlay.discs);
     this.hd.emissiveOverlay.setStrokes(overlay.strokes);
+    this.updateFiringHeads(snapshot, physical);
     this.sourceLightsActive = true;
+  }
+
+  /** Firing endpoints are the only charge signal. The art supplies a search head, never charge-frame ranges. */
+  private updateFiringHeads(snapshot: LiveSnapshot | undefined, enabled: boolean): void {
+    const layer = this.hd.realEmissive;
+    if (!layer) return;
+    const emission: EmissivePrimitive[] = [];
+    if (enabled && snapshot) {
+      const beams = (snapshot.effects?.beams ?? []).filter(
+        (beam) => !this.hidden(beam.target.x, beam.target.y, beam.target.z),
+      );
+      for (const b of snapshot.objects) {
+        if (
+          b.kind !== 'building' ||
+          !['TESLA', 'ATESLA'].includes(b.type) ||
+          b.nativeHidden ||
+          b.health <= 0 ||
+          !this.buildingLightGate.allowed(b, false) ||
+          this.shroud.isLocationShrouded(b.x, b.y, b.z)
+        )
+          continue;
+        const type = this.library?.type(b.type);
+        if (!type?.foundation) continue;
+        const frame = type.sprite && this.library?.library.sprites[type.sprite]?.frames[0];
+        const head =
+          b.type === 'TESLA'
+            ? buildingLightPlacements('TESLA', b, type.foundation)[0]?.headPosition
+            : frame
+              ? new Vector3(
+                  Math.floor(b.x / 256) + type.foundation[0] / 2,
+                  (b.z / 104) * LEVEL_HEIGHT +
+                    Math.max(
+                      0,
+                      (15 - frame.offset[1] - type.drawOffset[1]) / (Math.cos(Math.PI / 6) * PIXELS_PER_CELL_EDGE),
+                    ),
+                  Math.floor(b.y / 256) + type.foundation[1] / 2,
+                )
+              : undefined;
+        if (!head) continue;
+        const source = beams.find(
+          (beam) =>
+            (b.type === 'TESLA' ? beam.kind === 'bolt' : beam.kind === 'laser') &&
+            firingHead(head, [engineAnchor(beam.source.x, beam.source.y, beam.source.z)]),
+        );
+        if (!source) continue;
+        const at = engineAnchor(source.source.x, source.source.y, source.source.z);
+        const colour = source.colour.map((c) => (c / 255) ** 2.2) as [number, number, number];
+        emission.push({
+          source: `head:${b.uid ?? b.id}`,
+          from: at,
+          to: at,
+          width: b.type === 'TESLA' ? 0.36 : 0.28,
+          disc: true,
+          colour,
+          hot: b.type === 'TESLA' ? [1, 1, 1] : colour,
+          gain: 1,
+          push:
+            foundationPointPush(
+              at.x - Math.floor(b.x / 256),
+              at.z - Math.floor(b.y / 256),
+              type.foundation[0],
+              type.foundation[1],
+            ) + 0.2,
+        });
+      }
+    }
+    layer.set('heads', emission);
   }
 
   render(now = performance.now()): void {
@@ -1950,7 +2051,7 @@ export class LiveView {
       this.hd.setSceneLighting(
         this.scenePresentation(
           interpolateSceneLighting(previous?.snapshot, current.snapshot, alpha),
-          this.effectDriver.skyFlash(this.hd.seconds()),
+          this.effectDriver.skyFlash(this.hd.seconds(), this.hd.realLightField?.nodes.nightWeight.value ?? 0),
         ),
       );
       const cameraAlpha =

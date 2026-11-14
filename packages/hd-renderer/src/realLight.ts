@@ -11,6 +11,7 @@ import {
   InstancedMesh,
   LinearFilter,
   MeshBasicNodeMaterial,
+  Mesh,
   OneFactor,
   OrthographicCamera,
   PlaneGeometry,
@@ -36,6 +37,7 @@ import {
   positionGeometry,
   positionWorld,
   texture,
+  smoothstep,
   uniform,
   vec3,
   vec4,
@@ -126,6 +128,44 @@ export interface LightOccluders {
   heights: Float32Array;
 }
 
+/** Eight absolute-world-height samples to the closest point of a light's segment. */
+export function occlusionTransmission(
+  receiver: Point,
+  source: Point,
+  heightAt: (x: number, z: number) => number,
+  occlude = true,
+): number {
+  if (!occlude) return 1;
+  let transmission = 1;
+  for (let i = 1; i <= 8; i++) {
+    const t = i / 8;
+    const x = receiver[0] + (source[0] - receiver[0]) * t;
+    const z = receiver[2] + (source[2] - receiver[2]) * t;
+    if (Math.hypot(source[0] - x, source[2] - z) < 0.35) continue;
+    const y = receiver[1] + (source[1] - receiver[1]) * t;
+    const h = Math.max(0, Math.min(1, (heightAt(x, z) - y) / 0.4));
+    transmission *= 1 - h * h * (3 - 2 * h);
+  }
+  return Math.max(0.1, transmission);
+}
+/** Unrolled graph twin. Receiver, source and uploaded top heights share absolute world y. */
+export function occlusionNode(
+  receiver: ShaderNode,
+  source: ShaderNode,
+  heights: ShaderNode,
+  size: ShaderNode,
+  enabled: ShaderNode,
+): ShaderNode {
+  let transmission: ShaderNode = float(1);
+  for (let i = 1; i <= 8; i++) {
+    const ray: ShaderNode = mix(receiver, source, i / 8);
+    const h = texture(heights, ray.xz.div(size)).r;
+    const blocked = float(1).sub(smoothstep(0, 0.4, h.sub(ray.y)));
+    transmission = transmission.mul(length(source.xz.sub(ray.xz)).lessThan(0.35).select(float(1), blocked));
+  }
+  return enabled.greaterThan(0.5).select(transmission.max(0.1), float(1));
+}
+
 /** Allocated only by an opted-in world, before it constructs materials. */
 export class RealLightNodes {
   readonly enabled = uniform(1);
@@ -141,6 +181,7 @@ export class RealLightNodes {
    * the ground and a fire 0.4 above the ground lit it at a tenth of its strength (sandbox r1, XMP29U2 at level 2).
    */
   readonly groundHeight = texture(this.flat);
+  readonly occluderHeight = texture(this.flat);
   readonly ground = texture(this.black);
   readonly groundDirection = texture(this.black);
   readonly upper = texture(this.black);
@@ -222,6 +263,11 @@ export class RealLightField {
   private readonly cursors = new Map<RealLightPool, number>();
   private dirty = true;
   private lastNight = -1;
+  private staticDirty = true;
+  readonly staticTargets: RenderTarget[];
+  readonly staticScenes: Scene[];
+  readonly copyScenes: Scene[];
+  staticRenders = 0;
   private lastDynamic = false;
   private occluders: DataTexture | null = null;
   private groundTexture: DataTexture | null = null;
@@ -259,6 +305,7 @@ export class RealLightField {
       if (directional) target.textures[1]!.name = 'direction';
       return target;
     });
+    this.staticTargets = this.targets.map((t) => t.clone());
     nodes.ground.value = this.targets[0]!.textures[0]!;
     nodes.upper.value = (this.targets[1] ?? this.targets[0])!.textures[0]!;
     if (directional) {
@@ -267,6 +314,21 @@ export class RealLightField {
     }
     for (const pool of Object.keys(CAPACITIES) as RealLightPool[]) this.pools.set(pool, new Map());
     this.scenes = this.layers.map((y) => this.build(y, directional));
+    this.staticScenes = this.layers.map((y) => this.build(y, directional));
+    this.copyScenes = this.staticTargets.map((target) => {
+      const m = new MeshBasicNodeMaterial();
+      m.depthTest = m.depthWrite = false;
+      m.positionNode = vec3(positionGeometry.xy.add(0.5).mul(nodes.size), 0);
+      const uv = positionWorld.xy.div(nodes.size);
+      const output = texture(target.textures[0]!, uv);
+      m.colorNode = output;
+      if (directional) m.mrtNode = mrt({ output, direction: texture(target.textures[1]!, uv) });
+      const scene = new Scene();
+      const mesh = new Mesh(new PlaneGeometry(), m);
+      mesh.frustumCulled = false;
+      scene.add(mesh);
+      return scene;
+    });
   }
   private build(y: number, directional: boolean): Scene {
     const capacity = Object.values(CAPACITIES).reduce((a, b) => a + b, 0);
@@ -312,7 +374,8 @@ export class RealLightField {
     const scalar = extra.z
       .greaterThan(0.5)
       .select(integral, float(1).div(max(d2, 1e-8)))
-      .mul(weight);
+      .mul(weight)
+      .mul(occlusionNode(p, p.add(delta), this.nodes.occluderHeight, this.nodes.size, extra.y));
     const s = c.rgb.mul(scalar),
       lum = dot(s, vec3(...LUMA));
     const output = vec4(directional ? s : s.mul(max(delta.y.div(max(distance, 1e-8)), 0)), lum.mul(extra.x));
@@ -327,7 +390,7 @@ export class RealLightField {
     this.meshes.push(mesh);
     return scene;
   }
-  /** Game module supplies top heights; march is reserved for round 2. Upload contract is already owned/disposed here. */
+  /** Game module supplies absolute top heights; this field owns the upload and cached shadow invalidation. */
   setOccluders(data: LightOccluders): void {
     if (
       data.heights.length !== data.width * data.height ||
@@ -345,6 +408,8 @@ export class RealLightField {
       HalfFloatType,
     );
     this.occluders.needsUpdate = true;
+    this.nodes.occluderHeight.value = this.occluders;
+    this.staticDirty = this.dirty = true;
   }
   /** Ground height per cell (world y), row-major width x height cells. */
   setGround(heights: ArrayLike<number>): void {
@@ -360,9 +425,11 @@ export class RealLightField {
     this.groundTexture.minFilter = this.groundTexture.magFilter = LinearFilter;
     this.groundTexture.needsUpdate = true;
     this.nodes.groundHeight.value = this.groundTexture;
+    this.staticDirty = true;
     this.dirty = true;
   }
   setStatic(lights: readonly PhysicalLight[]): void {
+    this.staticDirty = true;
     this.pools.get('static')!.clear();
     lights.slice(0, CAPACITIES.static).forEach((l, i) => this.put('static', String(i), 0, l));
     this.dirty = true;
@@ -374,6 +441,7 @@ export class RealLightField {
       if (pool === 'kept' || pool === 'source' || pool === 'static') return;
       entries.delete(entries.keys().next().value!);
     }
+    if (pool === 'static') this.staticDirty = true;
     entries.set(key, { light, born: old?.born ?? now, seen: now, hold, fade, ttl });
     this.dirty = true;
   }
@@ -395,15 +463,19 @@ export class RealLightField {
   }
   clear(): void {
     for (const p of this.pools.values()) p.clear();
+    this.staticDirty = true;
     this.dirty = true;
   }
   update(now: number, renderer: WebGPURenderer, night: number): boolean {
     this.nodes.nightWeight.value = night;
     if (!this.nodes.enabled.value) return false;
+    const refreshStatic = this.staticDirty || this.lastNight !== night;
+    let staticCount = 0;
     let count = 0,
       dynamic = false;
     for (const [pool, entries] of this.pools)
       for (const [key, entry] of entries) {
+        if (pool === 'static' && !refreshStatic) continue;
         const { light: l, born, seen, hold, fade, ttl } = entry;
         const envelope =
           pool === 'static'
@@ -423,16 +495,23 @@ export class RealLightField {
           flicker(l.seed ?? 0, now, l.flicker);
         dynamic ||= pool !== 'static' || !!l.flicker;
         if (!(gain > 0)) continue;
-        for (const attrs of this.attributes) {
-          attrs[0]!.setXYZW(count, ...l.position, l.radius);
-          attrs[1]!.setXYZW(count, ...(l.end ?? l.position), lightReach(l));
+        const isStatic = pool === 'static';
+        const index = isStatic ? staticCount : count;
+        const selected = isStatic
+          ? this.attributes.slice(this.layers.length)
+          : this.attributes.slice(0, this.layers.length);
+        for (const attrs of selected) {
+          attrs[0]!.setXYZW(index, ...l.position, l.radius);
+          attrs[1]!.setXYZW(index, ...(l.end ?? l.position), lightReach(l));
           const intensity = l.initialIntensity && now - born < (l.hotSeconds ?? 0) ? l.initialIntensity : l.intensity;
-          attrs[2]!.setXYZW(count, intensity[0] * gain, intensity[1] * gain, intensity[2] * gain, 0);
-          attrs[3]!.setXYZW(count, l.groundOnly ?? 0, l.occlude === false ? 0 : 1, l.end ? 1 : 0, 0);
+          attrs[2]!.setXYZW(index, intensity[0] * gain, intensity[1] * gain, intensity[2] * gain, 0);
+          attrs[3]!.setXYZW(index, l.groundOnly ?? 0, l.occlude === false ? 0 : 1, l.end ? 1 : 0, 0);
         }
-        count++;
+        if (isStatic) staticCount++;
+        else count++;
       }
     if (!this.dirty && !dynamic && !this.lastDynamic && this.lastNight === night) return false;
+    this.staticDirty = false;
     this.dirty = false;
     this.lastNight = night;
     this.lastDynamic = dynamic;
@@ -444,18 +523,34 @@ export class RealLightField {
     renderer.setClearColor(0x000000, 0);
     renderer.autoClear = true;
     try {
-      for (let i = 0; i < this.scenes.length; i++) {
-        const mesh = this.meshes[i]!;
+      const draw = (index: number, count: number, scene: Scene, target: RenderTarget, clear: boolean) => {
+        const mesh = this.meshes[index]!;
         mesh.count = count;
-        for (const attr of this.attributes[i]!) {
+        for (const attr of this.attributes[index]!) {
           attr.clearUpdateRanges();
           attr.addUpdateRange(0, Math.max(1, count) * 4);
           attr.needsUpdate = true;
         }
-        renderer.setRenderTarget(this.targets[i]!);
+        renderer.autoClear = clear;
+        renderer.setRenderTarget(target);
         renderer.setMRT(this.nodes.directional.value ? (mesh.material as MeshBasicNodeMaterial).mrtNode : null);
-        renderer.render(this.scenes[i]!, this.camera);
+        renderer.render(scene, this.camera);
+      };
+      for (let i = 0; i < this.layers.length; i++) {
+        if (refreshStatic)
+          draw(i + this.layers.length, staticCount, this.staticScenes[i]!, this.staticTargets[i]!, true);
+        renderer.autoClear = true;
+        renderer.setRenderTarget(this.targets[i]!);
+        const copy = this.copyScenes[i]!;
+        renderer.setMRT(
+          this.nodes.directional.value
+            ? (copy.children[0] as Mesh<PlaneGeometry, MeshBasicNodeMaterial>).material.mrtNode
+            : null,
+        );
+        renderer.render(copy, this.camera);
+        draw(i, count, this.scenes[i]!, this.targets[i]!, false);
       }
+      if (refreshStatic) this.staticRenders++;
     } finally {
       renderer.setRenderTarget(previous);
       renderer.setMRT(previousMrt);
@@ -466,13 +561,19 @@ export class RealLightField {
     return true;
   }
   dispose(): void {
-    for (const t of this.targets) t.dispose();
+    for (const t of [...this.targets, ...this.staticTargets]) t.dispose();
+    for (const scene of this.copyScenes) {
+      const mesh = scene.children[0] as Mesh<PlaneGeometry, MeshBasicNodeMaterial>;
+      mesh.geometry.dispose();
+      mesh.material.dispose();
+      scene.clear();
+    }
     for (const m of this.meshes) {
       m.geometry.dispose();
       (m.material as MeshBasicNodeMaterial).dispose();
       m.dispose();
     }
-    for (const s of this.scenes) s.clear();
+    for (const s of [...this.scenes, ...this.staticScenes]) s.clear();
     this.occluders?.dispose();
     this.groundTexture?.dispose();
     this.clear();

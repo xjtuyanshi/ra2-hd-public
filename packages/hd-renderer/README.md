@@ -400,34 +400,55 @@ window.__fx.live.render();
 ```
 
 `setRealLight` returns false on a view created without `realLight`; enabling new graphs requires creating an
-opted-in view. `src/realLight.ts` owns generic point and finite-segment primitives, independent bounded pools,
-CPU twins, source-radius inverse-square falloff, and the smooth `(1-t^4)^2` window. Cutoff is conservatively derived
-from unwindowed scalar luminance 0.006 noon units, so it bounds every receiver normal; it is larger than the
-visible ground footprint. Segment intensity is per unit length, with an analytic finite-line integral and a
-closest-point direction. The field stores RGB S and luminance-weighted direction D in two RGBA16F attachments at
-ground height and at 1.25 cells (the upper layer has half the resolution). One-light reconstruction is exact
-Lambert; opposed lights retain half ambient. Without MRT blending support it draws scalar Lambert ground only;
-without half-float rendering it uses scaled RGBA8. These fallbacks still require GPU validation.
+opted-in view. `src/realLight.ts` owns generic point and finite-segment lights, source-sized attenuation, bounded
+pools, terrain-relative ground/upper directional MRT layers, irradiance-only knees, and the scalar ground fallback.
+The upper layer is 1.25 cells above the terrain. Objects retain the reviewed 0.3 knee multiplier; explosion ground
+energy remains doubled and fire ground calibration remains 0.8. Generic graphics code contains no RA2 names, addresses
+or animation policies; `src/ra2/realLights.ts` and `src/ra2/realEmission.ts` supply those policies on every host.
 
-Local illumination uses the art's own ungraded albedo, with an irradiance-only soft knee (1.2 by day, 2.5 by night),
-then the existing display transform. The physical branch bypasses object-light desaturation and per-pixel headroom
-clamps. Sprites use material-atlas normals, camera-facing fallback, ground projection and height interpolation;
-voxels use world normals/positions. Water and participating media take S. RA2 source colours, energies, heights and
-capture-to-light conversions live in `src/ra2/realLights.ts`, shared by main-thread and Worker-hosted views.
+Each splat marches eight samples toward the closest point on the light, comparing absolute world ray height
+(terrain height plus receiver-layer height) against the R16F occluder top heights. Each step multiplies transmission
+by `1 - smoothstep(0, 0.4, H - rayY)`, with a final floor of 0.1. Samples within 0.35 cells of the source are ignored;
+`occlude: false` gives full transmission. `occlusionTransmission` is the CPU twin. Static lamps have separate cached
+targets: only static-set, night-gain, terrain or occluder changes resplat them. Dynamic pools draw additively over a
+copy of the cached moments. Live lamp and building inputs use semantic keys before allocating source/occluder lists;
+ordinary animation-frame changes do not rebuild the stable housing/foundation occluder geometry.
 
-Night engine lamps replace positive grade sources, while negative sources retain the engine formula. Their
-brightness is matched at one quarter LightVisibility after the knee, with a visible lamp-art head within one cell
-or a 1.25-cell fallback and a short post segment. Daytime grade remains unchanged. Physical static/kept sources
-contribute zero by day; transient events retain a small daytime share. Invented HD poles/window pools and the idle
-Tesla pool are absent while physical mode is active. Existing reactor emissive art and overlays remain; their ground
-emission uses physical source-sized falloff. Native anim/beam geometry, effect clocks and core colours are unchanged.
+Night engine lamps replace positive grade sources; negative sources retain the engine formula. Calibration is at
+one cell (or a quarter of visibility for very small sources), clamped to `LAMP_GROUND_AT_ONE_CELL` (0.12–0.45 noon
+units) after the knee. A visible lamp-art head within one cell supplies its height, otherwise 1.25 cells plus a short
+post segment. Daytime grade is unchanged. Physical static/kept lights contribute zero by day, while transient events
+retain a small daytime share. Invented HD poles, window ground pools and idle Tesla pools remain absent. **HD lit-window
+panes are enabled exactly as in the legacy path**, with the same masks, hour gates and window gain.
 
-This is experimental, not visual acceptance. Occlusion marching, self-lit-pixel cluster extraction, validated
-Tesla/Prism charge-frame policy, new core/bloom budgets and rendered M1–M10/cost acceptance remain unfinished.
-`LightOccluders` already defines row-major top heights at two texels/cell, uploaded as R16F with explicit ownership;
-terrain levels and visible library-building top heights fill it, but there is no occlusion march yet. Elevation-heavy maps, height-layer approximation, native beam endpoint alignment,
-unit texture/hue, same-frame toggle pixels and fallback GPUs remain **UNVERIFIED**. Asset-free CPU and shader
-construction tests do not establish GPU pixels or live-match performance.
+Physical emission uses the existing emissive attachment before bloom, without allocating a fifth full-resolution
+attachment. `src/realEmissive.ts` adds layers around the exact generated bolt, laser, ribbon, ring and link vertices:
+a quarter-width hot core at radiance 5, an original-colour sheath, and a soft 2.5-width outer glow at alpha 0.25.
+Non-core luminance is limited to 0.8 after flicker and gain, below both bloom thresholds.
+Lasers use their captured inner/outer colours; electric modulation uses the existing presentation-clock noise.
+Links receive a faint 0.08 share. Captured fire anims/systems add small warm, light-synchronized base discs, muzzle
+anims add short cores, and explosion/collapse anims add a table-radius core for the first 0.15 seconds. Native anim
+frames, base geometry and publication lifetimes are unchanged. Tesla and Prism heads light only when a captured bolt
+or laser source is within 0.6 cells of the art-derived head in 3D; no charge frames are inferred.
+
+An emitter's complete path shares a source energy cap, including all strands/rings. Existing building orbs and their
+filaments also share one cap per source. `EMISSIVE_BUDGET` defaults to 6 radiance-area units per source and a smooth
+32-unit frame cap. The cap scales radiance without changing hue, geometry or clocks. Physical bloom reads only this
+budgeted emission (threshold 1 by day, 0.85 at night), so sunlit roofs cannot bloom. Runtime-off restores the legacy
+post-bloom overlay and bloom input in the same graph. Unsupported emissive MRT blending retains the legacy fallback.
+Nuke, dominator, storm-bolt and collapse publications add a non-accumulating 0.15-second kick through the existing sky
+flash multiplier, bounded at +0.25 EV by day and +0.5 EV at night.
+
+`&lightdbg=1` is instrumentation-only and adds no drawing or setting changes. The bench already exposes
+`window.__fx.live.hd.realLightField`: inspect `pools`, `renders` and `staticRenders` there. `light=real` enables the
+whole physical path without requiring this debug query. Emissive energy/source counters are on
+`window.__fx.live.hd.realEmissive`.
+
+This remains experimental. CPU twins, finite shader-graph construction, cache invalidation and default shader/buffer
+fingerprints are asset-free checks, not GPU or live-match acceptance. Native-resolution day/night appearance,
+M1–M10, the +1 ms budget, fallback GPU execution and full live battles remain **UNVERIFIED**. Self-lit pixel-cluster
+extraction and independently classified charge-frame ranges are outside this implementation; only captured art,
+fire anims and actual firing endpoints produce the added local emission.
 
 ## Night, weather and map light sources
 

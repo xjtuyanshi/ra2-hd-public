@@ -1,3 +1,4 @@
+import type { RealEmissiveLayer, EmissivePrimitive } from '../realEmissive';
 import {
   AdditiveBlending,
   Color as ThreeColor,
@@ -252,9 +253,16 @@ export class LiveBeams {
   private readonly appearance = new DirtyAttribute(new Float32Array(BEAM_RIBBON_CAPACITY * 14), 14);
   private count = 0;
   private publication = '';
+  private emission: EmissivePrimitive[] = [];
+  private emissiveSource = '';
   private style: EffectStyle = 'faithful';
 
-  constructor(cameraRight: ShaderNode, cameraUp: ShaderNode, now: ShaderNode) {
+  constructor(
+    cameraRight: ShaderNode,
+    cameraUp: ShaderNode,
+    now: ShaderNode,
+    private readonly realEmissive?: RealEmissiveLayer,
+  ) {
     const material = new MeshBasicNodeMaterial();
     material.transparent = true;
     material.depthWrite = false;
@@ -385,7 +393,9 @@ export class LiveBeams {
     this.style = style;
     this.enhanced.value = style === 'enhanced' ? 1 : 0;
     this.count = 0;
+    this.emission = [];
     for (const beam of rad) {
+      this.emissiveSource = `rad:${beam.id}`;
       if (this.count >= BEAM_RIBBON_CAPACITY) break;
       const style = radStyle(beam);
       if (beam.type === 'rad') {
@@ -407,6 +417,7 @@ export class LiveBeams {
       this.endpoints(toWorld(beam.source), toWorld(beam.target), style, gain, beam.id);
     }
     for (const wave of waves) {
+      this.emissiveSource = `wave:${wave.id}:${wave.uid}`;
       if (this.count >= BEAM_RIBBON_CAPACITY) break;
       const fade = beamFade(wave.progress);
       const from = toWorld(wave.source),
@@ -446,6 +457,7 @@ export class LiveBeams {
       }
     }
     for (const link of links) {
+      this.emissiveSource = `link:${link.id}`;
       if (this.count >= BEAM_RIBBON_CAPACITY) break;
       const color = beamColor(link.color);
       // The observer owns selection/capture-timer gating. A valid publication stays fully lit until removed.
@@ -462,6 +474,7 @@ export class LiveBeams {
       );
     }
     for (const attribute of [this.from, this.to, this.appearance]) attribute.flush();
+    this.realEmissive?.set('auxiliary', this.emission);
     this.mesh.count = this.count;
     this.mesh.visible = this.count > 0;
   }
@@ -511,6 +524,18 @@ export class LiveBeams {
       const a = points[i - 1]!,
         b = points[i]!,
         n = this.count++;
+      if (this.realEmissive)
+        this.emission.push({
+          source: this.emissiveSource,
+          from: a,
+          to: b,
+          width: style.widths.inner || style.widths.halo * 0.4,
+          colour: style.color,
+          hot: style.hot,
+          gain: gain * (segmentGains?.[i - 1] ?? 1) * (style.linkFlow ? 0.08 : 1),
+          disc: a.distanceToSquared(b) < 1e-12,
+          noise: { mode: 2, rate: 8, scale: 9, amount: 0.12, seed, distance },
+        });
       this.from.setXYZ(n, a.x, a.y, a.z);
       this.to.setXYZ(n, b.x, b.y, b.z);
       this.appearance.setXYZ(n, ...style.color);

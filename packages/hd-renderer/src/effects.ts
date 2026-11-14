@@ -1,3 +1,4 @@
+import { type RealEmissiveLayer, type EmissivePrimitive } from './realEmissive';
 import {
   AdditiveBlending,
   Color,
@@ -865,6 +866,14 @@ export class EffectsLayer {
   private lightField: LightField | null = null;
   /** Independent physical pool, allocated only by opted-in hosts. */
   physicalLights?: RealLightField;
+  private emissiveLayer?: RealEmissiveLayer;
+  get realEmissive(): RealEmissiveLayer | undefined {
+    return this.emissiveLayer;
+  }
+  set realEmissive(layer: RealEmissiveLayer | undefined) {
+    this.emissiveLayer = layer;
+    this.beams.realEmissive = layer;
+  }
   /** Next flame emission per persistent fire key. */
   private readonly fireEmit = new Map<string, number>();
   /** Tracked fire positions are stable objects; weak ownership releases the schedule when an anim disappears. */
@@ -2363,6 +2372,7 @@ export interface BeamSpec {
   from: Vector3;
   to: Vector3;
   colour: Vector3;
+  outerColour?: Vector3;
   /** Three jagged strands (electric and psychic bolts) instead of one straight line (lasers). */
   bolt: boolean;
   /** Shape seed: the same seed gives the same jagged shape. */
@@ -2442,6 +2452,7 @@ const BEAM_CORE = 0.42;
 export class BeamLayer {
   readonly mesh: InstancedMesh;
   private readonly buffer = new BeamSegmentBuffer();
+  realEmissive?: RealEmissiveLayer;
 
   constructor(cameraRight: ShaderNode, cameraUp: ShaderNode, now: ShaderNode = uniform(0)) {
     const material = additive();
@@ -2511,7 +2522,30 @@ export class BeamLayer {
 
   /** Stream only the fixed-capacity visible prefix; long/many bolts never allocate discarded geometry. */
   setBeams(beams: readonly BeamSpec[], enhanced = false): void {
+    const emission: EmissivePrimitive[] = [];
+    this.buffer.onBeam = this.realEmissive
+      ? (beam, start, end) => {
+          const e = ENHANCED.bolts;
+          for (let i = start; i < end; i++) {
+            const from = new Vector3().fromArray(this.buffer.from.array, i * 3);
+            const to = new Vector3().fromArray(this.buffer.to.array, i * 3);
+            emission.push({
+              source: `native:${start}`,
+              from,
+              to,
+              width: BEAM_WIDTH,
+              colour: (beam.outerColour ?? beam.colour).toArray() as [number, number, number],
+              hot: beam.bolt ? [1, 1, 1] : (beam.colour.toArray() as [number, number, number]),
+              gain: 1,
+              noise: beam.bolt
+                ? { mode: 1, rate: e.flickerRate, scale: e.noiseScale, amount: e.flicker, seed: 0, distance: 0 }
+                : { mode: 2, rate: 0, scale: 0, amount: 0, seed: beam.seed, distance: 0 },
+            });
+          }
+        }
+      : undefined;
     this.buffer.set(beams, enhanced);
+    this.realEmissive?.set('native', emission);
     this.buffer.flush();
     this.mesh.count = this.buffer.count;
     this.mesh.visible = this.buffer.count > 0;
@@ -2526,6 +2560,7 @@ export class BeamSegmentBuffer {
   /** Zero for faithful bolts and all lasers; one selects the layered electric shader. */
   readonly enhanced = new DirtyAttribute(new Float32Array(BEAM_SEGMENTS), 1);
   count = 0;
+  onBeam?: (beam: BeamSpec, start: number, end: number) => void;
   private seed = 0;
   private readonly branch = new Vector3();
 
@@ -2540,6 +2575,7 @@ export class BeamSegmentBuffer {
   set(beams: readonly BeamSpec[], enhanced = false): void {
     let n = 0;
     for (let beamIndex = 0; beamIndex < beams.length && n < BEAM_SEGMENTS; beamIndex++) {
+      const start = n;
       const { from, to, colour, bolt, seed } = beams[beamIndex]!;
       if (!bolt) {
         this.from.setXYZ(n, from.x, from.y, from.z);
@@ -2547,6 +2583,7 @@ export class BeamSegmentBuffer {
         this.enhanced.setX(n, 0);
         // Preserve the existing straight beam's white strand (its target light carries the beam colour).
         this.colour.setXYZ(n++, 1, 1, 1);
+        this.onBeam?.(beams[beamIndex]!, start, n);
         continue;
       }
       const dx = to.x - from.x;
@@ -2593,6 +2630,7 @@ export class BeamSegmentBuffer {
           az = bz;
         }
       }
+      this.onBeam?.(beams[beamIndex]!, start, n);
     }
     this.count = n;
   }

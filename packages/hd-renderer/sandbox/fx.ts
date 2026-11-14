@@ -135,6 +135,8 @@ const live = await LiveView.create(canvas, {
       ? { dayHour: Number(params.get('dayhour')) }
       : {}
     : { timeOfDay: Number(params.get('hours') ?? 12) }),
+  // lightdbg=1 is instrumentation-only: __fx.live.hd.realLightField below exposes pool/render counters.
+  // It deliberately changes no drawing, time, quality or source-selection setting.
   realLight: params.get('light') === 'real',
   effects: params.get('effects') === 'enhanced' ? 'enhanced' : 'faithful',
   effectsHd: params.get('fxhd') !== '0',

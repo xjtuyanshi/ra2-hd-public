@@ -23,6 +23,7 @@ import {
   type EmissiveStroke,
   type OrbOccluder,
 } from '../src/emissiveOverlay';
+import { AtmosphereNodes } from '../src/atmosphere';
 import { HdRenderer, applyLookPreset, emissiveOverlayEnabled } from '../src/HdRenderer';
 import { BUILDING_LIGHTS } from '../src/live/buildingLights';
 import { InstancedQuad } from '../src/instancedQuad';
@@ -371,7 +372,7 @@ function dependencies(root: GraphNode): Set<GraphNode> {
 }
 
 describe('overlay pipeline choice', () => {
-  function fixture() {
+  function fixture(physical = false) {
     vi.stubGlobal('window', { devicePixelRatio: 2 });
     const canvas = {
       width: 1,
@@ -380,7 +381,11 @@ describe('overlay pipeline choice', () => {
       addEventListener() {},
       removeEventListener() {},
     } as unknown as HTMLCanvasElement;
-    const hd = new HdRenderer(canvas, createScenario(2, 2));
+    const hd = new HdRenderer(
+      canvas,
+      createScenario(2, 2),
+      physical ? { nodes: new AtmosphereNodes({ realLight: true }) } : {},
+    );
     const internal = hd as unknown as {
       buildPipeline(): void;
       settingsPipelineKey(): string;
@@ -397,6 +402,7 @@ describe('overlay pipeline choice', () => {
       dispose: () => {
         internal.pipeline?.dispose();
         internal.pipelineNodes.forEach((n) => n.dispose());
+        hd.realEmissive?.dispose();
         hd.emissiveOverlay.dispose();
         hd.nodes.dispose();
       },
@@ -416,6 +422,28 @@ describe('overlay pipeline choice', () => {
       expect(dependencies(internal.pipelineNodes[1] as unknown as GraphNode).has(emission)).toBe(false);
       const key = internal.settingsPipelineKey();
       hd.nodes.night.value = 1;
+      expect(internal.settingsPipelineKey()).toBe(key);
+      expect(dependencies(internal.pipeline.outputNode).has(emission)).toBe(true);
+    } finally {
+      dispose();
+    }
+  });
+  it('constructs physical bloom from emission only, with runtime-off legacy compositing in the same graph', () => {
+    const { hd, internal, dispose } = fixture(true);
+    try {
+      hd.settings.sourceLights = 0;
+      hd.settings.antialias = 'none';
+      hd.settings.clarity = 0;
+      hd.settings.sharpness = -1;
+      internal.buildPipeline();
+      const emission = internal.pipelineNodes[0]!.getTextureNode!('emissive');
+      expect(internal.pipelineNodes[0]!.getMRT?.()?.has('emissive')).toBe(true);
+      expect(dependencies(internal.pipelineNodes[1] as unknown as GraphNode).has(emission)).toBe(true);
+      expect(dependencies(internal.pipeline.outputNode).has(hd.realEmissive!.frameGain as unknown as GraphNode)).toBe(
+        true,
+      );
+      const key = internal.settingsPipelineKey();
+      hd.nodes.realLight!.enabled.value = 0;
       expect(internal.settingsPipelineKey()).toBe(key);
       expect(dependencies(internal.pipeline.outputNode).has(emission)).toBe(true);
     } finally {

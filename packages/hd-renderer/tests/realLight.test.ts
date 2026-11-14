@@ -162,7 +162,7 @@ describe('physical field ownership and GPU graph generation', () => {
     expect(field.pools.get('flash')!.size).toBe(256);
     expect(field.pools.get('kept')!.size).toBe(1);
     field.update(0.05, renderer, 0);
-    expect(renderer.render).toHaveBeenCalledTimes(2);
+    expect(renderer.render).toHaveBeenCalledTimes(6);
     field.update(0.4, renderer, 1);
     expect(field.pools.get('flash')!.size).toBe(0);
     expect(field.pools.get('kept')!.size).toBe(0);

@@ -65,6 +65,7 @@ import { FRONT_DISTANCE } from './ra2/fireEngulf';
 import { EmitterLayer, type Emitter } from './emitters';
 import { EmissiveOverlay, emissiveMrtSupported } from './emissiveOverlay';
 import { LightField, type DynamicLight } from './lightField';
+import { RealEmissiveLayer } from './realEmissive';
 import { RealLightField } from './realLight';
 import { Lighting, clearLightAt, noonFlatLuminance } from './lighting';
 import { applyMaterialFallbacks, failedPipelineMaterials, type PipelineHost } from './materialFallback';
@@ -864,6 +865,7 @@ export class HdRenderer {
   /** Every local light as irradiance on the ground; created in init() once the map size is known. */
   lightField!: LightField;
   realLightField?: RealLightField;
+  readonly realEmissive?: RealEmissiveLayer;
   private forceLocalLights = false;
   /** A same-frame A/B switch must refresh even on a tier that normally draws the field every other frame. */
   refreshLocalLights(): void {
@@ -949,6 +951,11 @@ export class HdRenderer {
     this.effects = new EffectsLayer(this.layerNodes, this.terrainDepth);
     this.emitters = new EmitterLayer(this.layerNodes);
     this.emissiveOverlay = new EmissiveOverlay(PIXELS_PER_CELL_EDGE);
+    if (this.nodes.realLight) {
+      this.realEmissive = new RealEmissiveLayer();
+      this.emissiveOverlay.root.add(this.realEmissive.root);
+      this.effects.realEmissive = this.realEmissive;
+    }
     this.scene.onBeforeRender = () => this.emissiveOverlay.beginRender(this.renderer);
     this.scene.onAfterRender = () => this.emissiveOverlay.endRender();
     this.mist = new Mist(this.layerNodes);
@@ -1224,7 +1231,12 @@ export class HdRenderer {
       this.settings.clarity > 0,
     ];
     // No extra key/graph branch for faithful: preserve its original output path exactly.
-    if (emissiveOverlayEnabled(this.settings, emissiveMrtSupported(this.renderer))) key.push('emissive');
+    if (
+      (this.nodes?.realLight || this.settings.sourceLights > 0) &&
+      emissiveMrtSupported(this.renderer) &&
+      this.settings.debugView === 'none'
+    )
+      key.push('emissive');
     if (this.world && debugView === 'none') key.push('unlit');
     if (this.topEffectsPass) key.push('top-effects');
     if (this.mistWanted()) key.push('mist');
@@ -1239,7 +1251,9 @@ export class HdRenderer {
   private buildPipeline(fresh = true): void {
     const { toneMapper, sharpness, debugView } = this.settings;
     const antialias = this.antialiasInUse();
-    const overlay = emissiveOverlayEnabled(this.settings, emissiveMrtSupported(this.renderer));
+    const overlay =
+      emissiveOverlayEnabled(this.settings, emissiveMrtSupported(this.renderer)) ||
+      (!!this.nodes.realLight && emissiveMrtSupported(this.renderer) && debugView === 'none');
     const unlit = !!this.world && debugView === 'none';
     this.emissiveOverlay.setEnabled(overlay);
     this.pipelineKey = this.settingsPipelineKey();
@@ -1333,8 +1347,22 @@ export class HdRenderer {
       topAlpha = top.a;
       shown = vec4(shown.rgb.mul(float(1).sub(top.a)).add(top.rgb), 1);
     }
+    // Physical emitters share the existing attachment, avoiding a fifth native-resolution MRT attachment.
+    // Only emission enters physical bloom: sunlit art cannot bloom, regardless of roof albedo or scene exposure.
+    const physical = this.nodes.realLight?.enabled;
+    const physicalEmission =
+      overlay && physical && this.realEmissive
+        ? scenePass
+            .getTextureNode('emissive')
+            .rgb.mul(visible)
+            .mul(this.realEmissive.frameGain)
+            .mul(physical)
+            .mul(topAlpha ? float(1).sub(topAlpha) : 1)
+        : null;
+    const bloomInput = physicalEmission && physical ? mix(shown, vec4(physicalEmission, 1), physical) : shown;
+    if (physicalEmission) shown = vec4(shown.rgb.add(physicalEmission), shown.a);
     // Bloom reads the unexposed scene; frame() sets its threshold from the exposure.
-    const glow: ShaderNode = bloom(shown, 1, 0.45, this.bloomThreshold);
+    const glow: ShaderNode = bloom(bloomInput, 1, 0.45, this.bloomThreshold);
     glow.strength = this.bloomStrength;
     nodes.push(glow);
     const vignette = float(1).sub(
@@ -1372,6 +1400,7 @@ export class HdRenderer {
     // (TSL's chained a.mix(b, t) is mix(b, t, a); call mix() directly.)
     const mixed: ShaderNode = mix(faithful, neutral, this.nightDisplay);
     let emission: ShaderNode | null = overlay ? scenePass.getTextureNode('emissive').rgb.mul(visible) : null;
+    if (emission && physical) emission = emission.mul(float(1).sub(physical));
     if (emission && topAlpha) emission = emission.mul(float(1).sub(topAlpha));
     let unlitColour: ShaderNode | null = unlit ? scenePass.getTextureNode('unlit').rgb.mul(visible) : null;
     if (unlitColour && topAlpha) unlitColour = unlitColour.mul(float(1).sub(topAlpha));
@@ -1653,7 +1682,9 @@ export class HdRenderer {
     // Bloom picks up exposed luminance above 1 by day (effect cores and glints only, never lit art); the night keeps
     // its tuned threshold on the unexposed scene.
     const dayThreshold = BLOOM_THRESHOLD / Math.max(1e-3, (exposure.r + exposure.g + exposure.b) / 3);
-    this.bloomThreshold.value = dayThreshold + (NIGHT_BLOOM_THRESHOLD - dayThreshold) * nightGrade;
+    this.bloomThreshold.value = this.nodes.realLight?.enabled.value
+      ? 1 - 0.15 * light.dressing
+      : dayThreshold + (NIGHT_BLOOM_THRESHOLD - dayThreshold) * nightGrade;
     this.nightDisplay.value = nightGrade;
     this.nodes.faithfulDisplay.value = this.settings.toneMapper === 'faithful' ? 1 - nightGrade : 0;
     // Authored dusk uses the engine's full grade and sources at its golden-hour key, without daytime neutralisation.
@@ -1779,6 +1810,12 @@ export class HdRenderer {
     this.emissiveOverlay.cameraUp.value.copy(up);
     this.emissiveOverlay.toCamera.value.copy(toCamera);
     this.emissiveOverlay.now.value = now;
+    if (this.realEmissive) {
+      this.realEmissive.right.value.copy(right);
+      this.realEmissive.up.value.copy(up);
+      this.realEmissive.toCamera.value.copy(toCamera);
+      this.realEmissive.update(now, !!this.nodes.realLight?.enabled.value);
+    }
     const sprites = this.world?.sprites;
     const spriteScale = 1 / Math.PI + (1 / reference - 1 / Math.PI) * nightGrade;
     this.effectLight.copy(this.eventFreeIrradiance).multiplyScalar(spriteScale);
@@ -2305,6 +2342,7 @@ export class HdRenderer {
     this.rain?.dispose();
     this.snow?.dispose();
     this.weatherGroundMask?.dispose();
+    this.realEmissive?.dispose();
     this.emissiveOverlay.dispose();
     this.beforeDepthCapture = undefined;
     this.terrainDepth.dispose();

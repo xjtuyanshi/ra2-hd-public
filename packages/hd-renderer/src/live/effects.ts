@@ -1,3 +1,5 @@
+import { animEmission, eventExposureKick, largeLightEvent } from '../ra2/realEmission';
+import type { EmissivePrimitive } from '../realEmissive';
 import { Vector3 } from 'three/webgpu';
 import { VOLUMETRIC_BLAST_PRESETS, type VolumetricBlast } from '../volumetricBlasts';
 import { VOLUMETRIC_ANIMS } from './volumetricTable';
@@ -24,7 +26,7 @@ import {
   type EffectPass,
 } from './effectSprites';
 import { EFFECT_TABLE, SMOKE_SYSTEMS, type EffectTableRow, type SmokeSystemRow } from './effectTable';
-import { heldPulseEnvelope } from '../lightField';
+import { flicker, heldPulseEnvelope } from '../lightField';
 import type { Ra2SceneLighting } from '../ra2/sceneLighting';
 
 import {
@@ -539,6 +541,8 @@ export class LiveEffectsDriver {
   private lastNuke: LiveAnim | null = null;
   private lastNukeTail = -Infinity;
   private readonly physicalAnims = new Set<string>();
+  private readonly emissiveBorn = new Map<string, number>();
+  private lastExposureEvent = -Infinity;
 
   /** Uses the same capture publication as native art; independent of garnish, HD art and damage-fire card routing. */
   private pushPhysicalLights(effects: LiveEffects, frame: number, now: number): void {
@@ -547,6 +551,8 @@ export class LiveEffectsDriver {
     if (frame < this.physicalFrame) {
       field.clearDynamic();
       this.physicalAnims.clear();
+      this.emissiveBorn.clear();
+      this.lastExposureEvent = -Infinity;
       this.lastNuke = null;
       this.lastNukeTail = -Infinity;
       this.previousNukeState = 0;
@@ -559,6 +565,11 @@ export class LiveEffectsDriver {
     for (const anim of effects.anims) {
       const key = `${anim.id}:${anim.uid}:${anim.type}`;
       seen.add(key);
+      if (!this.emissiveBorn.has(key)) {
+        const born = now - (Math.max(0, anim.stage ?? 0) * Math.max(1, anim.rate ?? 1)) / this.logicFps;
+        this.emissiveBorn.set(key, born);
+        if (largeLightEvent(anim.type)) this.lastExposureEvent = Math.max(this.lastExposureEvent, born);
+      }
       const policy = animLightPolicy(anim.type, undefined, this.logicFps);
       if (!policy || policy.continuous || this.physicalAnims.has(key) || this.hidden(anim.x, anim.y, anim.z)) continue;
       const light = animPhysicalLight(anim, policy);
@@ -570,6 +581,7 @@ export class LiveEffectsDriver {
       }
       field.pulse(policy.ground > 1 ? 'explosion' : 'flash', now, light, policy.hold ?? 0.1, policy.fade ?? 0.15);
     }
+    for (const key of this.emissiveBorn.keys()) if (!seen.has(key)) this.emissiveBorn.delete(key);
     this.physicalAnims.clear();
     for (const key of seen) this.physicalAnims.add(key);
     this.physicalEffects = effects;
@@ -591,8 +603,16 @@ export class LiveEffectsDriver {
     const field = this.effects.physicalLights,
       effects = this.physicalEffects;
     if (!field || !effects) return;
+    const emission: EmissivePrimitive[] = [];
     for (const anim of effects.anims) {
       if (this.hidden(anim.x, anim.y, anim.z)) continue;
+      const core = animEmission(
+        anim,
+        now - (this.emissiveBorn.get(`${anim.id}:${anim.uid}:${anim.type}`) ?? now),
+        now,
+        this.logicFps,
+      );
+      if (core) emission.push(core);
       const policy = animLightPolicy(anim.type, undefined, this.logicFps);
       if (policy?.continuous)
         field.put('kept', `anim:${anim.id}:${anim.uid}`, now, animPhysicalLight(anim, policy), 0, 0, 0.3);
@@ -600,6 +620,18 @@ export class LiveEffectsDriver {
     for (const system of effects.particleSystems) {
       if (system.behaviour !== 'fire' || this.hidden(system.x, system.y, system.z)) continue;
       const p = animWorld(system);
+      const at = new Vector3(...p);
+      emission.push({
+        source: `system:${system.id}:${system.uid}`,
+        from: at,
+        to: at,
+        width: 0.2,
+        disc: true,
+        colour: [1, 0.3, 0.055],
+        hot: [1, 0.65, 0.25],
+        gain: 0.65 * flicker(0, now, REAL_LIGHT_POLICIES.burning.flicker),
+        push: 0.1,
+      });
       field.put(
         'kept',
         `system:${system.id}:${system.uid}`,
@@ -610,6 +642,7 @@ export class LiveEffectsDriver {
         0.3,
       );
     }
+    this.effects.realEmissive?.set('events', emission);
     for (let i = 0; i < (effects.beams?.length ?? 0); i++) {
       const beam = effects.beams![i]!;
       if (this.hidden(beam.target.x, beam.target.y, beam.target.z)) continue;
@@ -624,7 +657,17 @@ export class LiveEffectsDriver {
   }
 
   /** Bounded, non-accumulating sky flash: multiple strikes never wash the whole frame white. */
-  skyFlash(now: number): number {
+  skyFlash(now: number, night = 0): number {
+    const kick = this.effects.physicalLights?.nodes.enabled.value
+      ? eventExposureKick(now - this.lastExposureEvent, night)
+      : 0;
+    if (this.effects.physicalLights?.nodes.enabled.value)
+      return Math.max(
+        kick,
+        this.sceneEvent === 'storm'
+          ? Math.min(2 ** (0.25 + 0.25 * night) - 1, 0.12 * heldPulseEnvelope(now - this.lastStormStrike, 0, 0.15))
+          : 0,
+      );
     return this.sceneEvent === 'storm' ? 0.12 * heldPulseEnvelope(now - this.lastStormStrike, 0.08, 0.25) : 0;
   }
 
@@ -641,6 +684,7 @@ export class LiveEffectsDriver {
         to: world(beam.target, new Vector3()),
         colour: new Vector3(Math.pow(srgb[0] / 255, 2.2), Math.pow(srgb[1] / 255, 2.2), Math.pow(srgb[2] / 255, 2.2)),
         bolt,
+        outerColour: beam.outerColor ? new Vector3(...beam.outerColor.map((c) => Math.pow(c / 255, 2.2))) : undefined,
         seed: (Math.floor(this.logicFrame / 2) * 7919 + Math.round(beam.target.x + beam.target.y * 3)) >>> 0,
       };
     });

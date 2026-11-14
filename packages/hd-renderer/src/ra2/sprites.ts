@@ -885,7 +885,6 @@ class SpriteGraph {
           const upright = select(flat, float(0), float(1));
           glow = tint.mul(brightness).mul(mask.r).mul(step(mask.g, 0.85)).mul(windowGain).mul(upright);
         }
-        if (nodes.realLight) glow = glow.mul(float(1).sub(nodes.realLight.enabled));
         let art: ShaderNode;
         let lit: ShaderNode;
         let litAlpha: ShaderNode;
