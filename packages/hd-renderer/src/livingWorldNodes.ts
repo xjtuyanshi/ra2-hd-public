@@ -66,7 +66,7 @@ const noise = Fn(([p]: ShaderNode[]) => {
 // The shape arrives as uniforms (lattice inverses, threshold, fine weight, inverse stretch) so presets switch at run
 // time without a recompile; the soft preset evaluates the same expression as the former constants.
 const cloudShadow = Fn(([xz, clock, direction, strength, lattice, form]: ShaderNode[]) => {
-  const result = float(1).toVar('aliveCloudNeutral');
+  const result = float(0).toVar('aliveCloudNeutral');
   If(strength.greaterThan(0), () => {
     const drift = direction.mul(clock.mul(ALIVE.drift));
     const morph = vec2(sin(clock.mul(0.07)), cos(clock.mul(0.09))).mul(lattice.x.mul(ALIVE.cloudMorph));
@@ -81,7 +81,7 @@ const cloudShadow = Fn(([xz, clock, direction, strength, lattice, form]: ShaderN
           float(1).sub(form.x),
         ),
       );
-    result.assign(float(1).sub(smoothstep(lattice.z, lattice.w, n).mul(strength)));
+    result.assign(smoothstep(lattice.z, lattice.w, n));
   });
   return result;
 }).setLayout({
@@ -134,6 +134,8 @@ export class LivingWorldNodes {
   private options: AliveOptions = { ...ALIVE_DEFAULTS };
   readonly clock = uniform(0).setName('aliveClock');
   readonly windDirection = uniform(new Vector2(Math.cos(0.6), Math.sin(0.6))).setName('aliveWindDirection');
+  readonly cloudAmount = uniform(0).setName('aliveCloudAmount');
+  readonly coverageEnabled = uniform(0).setName('aliveCoverageEnabled');
   readonly cloudStrength = uniform(0).setName('aliveCloudStrength');
   readonly windAmplitude = uniform(0).setName('aliveWindAmplitude');
   readonly debugCloud = uniform(0).setName('aliveDebugCloud');
@@ -143,13 +145,23 @@ export class LivingWorldNodes {
   /** Preset water shares of the land shadow: body/seabed and sky reflection (glints always take all of it). */
   readonly waterBody = uniform(ALIVE_CLOUD_SHAPES.soft.waterBodyWeight).setName('aliveWaterBody');
   readonly waterSky = uniform(ALIVE_CLOUD_SHAPES.soft.waterSkyWeight).setName('aliveWaterSky');
-  readonly shadowAt = (xz: ShaderNode): ShaderNode =>
-    cloudShadow(xz, this.clock, this.windDirection, this.cloudStrength, this.cloudLattice, this.cloudForm);
-  // One VarNode per material builder shares all optical terms. Branching consumers (sprites) append it at
-  // their colour root, before sibling branches. Keep the neutral initializer in the named cloudShadow Fn.
-  readonly shadow: ShaderNode = cloudColour(this.shadowAt(positionWorld.xz), this.cloudDarkening).toVar(
-    'aliveCloudFactor',
-  );
+  readonly coverageAt = (xz: ShaderNode): ShaderNode =>
+    cloudShadow(xz, this.clock, this.windDirection, this.coverageEnabled, this.cloudLattice, this.cloudForm);
+  /** Raw coverage before darkening/strength; one shared VarNode per material. */
+  readonly coverage: ShaderNode = this.coverageAt(positionWorld.xz).toVar('aliveCloudCoverage');
+  readonly shadowAt = (xz: ShaderNode): ShaderNode => float(1).sub(this.coverageAt(xz).mul(this.cloudStrength));
+  readonly shadow: ShaderNode = this.colourFromCoverage(this.coverage).toVar('aliveCloudFactor');
+
+  colourFromCoverage(coverage: ShaderNode): ShaderNode {
+    return cloudColour(float(1).sub(coverage.mul(this.cloudStrength)), this.cloudDarkening.max(1e-6));
+  }
+  /** Use the same temporal fade as physical cloud darkening, including overcast and night. */
+  gradeCoverage(coverage: ShaderNode): ShaderNode {
+    return coverage.mul(this.cloudAmount).clamp();
+  }
+  shadeAt(colour: ShaderNode, factor: ShaderNode): ShaderNode {
+    return shadeCloudColour(colour, factor);
+  }
 
   set(change: AliveChange): Readonly<AliveOptions> {
     this.options = resolveAlive(change, this.options);
@@ -159,12 +171,17 @@ export class LivingWorldNodes {
   update(seconds: number, direction: number, night: number, overcast: number, airless: boolean): void {
     this.clock.value = seconds * this.options.speed;
     this.windDirection.value.set(Math.cos(direction), Math.sin(direction));
-    const shape = ALIVE_CLOUD_SHAPES[this.options.preset];
+    const shape =
+      this.options.preset === 'lush'
+        ? (this.options.shape ?? ALIVE_CLOUD_SHAPES.lush)
+        : ALIVE_CLOUD_SHAPES[this.options.preset];
+    this.coverageEnabled.value = this.options.clouds && !airless ? 1 : 0;
     latticeOf(shape, this.cloudLattice.value);
     formOf(shape, this.cloudForm.value);
     this.cloudDarkening.value = shape.darkening;
     this.waterBody.value = shape.waterBodyWeight;
     this.waterSky.value = shape.waterSkyWeight;
+    this.cloudAmount.value = this.options.clouds ? this.options.cloud * aliveDayWeight(night, overcast, airless) : 0;
     this.cloudStrength.value = this.options.clouds
       ? this.options.cloud * shape.darkening * aliveDayWeight(night, overcast, airless)
       : 0;
@@ -174,6 +191,8 @@ export class LivingWorldNodes {
 
   copyValuesFrom(source: LivingWorldNodes): void {
     this.clock.value = source.clock.value;
+    this.coverageEnabled.value = source.coverageEnabled.value;
+    this.cloudAmount.value = source.cloudAmount.value;
     this.windDirection.value.copy(source.windDirection.value);
     this.cloudStrength.value = source.cloudStrength.value;
     this.cloudLattice.value.copy(source.cloudLattice.value);

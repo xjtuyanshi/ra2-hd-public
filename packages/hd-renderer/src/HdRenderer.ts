@@ -1,3 +1,4 @@
+import type { CloudToneParams } from './cloudTone';
 import type { GroundToneParams } from './groundTone';
 import {
   ACESFilmicToneMapping,
@@ -75,7 +76,15 @@ import type { AliveChange, AliveOptions } from './livingWorld';
 import { Mist, MIST_CAP } from './mist';
 import { ObjectLayer } from './objects';
 import { SILHOUETTE_LEVELS, SILHOUETTE_SEARCH, silhouetteOf, silhouetteSmooth } from './silhouette';
-import { cinematicGrade, faithfulToneMap, hasCinematicGrade, neutralGrade, type CinematicGradeParams } from './post';
+import { cloudNeutralGradeTint } from './cloudTone';
+import {
+  cinematicGrade,
+  cinematicGradeRgb,
+  faithfulToneMap,
+  hasCinematicGrade,
+  neutralGrade,
+  type CinematicGradeParams,
+} from './post';
 import { buildTerrain, type TerrainBuild } from './terrain';
 import type { ShaderNode } from './tsl';
 import { FinalTone, type FinalToneParams } from './tone';
@@ -134,6 +143,7 @@ export interface HdSettings extends CinematicGradeParams {
   /** Optional final colour stage; null preserves the original graph and key. */
   tone: FinalToneParams | null;
   groundTone: GroundToneParams | null;
+  cloudTone: CloudToneParams | null;
   exposure: number;
   bloom: number;
   vignette: number;
@@ -779,6 +789,7 @@ export class HdRenderer {
     toneMapper: 'faithful',
     tone: null,
     groundTone: null,
+    cloudTone: null,
     exposure: 1,
     bloom: 0.55,
     vignette: 0.25,
@@ -1505,6 +1516,8 @@ export class HdRenderer {
 
   applySettings(): void {
     this.nodes.groundTone.set(this.settings.groundTone);
+    this.nodes.cloudTone.set(this.settings.cloudTone);
+    if (this.layerNodes !== this.nodes) this.layerNodes.cloudTone.set(this.settings.cloudTone);
     if (this.layerNodes !== this.nodes) this.layerNodes.groundTone.set(this.settings.groundTone);
     updateUnlitDisplay(this.nodes, this.settings);
     if (this.layerNodes !== this.nodes) updateUnlitDisplay(this.layerNodes, this.settings);
@@ -1547,6 +1560,24 @@ export class HdRenderer {
     this.gradeUniforms.gradeContrast.value = this.settings.gradeContrast;
     this.gradeUniforms.gradePivotLift.value = this.settings.gradePivotLift;
     this.gradeUniforms.gradeSaturation.value = this.settings.gradeSaturation;
+    this.updateCloudNeutralGrade();
+  }
+
+  /** Keep eligible neutral ground white through the active display grade; objects and water do not use this gain. */
+  private updateCloudNeutralGrade(): void {
+    const p = this.nodes.cloudTone;
+    p.neutralGradeTint.value.setScalar(1);
+    if (p.strength.value > 0 && p.snow.value > 0 && !this.gradeAirless && this.settings.debugView === 'none') {
+      const reference = p.neutralGradeLuma.value;
+      p.neutralGradeTint.value.fromArray(
+        cloudNeutralGradeTint(
+          reference,
+          cinematicGradeRgb([reference, reference, reference], this.settings),
+          this.gradeShare.value,
+        ),
+      );
+    }
+    if (this.layerNodes !== this.nodes) this.layerNodes.cloudTone.neutralGradeTint.value.copy(p.neutralGradeTint.value);
   }
 
   setState(state: RenderState): void {
@@ -1716,6 +1747,7 @@ export class HdRenderer {
     this.nodes.sceneObjectMul.value.fromArray(scene.objects).multiplyScalar(flash);
     this.nodes.sceneSunShadow.value = scene.sunShadow;
     this.gradeShare.value = (1 - nightGrade) * scene.gradeShare;
+    this.updateCloudNeutralGrade();
     this.darkLoss.value.fromArray(scene.darkLoss);
     this.lighting.sun.castShadow = this.settings.shadows && !this.world && scene.sunShadow > 0;
     if (scene.overcast > 0) this.lighting.applySceneOvercast(scene.overcast);

@@ -1,4 +1,4 @@
-export type AlivePreset = 'soft' | 'deep';
+export type AlivePreset = 'soft' | 'deep' | 'lush';
 
 /** Opt-in presentation only; all distances are cells and all times are renderer seconds. */
 export interface AliveOptions {
@@ -10,6 +10,8 @@ export interface AliveOptions {
   sway: number;
   speed: number;
   debugCloud: boolean;
+  /** Optional runtime shape for a policy-owned preset. */
+  shape?: Readonly<CloudShape>;
 }
 
 export type AliveChange = boolean | Partial<AliveOptions>;
@@ -75,6 +77,17 @@ export const ALIVE_CLOUD_SHAPES: Readonly<Record<AlivePreset, Readonly<CloudShap
     waterBodyWeight: ALIVE.waterBodyWeight,
     waterSkyWeight: ALIVE.waterSkyWeight,
   }),
+  lush: Object.freeze({
+    scale: 11,
+    largeScale: 22,
+    edgeLow: -0.07,
+    edgeHigh: 0.25,
+    darkening: 0.14,
+    fineWeight: 1,
+    stretch: 1.2,
+    waterBodyWeight: ALIVE.waterBodyWeight,
+    waterSkyWeight: ALIVE.waterSkyWeight,
+  }),
   deep: Object.freeze({
     scale: 6,
     largeScale: 14,
@@ -117,12 +130,15 @@ export function resolveAlive(change: AliveChange, previous: Readonly<AliveOption
   const preset = change.preset;
   return {
     clouds: change.clouds ?? previous.clouds,
-    preset: preset === 'soft' || preset === 'deep' ? preset : previous.preset,
+    preset: preset === 'soft' || preset === 'deep' || preset === 'lush' ? preset : previous.preset,
     wind: change.wind ?? previous.wind,
     cloud: bounded(change.cloud, previous.cloud, 2),
     sway: bounded(change.sway, previous.sway, 3),
     speed: bounded(change.speed, previous.speed, 4),
     debugCloud: change.debugCloud ?? previous.debugCloud,
+    ...((preset ?? previous.preset) === 'lush' && (change.shape || previous.shape)
+      ? { shape: change.shape ?? previous.shape }
+      : {}),
   };
 }
 

@@ -1,3 +1,4 @@
+import { CloudToneUniforms } from './cloudTone';
 import { GroundToneUniforms } from './groundTone';
 import {
   Color,
@@ -42,6 +43,7 @@ export class AtmosphereNodes extends SceneLightingUniforms {
   /** Preserve legacy local-light rendering while source-light enhancements are disabled. */
   readonly localLightCap = uniform(0);
   readonly groundTone = new GroundToneUniforms();
+  readonly cloudTone = new CloudToneUniforms();
   readonly night = uniform(0);
   readonly moonDesaturation = uniform(0);
   readonly windowGain = uniform(0);
@@ -81,6 +83,7 @@ export class AtmosphereNodes extends SceneLightingUniforms {
     this.sceneBrightness.value = source.sceneBrightness.value;
     this.localLightCap.value = source.localLightCap.value;
     this.groundTone.copyValuesFrom(source.groundTone);
+    this.cloudTone.copyValuesFrom(source.cloudTone);
     this.night.value = source.night.value;
     this.moonDesaturation.value = source.moonDesaturation.value;
     this.windowGain.value = source.windowGain.value;

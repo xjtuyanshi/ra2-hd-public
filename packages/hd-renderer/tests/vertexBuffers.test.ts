@@ -1,3 +1,4 @@
+import { lush2Defaults, lush2Mapping } from '../src/ra2/lush2Tone';
 import { describe, expect, it } from 'vitest';
 import {
   AmbientLight,
@@ -151,7 +152,7 @@ function assertLimits(mesh: Mesh, uniformLimit = MAX_UNIFORM_BYTES, capture?: Te
 function assertNeutralCloudFunction(shader: string) {
   if (!shader.includes('aliveCloudStrength')) return;
   // A shared inline Fn can initialize inside one branch and leave zero in its sibling (the black-ore regression).
-  // A named function keeps the neutral assignment in the callee, before its strength-dependent branch.
+  // A named function keeps the clear coverage assignment in the callee, before its enable-dependent branch.
   const declaration = shader.match(/(?:fn|float) aliveCloudShadow\s*\([^)]*\)[^{]*\{/);
   expect(declaration, 'cloud paths must call a scope-local shader function').not.toBeNull();
   const start = declaration!.index! + declaration![0].length;
@@ -162,18 +163,18 @@ function assertNeutralCloudFunction(shader: string) {
     if (shader[end] === '}') depth--;
   }
   const body = shader.slice(start, end - 1);
-  const neutral = body.indexOf('aliveCloudNeutral = 1.0;');
+  const neutral = body.indexOf('aliveCloudNeutral = 0.0;');
   const branch = body.indexOf('if (');
   expect(neutral).toBeGreaterThan(-1);
   expect(branch).toBeGreaterThan(neutral);
   expect(body).toMatch(/if \( \( strength > 0\.0 \) \)/);
   expect(body.trimEnd()).toMatch(/return aliveCloudNeutral;$/);
   expect(body.match(/aliveCloudNeutral = /g)).toHaveLength(2);
-  const calls = shader.match(/aliveCloudShadow\( [^\n]+aliveCloudStrength, [^\n]*aliveCloudForm \)/g) ?? [];
+  const calls = shader.match(/aliveCloudShadow\( [^\n]+aliveCoverageEnabled, [^\n]*aliveCloudForm \)/g) ?? [];
   expect(calls, 'each material must evaluate the field once, shared by every optical term').toHaveLength(1);
   const colour = shader.match(/(?:fn|vec3) aliveCloudColour\s*\([^)]*\)[^{]*\{([^}]+)\}/)?.[1];
   if (colour) {
-    // grey=1 -> cover=0 -> mix(1,tint,0)*1, so disabled clouds never tint a surface.
+    // Raw coverage 0 produces grey=1 -> cover=0 -> mix(1,tint,0)*1, so disabled clouds never tint a surface.
     expect(colour).toMatch(/clamp\( \( \( 1\.0 - grey \) \/ darkening \)/);
     expect(colour).toMatch(/return \( mix\( vec3(?:<f32>)?\( 1\.0(?:, 1\.0, 1\.0)? \)/);
     expect(colour).toMatch(/\* (?:vec3(?:<f32>)?\( )?grey/);
@@ -270,10 +271,11 @@ describe('r186 vertex and uniform binding budget', () => {
                 assertNeutralCloudFunction(shader);
                 // One explicit base-stack VarNode serves every branch; a real function still owns identity.
                 // Sharing must not move initialization into a sibling branch (the black-ore regression).
-                const calls = shader.match(/aliveCloudShadow\( [^\n]+aliveCloudStrength, [^\n]*aliveCloudForm \)/g) ?? [];
+                const calls =
+                  shader.match(/aliveCloudShadow\( [^\n]+aliveCoverageEnabled, [^\n]*aliveCloudForm \)/g) ?? [];
                 expect(calls).toHaveLength(1);
                 const main = shader.slice(shader.search(/(?:fn|void) main\(/));
-                const assignment = main.indexOf('aliveCloudFactor = aliveCloudColour(');
+                const assignment = main.indexOf('aliveCloudFactor = ');
                 expect(assignment).toBeGreaterThan(-1);
                 // The initializer must be at main's top level, even when the first shaded path is skipped.
                 const prefix = main.slice(0, assignment);
@@ -335,6 +337,17 @@ describe('r186 vertex and uniform binding budget', () => {
       const windy = assertLimits(layer.mesh);
       expect(windy.vertexShader).toBe(off.vertexShader);
       expect(windy.fragmentShader).toBe(off.fragmentShader);
+      for (const theater of ['temperate', 'snow']) {
+        const p = lush2Mapping({ ...lush2Defaults(theater), patchScale: 14, contact: 0, gold: 1 }, theater);
+        source.nodes!.cloudTone.set(p.tone);
+        alive.set(p.alive);
+        alive.update(10, 0.6, 0, 0, false);
+        const tuned = assertLimits(layer.mesh);
+        expect(tuned.fragmentShader).toBe(off.fragmentShader);
+        expect(tuned.vertexShader).toBe(off.vertexShader);
+        expect(tuned.sampledTextures).toEqual(off.sampledTextures);
+      }
+      source.nodes!.cloudTone.set(null);
       alive.set(false);
       alive.update(10, 0.6, 0, 0, false);
       const restored = assertLimits(layer.mesh);
@@ -1232,7 +1245,13 @@ describe('r186 vertex and uniform binding budget', () => {
           // The atlas fallback mixes land and protected water-body factors by its existing water mask.
           expect(inputs.cloudShadow).toBeDefined();
           expect(inputs.cloudShadow).not.toBe(source.nodes!.alive.shadow);
-        } else expect(inputs.cloudShadow).toBe(source.nodes!.alive.shadow);
+        } else if (material === bound) {
+          expect(inputs.cloudShadow).toBe(source.nodes!.alive.shadow);
+        } else {
+          // Voxel physical lighting now shares a foot-sampled coverage/factor with its output grade.
+          expect(inputs.cloudShadow).toBeDefined();
+          expect(inputs.cloudShadow).not.toBe(source.nodes!.alive.shadow);
+        }
         const clone = material.clone() as typeof inputs;
         try {
           expect(clone.cloudShadow).toBe(inputs.cloudShadow);

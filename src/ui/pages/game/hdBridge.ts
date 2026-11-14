@@ -551,6 +551,7 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
   host.screen.parentElement!.insertBefore(canvas, host.screen);
 
   let live: LiveView | null = null;
+  let tuningPanel: { dispose(): void } | null = null;
   /** Map names below are keys: lower-cased, without the extension (see `mapKey`). */
   let liveMap: string | null = null;
   /** Last snapshot pushed to `live`; readers return the identical object while nothing changed. */
@@ -1390,12 +1391,17 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
       .get('hd-vproj')
       ?.trim()
       .replace(/^\/+|\/+$/g, '');
+    let tuningModule: typeof import('../../../../packages/hd-renderer/src/ra2/lush2Tuning') | null = null;
     void Promise.all([
       import('../../../../packages/hd-renderer/src/live/liveView'),
       preset ? import('../../../../packages/hd-renderer/src/HdRenderer') : null,
       params.has('hd-tone') ? import('../../../../packages/hd-renderer/src/ra2/moistTone') : null,
+      import.meta.env.DEV && (params.get('hd-tone') === 'lush2' || params.get('hd-tune') === '1')
+        ? import('../../../../packages/hd-renderer/src/ra2/lush2Tuning')
+        : null,
     ])
-      .then(async ([{ LiveView }, renderer, tone]) => {
+      .then(async ([{ LiveView }, renderer, tone, tuning]) => {
+        tuningModule = tuning;
         // A stopped bridge must not create a GPU device for its detached canvas.
         if (stopped) return null;
         const timeOfDay = params.has('hd-time') ? Number(params.get('hd-time')) : undefined;
@@ -1443,8 +1449,17 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
         // Stopped, or superseded by a load for another map while this one was in flight.
         if (stopped || loading !== mapId) return view.dispose();
         diagnostics?.cancelFrameCapture('HD view replaced');
+        tuningPanel?.dispose();
+        tuningPanel = null;
         live?.dispose();
         live = view;
+        if (tuningModule)
+          tuningPanel = tuningModule.mountLush2Tuning(
+            canvas.parentElement!,
+            view.hd,
+            view.theater,
+            parseAliveParams(params, 'hd-alive'),
+          );
         liveMap = mapId;
         failed.delete(mapId);
         pushed = null;
@@ -2166,6 +2181,8 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
     host.frameRenderer.setTransparentKey(null);
     host.frameRenderer.setTransparentRect(null);
     host.frameRenderer.setOpacityRegion(null);
+    tuningPanel?.dispose();
+    tuningPanel = null;
     live?.dispose();
     live = null;
     governor = null;

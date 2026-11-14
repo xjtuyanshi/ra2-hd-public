@@ -1,3 +1,6 @@
+import { LUSH2_SHORE } from './lush2Tone';
+import { surfaceCloudFactor } from '../objectCloudTone';
+import { cloudToneNode } from '../cloudTone';
 import { groundToneNode, groundToneShareNode } from '../groundTone';
 import {
   createWaterTuning,
@@ -912,11 +915,15 @@ function terrainArtSampler(cache: Ra2Cache) {
  */
 function plainArtMaterial(colour: ShaderNode, nodes: AtmosphereNodes): ArtMaterial {
   colour = groundToneNode(colour, positionWorld.xz, nodes.groundTone, nodes.night);
+  colour = cloudToneNode(colour, colour, nodes.alive.gradeCoverage(nodes.alive.coverage), nodes.cloudTone, nodes.night);
   const material = new ArtMaterial();
   material.sceneMultiplier = nodes.sceneTerrainMul;
-  material.cloudShadow = nodes.alive.shadow;
+  material.cloudShadow = surfaceCloudFactor(nodes, nodes.alive.coverage);
   // The sun and sky see the night-desaturated albedo; local lights (emissive) the full colour.
-  material.colorNode = moonlit(colour, nodes);
+  material.colorNode = Fn(() => {
+    nodes.alive.coverage.toStack();
+    return moonlit(colour, nodes);
+  })();
   material.gloss = float(0);
   material.roughnessNode = float(0.95);
   material.metalnessNode = float(0);
@@ -1014,6 +1021,7 @@ function createMaterials(
   let sheen: ShaderNode = wetSheen(wet.albedo, localLight, water.skyHorizon, groundWetness, paved, wet.puddle, nodes);
   let weatherLand: ShaderNode = float(1);
   let landMask: ShaderNode = float(1);
+  let shoreWetMask: ShaderNode = float(0);
   let reflectionTarget: Object3D | null = null;
   let mirrorAtlas: MirrorAtlas | null = null;
   // Share of the cliff-foot contact shading dropped near painted water (art tone); null where no path sets it.
@@ -1136,6 +1144,9 @@ function createMaterials(
           lakeBed ? water.artTone.mul(tuning.newShore) : water.artTone,
           max(tuning.artToneForce, smoothstep(0.1, 0.8, attribute('hardShore', 'vec2').y).mul(tuning.newShore)),
         );
+    // The signed distance exists for both water implementations; only the original land receives this dressing.
+    shoreWetMask = smoothstep(-LUSH2_SHORE.width, 0, painted).mul(float(1).sub(tone));
+    if (waterline) shoreWetMask = shoreWetMask.mul(waterline.beach);
     if (lakeBed) {
       // No inland band replacement: the mask includes the old shallows and the composite already paints real sand.
       const bedAt = (offsetXZ: ShaderNode): ShaderNode => {
@@ -1269,6 +1280,7 @@ function createMaterials(
       const ownShore: ShaderNode = waterline ? float(1).sub(tone).mul(waterline.beach) : float(1).sub(tone);
       const band = smoothstep(-0.55, -0.12, shore).mul(ownShore);
       const sand = wetShore(shore).mul(ownShore);
+      shoreWetMask = smoothstep(-LUSH2_SHORE.width, 0, shore).mul(ownShore);
       landMask = landMask.mul(float(1).sub(max(band, sand)));
       // Clear: the ground stepped to inland is often brighter sand behind a darker grass or rock bank, and at its full
       // brightness it drew a pale rim along the waterline; the band is wet, so darker than the dry ground it copies.
@@ -1317,6 +1329,11 @@ function createMaterials(
       .mul(waterness);
     roughness = mix(roughness, float(0.25), waterness);
   }
+  const waterCloud = ground.cloudShadow;
+  ground.cloudShadow = nodes.cloudTone.strength
+    .greaterThan(0)
+    .and(weatherLand.greaterThanEqual(0.5))
+    .select(surfaceCloudFactor(nodes, nodes.alive.coverage), waterCloud);
   // Keep the water inputs, refracted bed and wet shore on their original art. Only the final land share
   // receives softened art and dressing; soften itself is independent of the mask and fades at night like the dressing.
   const undressed = albedo;
@@ -1333,6 +1350,28 @@ function createMaterials(
         land.addAssign(softWet.sub(wet.albedo));
       });
       result.assign(mix(undressed, groundToneNode(land, positionWorld.xz, nodes.groundTone, nodes.night), landMask));
+    });
+    return result;
+  })();
+  // The broad taps classify only: retaining the untouched pixel preserves the art's diamond detail and contrast.
+  // The hard water exclusion is intentional: no lush2 colour or wet gain reaches a water-majority texel.
+  const legacyAlbedo = albedo;
+  albedo = Fn(() => {
+    const result = legacyAlbedo.toVar();
+    If(nodes.cloudTone.strength.greaterThan(0), () => {
+      let mean: ShaderNode = vec3(0);
+      for (const x of [-12, 12])
+        for (const y of [-6, 6]) mean = mean.add(tap(vec2(x, y).mul(cache.terrainMap?.ref.scale ?? 1)));
+      const dressed = cloudToneNode(
+        legacyAlbedo,
+        mean.mul(0.25),
+        nodes.alive.gradeCoverage(nodes.alive.coverage),
+        nodes.cloudTone,
+        nodes.night,
+        false,
+        shoreWetMask,
+      );
+      If(weatherLand.greaterThanEqual(0.5), () => result.assign(dressed));
     });
     return result;
   })();
@@ -1359,7 +1398,10 @@ function createMaterials(
     return value;
   })();
   albedo = albedo.mul(contactRelief ? mix(contact, float(1), contactRelief) : contact);
-  ground.colorNode = moonlit(albedo, nodes);
+  ground.colorNode = Fn(() => {
+    nodes.alive.coverage.toStack();
+    return moonlit(albedo, nodes);
+  })();
   // Dry original art has no sheen of its own; wet ground and puddles reflect the sun.
   ground.gloss = gloss;
   ground.roughnessNode = roughness;
