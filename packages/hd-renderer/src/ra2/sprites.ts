@@ -82,6 +82,7 @@ import { mapLightAt, srgbScale } from './mapLighting';
 import { ENGINE_SHADOW_OPACITY } from './voxelShadow';
 import { cardDepthNode, SPRITE_DECAL_LIFT, SPRITE_DECAL_LIFT_ROWS } from './cardDepth';
 import { NATIVE_UNIT_RENDER_ORDER, type NativeSpriteDepth } from './nativeDepth';
+import { groundRayHitNode, type GroundRaySearch } from '../groundRay';
 import { comparePainterOrder, spritePainterBias, type PainterObject } from './painterOrder';
 import {
   GLASS_REFLECTANCE,
@@ -315,6 +316,15 @@ export const SHADOW_PULL_LEVELS = 32;
  */
 export const SHADOW_EXCLUSIVE_PULL = (GROUND_PULL.shadow[1] - GROUND_PULL.shadow[0]) / SHADOW_PULL_LEVELS / 2;
 
+/**
+ * Search of the ground under an SHP shadow's pixel (groundRay.ts) in the enhanced look's 'over' pass: from four and a
+ * half levels above the object's anchor down to two below it in half-level steps, refined to 1/128 level (well inside
+ * the smallest pull). Ramps rise one level per cell, so this covers a tree shadow's reach of three to four cells up or
+ * down a slope. Ground further below (under a bridge deck, at the foot of a cliff) keeps the anchor's plane. Overlapping
+ * shadows over one pixel are ordered on the ground found here, so they compare by coverage alone.
+ */
+export const SHADOW_GROUND_SEARCH: GroundRaySearch = { step: LEVEL_HEIGHT / 2, above: 9, below: 4, refine: 6 };
+
 /** Coverage step (0..SHADOW_PULL_LEVELS) of an ordinary shadow's drawn (softened) coverage. */
 export function shadowPullRank(coverage: number): number {
   return Math.floor(Math.min(1, Math.max(0, coverage)) * SHADOW_PULL_LEVELS + 0.5);
@@ -531,6 +541,8 @@ class SpriteGraph {
   readonly toCamera = uniform(new Vector3(0, 1, 0));
   /** Ground-plane depth coefficients of the 'over' pass (see groundPlaneDepth), set per draw. */
   readonly planeCoefficients = uniform(new Vector4());
+  /** World direction towards the camera of the 'over' pass's draw (set with planeCoefficients). */
+  readonly planeRay = uniform(new Vector3(0, 1, 0));
   /** Slots: the indexed page and its size in texels, the HD pair with its scale to the indexed page, the sidecars. */
   readonly atlasPage: ShaderNode;
   readonly atlasSize = uniform(new Vector2(1, 1));
@@ -1298,7 +1310,26 @@ class SpriteGraph {
     const planeDepth = (pass: 'overDepth' | 'over'): ShaderNode =>
       Fn(() => {
         // The anchor's height, snapped to 1/64 level so interpolation rounding can never split one plane in two.
-        const level: ShaderNode = round(aAnchor.y.div(LEVEL_HEIGHT).mul(64)).div(64).mul(LEVEL_HEIGHT);
+        const anchorLevel: ShaderNode = round(aAnchor.y.div(LEVEL_HEIGHT).mul(64)).div(64).mul(LEVEL_HEIGHT);
+        const level: ShaderNode = anchorLevel.toVar();
+        // Shadows are ordered on the drawn ground under their pixel, not on their anchor's plane (SHADOW_GROUND_SEARCH):
+        // every shadow over one pixel shares one ground depth and only its coverage step orders it ("darken once" keeps
+        // the densest). On their anchors' planes two overlapping shadows of objects one level apart (trees on a slope)
+        // were ordered by height instead: the faint penumbra fringe of the higher one won and blocked the dense shadow
+        // of the lower one, which showed light gaps with straight edges (the fringe's frame rect; live XMP27T8 by day).
+        // Ground rising above the anchor's plane still hides a shadow as before (see `hidden` below).
+        If(isShadow.greaterThan(0.5), () => {
+          level.assign(
+            groundRayHitNode(
+              nodes.groundHeightGrid,
+              nodes.groundHeightInfo,
+              positionWorld,
+              this.planeRay,
+              level,
+              SHADOW_GROUND_SEARCH,
+            ),
+          );
+        });
         const c: ShaderNode = planeCoefficients;
         const ground: ShaderNode = c.x
           .add(c.y.mul(screenCoordinate.x))
@@ -1342,9 +1373,16 @@ class SpriteGraph {
           ordinary,
         ).toVar('spriteInfantryShadowPull');
         const range: ShaderNode = cameraFar.sub(cameraNear);
+        // Where the drawn ground under the pixel rises in front of the anchor's plane by more than the shadow's pull, the
+        // shadow stays hidden, exactly where the depth test on the anchor's plane hid it before (the faithful look hides
+        // it there too: a tree's shadow towards a hill in front of it).
+        const hidden: ShaderNode = isShadow
+          .greaterThan(0.5)
+          .and(c.w.mul(level.sub(anchorLevel)).lessThan(shadowPull.div(range).negate()));
+        const behind: ShaderNode = ground.add(float(0.05).div(range));
         if (pass === 'over') {
           const pull: ShaderNode = select(isReflection.greaterThan(0.5), float(GROUND_PULL.reflection), shadowPull);
-          return ground.sub(pull.div(range));
+          return select(hidden, behind, ground.sub(pull.div(range)));
         }
         // Pre-pass: only ordinary shadows the colour pass will draw (alpha test) write; everything else (reflections,
         // infantry footprints, transparent texels of the padded quad) lies behind the ground and fails the depth test,
@@ -1353,8 +1391,9 @@ class SpriteGraph {
         const writes: ShaderNode = isShadow
           .greaterThan(0.5)
           .and(isInfantryShadow.lessThan(0.5))
-          .and(clamp(rankCoverage, 0, 1).mul(opacity).greaterThanEqual(material.alphaTest));
-        return select(writes, ground.sub(shadowPull.div(range)), ground.add(float(0.05).div(range)));
+          .and(clamp(rankCoverage, 0, 1).mul(opacity).greaterThanEqual(material.alphaTest))
+          .and(hidden.not());
+        return select(writes, ground.sub(shadowPull.div(range)), behind);
       })();
     const passMaterial = (pass: GroundPass): MeshBasicNodeMaterial => {
       const m = new MeshBasicNodeMaterial();
@@ -1640,6 +1679,7 @@ export class SpriteLayer {
           if (target) planeSize.set(target.width, target.height);
           else renderer.getDrawingBufferSize(planeSize);
           groundPlaneDepth(camera as OrthographicCamera, planeSize.x, planeSize.y, graph.planeCoefficients.value);
+          graph.planeRay.value.setFromMatrixColumn(camera.matrixWorld, 2).normalize();
         };
       return passMesh;
     });

@@ -7,7 +7,7 @@ import {
   type Scene,
   UnsignedByteType,
   Vector2,
-  type Vector3,
+  Vector3,
 } from 'three/webgpu';
 import {
   clamp,
@@ -26,6 +26,7 @@ import type { EmitterLayer } from './emitters';
 import type { LightField } from './lightField';
 import { SceneLightingUniforms } from './lighting';
 import type { ShaderNode } from './tsl';
+import { emptyHeightGrid } from './groundRay';
 
 /** Shader inputs owned by one renderer/world. Legacy exports below remain for standalone material callers. */
 export class AtmosphereNodes extends SceneLightingUniforms {
@@ -62,6 +63,13 @@ export class AtmosphereNodes extends SceneLightingUniforms {
   readonly faithfulDisplay = uniform(1);
   /** 1 while the terrain draws the clear water look: shadows on open water are softened and lightened. */
   readonly clearWater = uniform(0);
+  private readonly noHeights = emptyHeightGrid();
+  /**
+   * The world's terrain height grid (TerrainBuild.heightTexture, read with loads; see groundRay.ts) and its (columns,
+   * rows, nodes per world unit). Ground-lying sprite art finds the drawn surface under its pixels with it.
+   */
+  readonly groundHeightGrid = texture(this.noHeights);
+  readonly groundHeightInfo = uniform(new Vector3(1, 1, 1));
 
   constructor() {
     super();
@@ -94,6 +102,8 @@ export class AtmosphereNodes extends SceneLightingUniforms {
     this.moonNeutral.value.copy(source.moonNeutral.value);
     this.faithfulDisplay.value = source.faithfulDisplay.value;
     this.clearWater.value = source.clearWater.value;
+    this.groundHeightGrid.value = source.groundHeightGrid.value;
+    this.groundHeightInfo.value.copy(source.groundHeightInfo.value);
   }
 
   /** Only the fallback textures belong here; worlds and light fields own the textures they bind. */
@@ -104,6 +114,7 @@ export class AtmosphereNodes extends SceneLightingUniforms {
     this.resources.clear();
     this.black.dispose();
     this.noSurface.dispose();
+    this.noHeights.dispose();
   }
 }
 

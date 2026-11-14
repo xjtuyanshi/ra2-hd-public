@@ -382,8 +382,11 @@ describe('r186 vertex and uniform binding budget', () => {
         );
         // ...writes only where the colour pass's alpha test keeps the shadow, and skips the colour graph.
         expect(fragmentShader).toMatch(/clamp\( spriteShadowRankCoverage, 0\.0, 1\.0 \) \* min\([^\n]+\) >= 0\.04/);
-        expect(fragmentShader).toContain('+ ( 0.05 / ( render.cameraFar - render.cameraNear ) )');
+        // Everything else (and a shadow the ground in front hides) lies behind the ground.
+        expect(fragmentShader).toMatch(/\+ \( 0\.05 \/ (?:\( render\.cameraFar - render\.cameraNear \)|nodeVar\d+) \)/);
         expect(fragmentShader).not.toContain('spriteInfantryShadowAlpha');
+        // Shadows are ordered on the drawn ground under the pixel, read from the height grid (SHADOW_GROUND_SEARCH).
+        expect(fragmentShader).toContain('textureLoad(');
       } finally {
         dispose(layer.mesh);
         hd?.color.dispose();
