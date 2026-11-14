@@ -252,8 +252,9 @@ export interface MaterialTexel {
  * Upright art uses B as its specular class. Ground-crystal decals instead encode dielectric gloss as 2B when
  * B < 0.5, or metal gloss as 2(B - 0.5) otherwise. Gloss 0..1 maps to roughness 0.72..0.09.
  */
-export function sampleMaterial(atlas: SpriteMaterialAtlas, uv: ShaderNode): MaterialTexel {
-  const t: ShaderNode = texture(atlas.texture, uv);
+export function sampleMaterial(atlas: SpriteMaterialAtlas, uv: ShaderNode, levelZero = false): MaterialTexel {
+  const sample = texture(atlas.texture, uv);
+  const t: ShaderNode = levelZero ? sample.level(float(0)) : sample;
   const x: ShaderNode = t.r.mul(2).sub(1);
   const z: ShaderNode = t.g.mul(2).sub(1);
   const y: ShaderNode = sqrt(max(float(1).sub(x.mul(x)).sub(z.mul(z)), 0));
@@ -263,6 +264,32 @@ export function sampleMaterial(atlas: SpriteMaterialAtlas, uv: ShaderNode): Mate
     // Alpha 0 = no data; data texels store occlusion in 0.3 .. 1.
     ao: clamp(t.a.sub(0.3).div(0.7), 0, 1).mul(0.7).add(0.3),
     has: smoothstep(0.12, 0.26, t.a),
+  };
+}
+
+/** Four decoded material taps, offset in the material page's own texels. Centre validity stays authoritative. */
+export function smoothMaterial(
+  atlas: SpriteMaterialAtlas,
+  uv: ShaderNode,
+  size: ShaderNode,
+  centre: MaterialTexel,
+  amount: ShaderNode,
+): MaterialTexel {
+  let normal: ShaderNode = vec3(0),
+    spec: ShaderNode = float(0),
+    ao: ShaderNode = float(0);
+  for (const x of [-0.5, 0.5])
+    for (const y of [-0.5, 0.5]) {
+      const m = sampleMaterial(atlas, uv.add(vec2(x, y).div(size)), true);
+      normal = normal.add(m.normal);
+      spec = spec.add(m.spec);
+      ao = ao.add(m.ao);
+    }
+  return {
+    normal: normalize(mix(centre.normal, normalize(normal), amount)),
+    spec: mix(centre.spec, spec.mul(0.25), amount),
+    ao: mix(centre.ao, ao.mul(0.25), amount),
+    has: centre.has,
   };
 }
 

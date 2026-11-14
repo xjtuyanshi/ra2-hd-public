@@ -181,6 +181,37 @@ full-match FPS, or visual equivalence on a physical device.
 See [CPU performance and equivalence checks](benchmarks/README.md) for beam/card uploads, indexed atlas lifetime,
 shroud and voxel baselines, regression commands and hardware acceptance boundaries.
 
+## Sprite integration (opt-in)
+
+`LiveViewOptions.spriteIntegration` compiles an additional HD sprite path at world creation; it defaults to false.
+The game bridge accepts `hd-sprite=1` in development and production. The FX sandbox accepts `sprite=1`, with
+`tune=1` mounting its development overlay. The renderer exposes one shared `hd.spriteIntegration` uniform group;
+changing parameters or A/B does not rebuild materials. Supersampled minified HD pages use their HD alpha alone
+when integration is on, retaining the old indexed-edge multiplication for A/B off; their colour stays unchanged.
+All indexed/shadow coverage keeps its existing path. The new path reconstructs silhouettes from Gaussian and narrow coverage,
+filters HD colour separately from encoded house paint, limits local luminance overshoot, and smooths/reduces relight.
+Narrow coverage bounds protect both thin parts and thin gaps, including non-paint slats. Encoded-paint validity
+uses the weighted fraction of individually non-grey paint samples with a one-code-value sRGB tolerance, so a
+small coloured contribution cannot discard genuine grey shading. Valid grey samples use their HD ramp even at
+low paint coverage. Recommended relight/specular strengths are 0.8/0.6; saved panel settings remain unchanged.
+The 5x5 reconstruction uses separable Gaussian weights. A/B off skips the outer 16 index samples; homogeneous
+opaque inner 3x3 footprints skip outer house sums. Wide opacity still samples that ring when on, because it also
+drives the colour inset and rim relight, even when narrow bounds have fixed alpha/paint at 0 or 1.
+No original assets are changed.
+
+`src/spriteIntegration.ts` contains reusable TSL math and CPU twins. `src/ra2/spriteIntegrationTuning.ts` owns the
+RA2 recommendations, schema, and panel. The panel uses storage `hd-sprite-v1`, the bottom-right corner, and
+Backslash for A/B (Shift+Backslash shows/hides); the other panel retains Backquote and the top-right corner.
+The game mounts this panel only in DEV and exposes `window.__hdSprite`; the sandbox exposes `window.__fx.sprite`
+even without the panel. Both provide `get()`, `set(partial)`, and `ab(boolean)`. A mounted panel retains edited
+values while A/B is off; its owner removes the overlay/listener when the view is disposed.
+
+`shadowSoft` is reserved in the uniform/schema contract but currently has no effect. Projected voxel shadows are
+rasterized geometry with constant fragment opacity, not an alpha coverage texture. A fragment derivative cannot
+recover coverage outside the mesh; smoothing individual triangle edges would expose internal seams. Their existing
+multi-copy penumbra stays unchanged pending a silhouette-mask pass or a separately validated geometry expansion.
+CPU tests and node-builder checks do not establish GPU validation, performance, or visual acceptance.
+
 ## Frame cost: shaders, pipelines and quality tiers
 
 What a frame costs was measured on one machine class (Apple M-series GPU, a 3120x2096 drawing buffer at two device

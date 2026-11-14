@@ -1,3 +1,5 @@
+import { configureSpriteIntegration } from '../src/ra2/spriteIntegrationTuning';
+import { spriteIntegrationFor } from '../src/spriteIntegration';
 import { describe, expect, it } from 'vitest';
 import {
   AmbientLight,
@@ -193,6 +195,99 @@ function dispose(mesh: Mesh): void {
 }
 
 describe('r186 vertex and uniform binding budget', () => {
+  it('preserves the off graph key, compiles integration passes, and keeps A/B and tuning on the same graph', () => {
+    const source = cache();
+    const hd = { color: texture(), remap: texture() };
+    const materials = { texture: texture() };
+    const layer = () => new SpriteLayer(source, [], 1, undefined, hd, texture(), materials);
+    const baseline = layer();
+    const group = spriteIntegrationFor(source.nodes!);
+    group.set({ on: 1, edgeSigma: 1.3 });
+    configureSpriteIntegration(source.nodes!, false);
+    const off = layer();
+    expect((off.mesh.material as MeshBasicNodeMaterial).colorNode).toBe(
+      (baseline.mesh.material as MeshBasicNodeMaterial).colorNode,
+    );
+    const offShader = assertLimits(off.mesh).fragmentShader;
+    configureSpriteIntegration(source.nodes!, true);
+    const integrated = layer();
+    expect((integrated.mesh.material as MeshBasicNodeMaterial).colorNode).not.toBe(
+      (off.mesh.material as MeshBasicNodeMaterial).colorNode,
+    );
+    for (const mesh of [
+      integrated.mesh,
+      integrated.readOnlyMesh,
+      integrated.unitMesh,
+      integrated.translucentMesh,
+      ...integrated.groundPasses,
+    ]) {
+      const { fragmentShader } = assertLimits(mesh);
+      expect(fragmentShader).toContain('exp(');
+      const derivative = fragmentShader.indexOf('spriteIntegrationPx =');
+      expect(derivative).toBeGreaterThan(0);
+      const scope = fragmentShader.slice(0, derivative);
+      // The device-pixel footprint must be in the fragment entry scope, outside every If.
+      expect((scope.match(/\{/g)?.length ?? 0) - (scope.match(/\}/g)?.length ?? 0)).toBe(1);
+      const line = fragmentShader.slice(derivative).split('\n')[0]!;
+      expect(line).toContain('dpdx(');
+      expect(line).toContain('dpdy(');
+      expect(fragmentShader).toContain('spriteNeedsHouseRing');
+      expect(fragmentShader).toContain('spriteNonGreyFraction');
+    }
+    const onShader = assertLimits(integrated.mesh).fragmentShader;
+    group.ab(false);
+    group.set({ soften: 0.8 });
+    const ab = layer();
+    expect((ab.mesh.material as MeshBasicNodeMaterial).colorNode).toBe(
+      (integrated.mesh.material as MeshBasicNodeMaterial).colorNode,
+    );
+    expect(assertLimits(ab.mesh).fragmentShader).toBe(onShader);
+    expect(onShader).not.toBe(offShader);
+    for (const item of [baseline, off, integrated, ab]) dispose(item.mesh);
+    source.nodes!.dispose();
+  });
+
+  it('uses supersampled HD alpha alone when on, retaining the old edge for A/B off and the same colour graph', () => {
+    const source = cache();
+    const hd = { color: texture(), remap: texture(), scale: 4 };
+    const layer = () => new SpriteLayer(source, [], 1, undefined, hd, texture(), { texture: texture() });
+    const baseline = layer();
+    configureSpriteIntegration(source.nodes!, true);
+    const group = spriteIntegrationFor(source.nodes!);
+    const integrated = layer();
+    for (const mesh of [
+      integrated.mesh,
+      integrated.readOnlyMesh,
+      integrated.unitMesh,
+      integrated.translucentMesh,
+      ...integrated.groundPasses,
+    ]) {
+      const { fragmentShader } = assertLimits(mesh);
+      const alpha = fragmentShader.split('\n').find((line) => line.includes('spriteSupersampleAlpha ='))!;
+      expect(alpha).toBeDefined();
+      expect(alpha).toContain('mix(');
+      expect(alpha).toContain(', 1.0, step( 0.5,');
+      expect(fragmentShader).not.toContain('spriteIntegrationPx');
+      expect(fragmentShader).not.toContain('spriteNonGreyFraction');
+    }
+    const offShader = assertLimits(baseline.mesh).fragmentShader;
+    const onShader = assertLimits(integrated.mesh).fragmentShader;
+    expect(offShader).not.toContain('spriteSupersampleAlpha');
+    // Before alpha assignment, generated HD colour/remap/lighting inputs remain identical (apart from declarations).
+    const bodyBeforeAlpha = (shader: string) => {
+      const start = shader.indexOf('// flow');
+      const end = shader.indexOf('spriteUnlitShareHere =');
+      expect(start).toBeGreaterThan(0);
+      expect(end).toBeGreaterThan(start);
+      return shader.slice(start, end);
+    };
+    expect(bodyBeforeAlpha(onShader)).toBe(bodyBeforeAlpha(offShader));
+    group.ab(false);
+    expect(assertLimits(integrated.mesh).fragmentShader).toBe(onShader);
+    for (const item of [baseline, integrated]) dispose(item.mesh);
+    source.nodes!.dispose();
+  });
+
   it('draws every sprite layer of one feature set with one shader graph, each layer bound to its own pages', () => {
     const source = cache();
     const capture = new TerrainDepth(1);

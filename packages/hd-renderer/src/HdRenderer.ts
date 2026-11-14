@@ -1,3 +1,4 @@
+import { spriteIntegrationFor } from './spriteIntegration';
 import {
   ACESFilmicToneMapping,
   AgXToneMapping,
@@ -925,6 +926,11 @@ export class HdRenderer {
     cameraUp: new Vector3(0, 1, 0),
     toCamera: new Vector3(0, 1, 0),
   };
+
+  /** Shared sprite integration controls; compile choice belongs to LiveViewOptions. */
+  get spriteIntegration() {
+    return spriteIntegrationFor(this.nodes);
+  }
 
   constructor(
     readonly canvas: HTMLCanvasElement,

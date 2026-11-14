@@ -284,6 +284,8 @@ function visibleObjectEffects(snapshot: LiveSnapshot): LiveEffects | null | unde
 }
 
 export interface LiveViewOptions extends VoxelUnitsOptions {
+  /** Compile sprite integration once; its parameters remain uniforms. */
+  spriteIntegration?: boolean;
   /** URL of the map's HD cache directory (manifest.json inside). */
   mapBase: string;
   /** URL of the type library root (holding <theater>/library.json and common/effects/), for players' art. */
@@ -1373,6 +1375,7 @@ export class LiveView {
       loadRa2World(options.mapBase, {
         includeObject: (object) => object.kind === 'tree',
         voxelLook: options.voxelLook,
+        spriteIntegration: options.spriteIntegration,
         smoothVoxel: options.smoothVoxel,
         voxelProjection: options.voxelProjection,
       }),
