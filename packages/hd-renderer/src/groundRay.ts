@@ -1,9 +1,12 @@
 import { DataTexture, FloatType, NearestFilter, RGBAFormat, RedFormat } from 'three/webgpu';
 import {
+  Break,
   If,
+  Loop,
   abs,
   float,
   floor,
+  int,
   ivec2,
   max,
   min,
@@ -269,26 +272,27 @@ export function groundRayHitNode(
       result.assign(floor(anchor.div(step).add(0.5)).mul(step));
     });
   }
+  // Real loops (not unrolled): this runs in every SHP shadow fragment of two passes, and twenty inlined evaluations
+  // made the whole shader heavier even where the shortcut skips them.
   If(searching.greaterThan(0.5).and(below(top).not()), () => {
-    for (let k = 1; k <= above + under; k++) {
-      If(found.lessThan(0.5), () => {
-        const h: ShaderNode = rung.sub(k).mul(step);
-        If(below(h), () => {
-          found.assign(1);
-          lo.assign(h);
-          hi.assign(rung.sub(k - 1).mul(step));
-        });
+    Loop({ start: int(1), end: int(above + under + 1), type: 'int', condition: '<' }, ({ i }: { i: ShaderNode }) => {
+      const h: ShaderNode = rung.sub(float(i)).mul(step);
+      If(below(h), () => {
+        found.assign(1);
+        lo.assign(h);
+        hi.assign(rung.sub(float(i).sub(1)).mul(step));
+        Break();
       });
-    }
+    });
     If(found.greaterThan(0.5), () => {
-      for (let k = 0; k < refine; k++) {
-        const mid: ShaderNode = lo.add(hi).mul(0.5);
+      Loop({ start: int(0), end: int(refine), type: 'int', condition: '<' }, () => {
+        const mid: ShaderNode = lo.add(hi).mul(0.5).toVar();
         If(below(mid), () => {
           lo.assign(mid);
         }).Else(() => {
           hi.assign(mid);
         });
-      }
+      });
       result.assign(hi);
     });
   });
