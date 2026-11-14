@@ -40,6 +40,8 @@ export interface EffectTableRow {
   shake?: 1;
   /** HD frames keep the original size and the art colours: no enlargement, no flame grade (HD_AS_PAINTED). */
   asPainted?: 1;
+  /** Lit like the engine lights the anim (its cell light, then the scene light), never self-lit (HD_SCENE_LIT). */
+  sceneLit?: 1;
 }
 
 export const EFFECT_TABLE: Record<string, EffectTableRow> = {
@@ -144,7 +146,7 @@ export const EFFECT_TABLE: Record<string, EffectTableRow> = {
   CAWSH12A: { c: 'impact', fx: 'spark', s: 3.45, life: 40, loop: 1 },
   CAWSH12D: { c: 'collapse', fx: 'explosion', s: 1.7, life: 90, smoke: 0.64, light: [1, 0.62, 0.28, 1.74] },
   CAWSH18A: { c: 'ignore', fx: 'none', s: 0, life: 40, loop: 1 },
-  CDGAS: { c: 'psychic', fx: 'none', s: 0, life: 80, asPainted: 1 },
+  CDGAS: { c: 'psychic', fx: 'none', s: 0, life: 80, asPainted: 1, sceneLit: 1 },
   CHEMISLE: { c: 'ui', fx: 'none', s: 0, life: 138 },
   CHRONOAR: { c: 'ui', fx: 'none', s: 0, life: 66, loop: 1 },
   CHRONOBM: { c: 'ui', fx: 'none', s: 0, life: 60 },

@@ -716,6 +716,7 @@ export class LiveEffectsDriver {
             glow: false,
             category: tracked.row.c,
             ...zFields,
+            ...(tracked.row.sceneLit ? { sceneLit: true } : {}),
             hd: {
               frame: hdFrame,
               next: next?.page === hdFrame.page ? next : null,
@@ -760,6 +761,7 @@ export class LiveEffectsDriver {
         depth,
         glow: cardGlows(a, index, alpha, resolved.remap),
         category: tracked.row.c,
+        ...(tracked.row.sceneLit ? { sceneLit: true } : {}),
         ...nativeZ,
       });
       drawn++;

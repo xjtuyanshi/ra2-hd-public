@@ -104,6 +104,8 @@ export interface EffectTableRow {
   shake?: 1;
   /** Redrawn (HD) frames of this anim are shown as painted, see HD_AS_PAINTED. */
   asPainted?: 1;
+  /** Lit like the engine lights this anim (cell light, then scene light), never self-lit, see HD_SCENE_LIT. */
+  sceneLit?: 1;
 }
 
 /**
@@ -120,6 +122,26 @@ export interface EffectTableRow {
  * A fact about these two pieces of art, not a rule derived from the rules files, hence a list.
  */
 export const HD_AS_PAINTED: ReadonlySet<string> = new Set(['NUKEANIM', 'CDGAS']);
+
+/**
+ * Anims the renderer lights the way the engine does and never self-lights, native and redrawn cards alike. The engine
+ * draws a standalone anim without UseNormalLight= through the ANIM.PAL converter at the object light of its cell
+ * (Ambient - Ground + Level x height plus light sources, in 53 rows; docs/remaster/research/yr-unlit-palette.md),
+ * so on a dim map it is darker than its palette. The HD effect path draws anim art at its palette colour times the
+ * scene light, and the HD flipbook path self-lights bright red-over-blue texels as flame:
+ *
+ *   - CDGAS, the Chaos Drone's gas, is a cloud, not a flame. Self-lit at its full palette colour it came out as a
+ *     light salmon-red ring that stood out over the base: live ALL01UMD (Ambient 0.8, object level about 0.78, row
+ *     20 = 0.77 of the palette), 2026-11-14, HD gas mean (205, 95, 77) against the original's (163, 70, 53) over the
+ *     same pavement, which HD matches within a few levels. Without the cell light (scene light only) it was still
+ *     (206, 90, 72).
+ *
+ * Other anims keep the plain scene light: many explosions and smoke trails (EXPLOSML, EXPLOLRG, SGRYSMK1, ...) are
+ * UseNormalLight=yes, drawn at the full palette by the engine, and the effects library does not record that flag yet.
+ *
+ * A fact about this piece of art, not a rule derived from the rules files, hence a list.
+ */
+export const HD_SCENE_LIT: ReadonlySet<string> = new Set(['CDGAS']);
 
 /**
  * Rules facts the live renderer needs besides the garnish rows (generated into the same table; ids and numbers only).
@@ -275,7 +297,12 @@ const PSYCHIC_LIGHT: [number, number, number] = [0.75, 0.35, 1];
  */
 export function classifyAnim(f: AnimFacts): EffectTableRow {
   const row = classifyAnimKind(f);
-  return HD_AS_PAINTED.has(f.id.toUpperCase()) ? { ...row, asPainted: 1 } : row;
+  const id = f.id.toUpperCase();
+  return {
+    ...row,
+    ...(HD_AS_PAINTED.has(id) ? { asPainted: 1 as const } : {}),
+    ...(HD_SCENE_LIT.has(id) ? { sceneLit: 1 as const } : {}),
+  };
 }
 
 function classifyAnimKind(f: AnimFacts): EffectTableRow {
@@ -528,6 +555,7 @@ export function renderEffectTable(rows: Record<string, EffectTableRow>, rules?: 
     if (r.light) parts.push(`light: [${r.light.join(', ')}]`);
     if (r.shake) parts.push('shake: 1');
     if (r.asPainted) parts.push('asPainted: 1');
+    if (r.sceneLit) parts.push('sceneLit: 1');
     const key = /^[A-Za-z_$][\w$]*$/.test(id) ? id : `'${id}'`;
     const line = `  ${key}: { ${parts.join(', ')} },`;
     // The repository's Prettier style (print width 120): long rows break one property per line.
@@ -580,6 +608,8 @@ export function renderEffectTable(rows: Record<string, EffectTableRow>, rules?: 
     '  shake?: 1;',
     '  /** HD frames keep the original size and the art colours: no enlargement, no flame grade (HD_AS_PAINTED). */',
     '  asPainted?: 1;',
+    '  /** Lit like the engine lights the anim (its cell light, then the scene light), never self-lit (HD_SCENE_LIT). */',
+    '  sceneLit?: 1;',
     '}',
     '',
     'export const EFFECT_TABLE: Record<string, EffectTableRow> = {',

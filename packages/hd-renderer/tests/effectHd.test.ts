@@ -15,6 +15,7 @@ import {
 } from 'three/webgpu';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { EffectHdAnim, EffectHdLibrary } from '../../ra2-assets/src/effects';
+import { engineShade } from '../../ra2-assets/src/lights';
 import type { DirtyAttribute } from '../src/dirtyAttribute';
 import { bindSlots } from '../src/materialSlots';
 import { BlastCrowd, EffectsLayer, ENHANCED } from '../src/effects';
@@ -27,8 +28,13 @@ import {
   engineDepth,
   hdFlameGradeDisplay,
   MESH_IDLE_SECONDS,
+  animShade,
+  packHdScale,
   packHdSize,
+  packNativeStyleFlags,
+  unpackHdScale,
   unpackHdSize,
+  unpackNativeStyleFlags,
   type EffectInstance,
   type EffectPage,
 } from '../src/live/effectSprites';
@@ -224,6 +230,59 @@ describe('live HD flipbook selection', () => {
     const f = fixture();
     f.push({ type: 'TWLT070', frame: 2 });
     expect(f.cards().out[0]!.hd).not.toHaveProperty('asPainted');
+  });
+
+  it('lights the Chaos Drone gas by the scene only, and says so on the card', () => {
+    // Only the gas: the mushroom is shown as painted but stays self-lit, fire everywhere else glows.
+    expect(
+      Object.entries(EFFECT_TABLE)
+        .filter(([, row]) => row.sceneLit)
+        .map(([id]) => id),
+    ).toEqual(['CDGAS']);
+    const gas = fixture();
+    gas.driver.artWidth = () => 2;
+    gas.push({ type: 'CDGAS', frame: 2 });
+    const card = gas.cards().out[0]!;
+    expect(card.hd).toMatchObject({ size: 1, asPainted: true });
+    expect(card.sceneLit).toBe(true);
+    for (const type of ['NUKEANIM', 'TWLT070']) {
+      const f = fixture();
+      f.driver.artWidth = () => 2;
+      f.push({ type, frame: 2 });
+      expect(f.cards().out[0]!).not.toHaveProperty('sceneLit');
+    }
+    // The anim's own art (no redrawn page, e.g. hd-fx=faithful) is lit the same way.
+    const native = fixture();
+    native.hdAnim.mockReturnValue(null);
+    native.push({ type: 'CDGAS', frame: 2 });
+    const nativeCards = native.cards().out.filter((c) => c.draw !== 'shadow');
+    expect(nativeCards.length).toBeGreaterThan(0);
+    expect(nativeCards.every((c) => !c.hd && c.sceneLit === true)).toBe(true);
+    expect(unpackNativeStyleFlags(packNativeStyleFlags(true, true))).toEqual({ glow: true, sceneLit: true });
+    expect(unpackNativeStyleFlags(packNativeStyleFlags(false, true))).toEqual({ glow: false, sceneLit: true });
+    expect(unpackNativeStyleFlags(packNativeStyleFlags(true, false))).toEqual({ glow: true, sceneLit: false });
+    expect(packNativeStyleFlags(false, false)).toBe(0);
+    expect(packNativeStyleFlags(true, false)).toBe(1);
+    // The scale attribute carries the flag in its sign.
+    expect(packHdScale(2, false)).toBe(2);
+    expect(packHdScale(2, true)).toBe(-2);
+    expect(packHdScale(0, true)).toBe(-1);
+    expect(unpackHdScale(packHdScale(4, true))).toEqual({ scale: 4, sceneLit: true });
+    expect(unpackHdScale(packHdScale(2, false))).toEqual({ scale: 2, sceneLit: false });
+  });
+
+  it("lights a sceneLit card by its cell's object level through the engine's ANIM.PAL shade rows", () => {
+    // Every value the 8-bit map grade can hold (multiplier / 2 in 255 steps) picks the engine's row, in float32 too.
+    for (let k = 0; k <= 255; k++) {
+      const level = (k / 255) * 2;
+      expect(animShade(level)).toBe(engineShade(level, 53));
+      expect(animShade(Math.fround(level))).toBe(engineShade(level, 53));
+    }
+    expect(animShade(1)).toBe(1);
+    // ALL01UMD (Ambient 0.8, Ground 0.05, Level 0.008), a cell at height 4: row 20, about 0.77 of the palette.
+    expect(animShade(0.8 - 0.05 + 0.008 * 4)).toBeCloseTo(40 / 52, 6);
+    expect(animShade(0)).toBe(0);
+    expect(animShade(3)).toBe(2);
   });
 
   it('keeps the colours of a card shown as painted and grades every other flame', () => {
@@ -552,7 +611,7 @@ describe('HD page routing and placement buffers', () => {
     const y = page.offsets.getY(0);
     const nextX = page.offsets.getZ(0);
     const nextY = page.offsets.getW(0);
-    const scale = page.style.getW(0);
+    const scale = Math.abs(page.style.getW(0));
     const left = Math.min(x, nextX);
     const top = Math.min(y, nextY);
     const right = Math.max(x + page.rect.getZ(0) / scale, nextX + page.nextRect.getZ(0) / scale);
@@ -668,6 +727,15 @@ describe('HD page routing and placement buffers', () => {
     expect(Array.from(page.timing.array.slice(0, 3))).toEqual(
       Array.from(Float32Array.from([instance.hd!.blend0, instance.hd!.t0, instance.hd!.stageSeconds])),
     );
+    // A card lit by the scene only: the sign of the scale; the native-pixel bounds stay the same.
+    const bounds = nativeBounds(page);
+    instance.sceneLit = true;
+    layer.setInstances([instance], 2.8);
+    expect(page.style.getW(0)).toBe(-instance.hd!.scale);
+    expect(nativeBounds(page)).toEqual(bounds);
+    instance.sceneLit = false;
+    layer.setInstances([instance], 2.9);
+    expect(page.style.getW(0)).toBe(instance.hd!.scale);
     instance.hd!.next = { ...instance.hd!.next!, page: 7 };
     layer.setInstances([instance], 3);
     expect(page.nextRect.array.slice(0, 4)).toEqual(page.rect.array.slice(0, 4));
