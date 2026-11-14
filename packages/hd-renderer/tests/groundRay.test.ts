@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { DataTexture } from 'three/webgpu';
-import { GRID_NO_GROUND, groundRayHit, gridSurfaceHeight, squaresFromNodeGrid } from '../src/groundRay';
+import {
+  GROUND_FRONT_REACH_LEVELS,
+  GRID_NO_GROUND,
+  frontMaxFromSquares,
+  frontReachSquares,
+  groundRayHit,
+  gridSurfaceHeight,
+  squaresFromNodeGrid,
+} from '../src/groundRay';
 import { AtmosphereNodes } from '../src/atmosphere';
 import type { Ra2Cache } from '../src/ra2/cache';
 import { buildRa2Terrain } from '../src/ra2/terrain';
@@ -57,6 +65,7 @@ function ra2Row(levels: number[]) {
     build.mesh.geometry.dispose();
     build.heightTexture.dispose();
     build.surfaceSquares?.texture.dispose();
+    build.surfaceSquares?.front.dispose();
     texture.dispose();
     nodes.dispose();
   };
@@ -147,6 +156,48 @@ describe('ground under a ground-lying pixel', () => {
       const wallPoint: [number, number, number] = [2, top / 2, 0.5];
       const wall = groundRayHit(at, wallPoint, GAME_RAY, 0, SHADOW_GROUND_SEARCH);
       expect(Math.abs(wall - top / 2) * Math.sin(Math.PI / 6)).toBeLessThan(shadowGroundPull(0) / 4);
+    } finally {
+      dispose();
+    }
+  });
+
+  it('takes the flat-ground shortcut only where the full search ends on the anchor plane', () => {
+    expect(SHADOW_GROUND_SEARCH.step * SHADOW_GROUND_SEARCH.above).toBeLessThanOrEqual(
+      GROUND_FRONT_REACH_LEVELS * LEVEL_HEIGHT,
+    );
+    // Flat level 2, a plateau at level 4 behind a camera-facing cliff, then flat level 0 and a ramp back up.
+    const levels = [2, 2, 2, 4, 4, 4, 0, 0, 0, 0, 0, 2, 2, 2];
+    const { build, dispose } = ra2Row(levels);
+    try {
+      const squares = build.surfaceSquares!;
+      const { width: columns, height: rows } = squares.texture.image as { width: number; height: number };
+      const data = squares.texture.image.data as Float32Array;
+      const front = frontMaxFromSquares(
+        data,
+        columns,
+        rows,
+        frontReachSquares(GROUND_FRONT_REACH_LEVELS * LEVEL_HEIGHT, 2),
+      );
+      expect(front).toEqual(squares.front.image.data);
+      const at = (x: number, z: number) => gridSurfaceHeight(data, columns, rows, squares.sub, x, z);
+      const shortcutAt = (anchor: number) => (x: number, z: number) => {
+        const i = Math.min(columns - 1, Math.max(0, Math.floor(x * 2)));
+        const j = Math.min(rows - 1, Math.max(0, Math.floor(z * 2)));
+        const o = (j * columns + i) * 4;
+        const flat = [0, 1, 2, 3].every((c) => Math.abs(data[o + c]! - anchor) < 1e-4);
+        return flat && front[j * columns + i]! <= anchor + 1e-4;
+      };
+      let taken = 0;
+      for (let x = 0.05; x < levels.length; x += 0.1)
+        for (const anchorLevel of [0, 2, 4]) {
+          const anchor = anchorLevel * LEVEL_HEIGHT;
+          const point: [number, number, number] = [x, anchor, 0.5];
+          const full = groundRayHit(at, point, GAME_RAY, anchor, SHADOW_GROUND_SEARCH);
+          const fast = groundRayHit(at, point, GAME_RAY, anchor, SHADOW_GROUND_SEARCH, shortcutAt(anchor));
+          if (fast !== full) throw new Error(`x ${x.toFixed(2)} anchor ${anchorLevel}: ${fast} != ${full}`);
+          if (shortcutAt(anchor)(x, 0.5)) taken++;
+        }
+      expect(taken).toBeGreaterThan(40);
     } finally {
       dispose();
     }

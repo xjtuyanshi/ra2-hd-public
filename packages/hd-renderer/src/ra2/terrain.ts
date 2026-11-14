@@ -92,7 +92,13 @@ import {
   waterPreset,
   wetShore,
 } from './waterLook';
-import { surfaceSquaresTexture } from '../groundRay';
+import {
+  GROUND_FRONT_REACH_LEVELS,
+  frontMaxFromSquares,
+  frontMaxTexture,
+  frontReachSquares,
+  surfaceSquaresTexture,
+} from '../groundRay';
 import { groupWaterCells, selectWaterMirrorLevels, type WaterCell, type WaterLevel } from './waterLevels';
 
 /**
@@ -408,7 +414,15 @@ export function buildRa2Terrain(cache: Ra2Cache): Ra2TerrainBuild {
   heightTexture.minFilter = LinearFilter;
   heightTexture.magFilter = LinearFilter;
   heightTexture.needsUpdate = true;
-  const surfaceSquares = { texture: surfaceSquaresTexture(squares, W * SUB, H * SUB), sub: SUB };
+  const surfaceSquares = {
+    texture: surfaceSquaresTexture(squares, W * SUB, H * SUB),
+    sub: SUB,
+    front: frontMaxTexture(
+      frontMaxFromSquares(squares, W * SUB, H * SUB, frontReachSquares(GROUND_FRONT_REACH_LEVELS * LEVEL_HEIGHT, SUB)),
+      W * SUB,
+      H * SUB,
+    ),
+  };
 
   const wetness = uniform(0);
   const water = createWaterUniforms();

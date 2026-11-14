@@ -82,7 +82,7 @@ import { mapLightAt, srgbScale } from './mapLighting';
 import { ENGINE_SHADOW_OPACITY } from './voxelShadow';
 import { cardDepthNode, SPRITE_DECAL_LIFT, SPRITE_DECAL_LIFT_ROWS } from './cardDepth';
 import { NATIVE_UNIT_RENDER_ORDER, type NativeSpriteDepth } from './nativeDepth';
-import { groundRayHitNode, type GroundRaySearch } from '../groundRay';
+import { GROUND_FRONT_REACH_LEVELS, groundRayHitNode, type GroundRaySearch } from '../groundRay';
 import { comparePainterOrder, spritePainterBias, type PainterObject } from './painterOrder';
 import {
   GLASS_REFLECTANCE,
@@ -324,6 +324,9 @@ export const SHADOW_EXCLUSIVE_PULL = (GROUND_PULL.shadow[1] - GROUND_PULL.shadow
  * shadows over one pixel are ordered on the ground found here, so they compare by coverage alone.
  */
 export const SHADOW_GROUND_SEARCH: GroundRaySearch = { step: LEVEL_HEIGHT / 2, above: 9, below: 4, refine: 6 };
+// The flat-ground shortcut (groundRayHitNode's `front`) is only exact while the search stays inside the front box.
+if (SHADOW_GROUND_SEARCH.step * SHADOW_GROUND_SEARCH.above > GROUND_FRONT_REACH_LEVELS * LEVEL_HEIGHT)
+  throw new Error('SHADOW_GROUND_SEARCH reaches beyond GROUND_FRONT_REACH_LEVELS');
 
 /** Coverage step (0..SHADOW_PULL_LEVELS) of an ordinary shadow's drawn (softened) coverage. */
 export function shadowPullRank(coverage: number): number {
@@ -1328,6 +1331,7 @@ class SpriteGraph {
               this.planeRay,
               level,
               SHADOW_GROUND_SEARCH,
+              nodes.groundFrontMax,
             ),
           );
         });

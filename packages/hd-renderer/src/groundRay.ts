@@ -1,5 +1,19 @@
-import { DataTexture, FloatType, NearestFilter, RGBAFormat } from 'three/webgpu';
-import { If, float, floor, ivec2, max, min, mix, select, step as stepNode, textureLoad, vec2, vec4 } from 'three/tsl';
+import { DataTexture, FloatType, NearestFilter, RGBAFormat, RedFormat } from 'three/webgpu';
+import {
+  If,
+  abs,
+  float,
+  floor,
+  ivec2,
+  max,
+  min,
+  mix,
+  select,
+  step as stepNode,
+  textureLoad,
+  vec2,
+  vec4,
+} from 'three/tsl';
 import type { ShaderNode } from './tsl';
 
 /**
@@ -16,6 +30,8 @@ import type { ShaderNode } from './tsl';
  * Corners at or above GRID_NO_GROUND (no ground there) count as far below every ray.
  */
 export const GRID_NO_GROUND = 49;
+/** Height (in terrain levels) of the front box TerrainBuild.surfaceSquares.front covers; searches must stay inside. */
+export const GROUND_FRONT_REACH_LEVELS = 5;
 const NO_GROUND_HEIGHT = -1e4;
 
 /** An empty 1x1 square grid (no ground anywhere), bound until a world supplies its surface. */
@@ -46,6 +62,63 @@ export function squaresFromNodeGrid(nodes: ArrayLike<number>, nodeColumns: numbe
     for (let c = 0; c < columns; c++)
       squares.set([node(c, r), node(c + 1, r), node(c, r + 1), node(c + 1, r + 1)], (r * columns + c) * 4);
   return squares;
+}
+
+/**
+ * How far in front of a point (towards the camera) a ray search may look, as a height above that point: the box of
+ * squares `frontMaxFromSquares` covers. World.ts's IsoCamera looks down 30 degrees from the +x +z side, so a ray rising
+ * by `h` from a point moves h / tan(30 deg) / sqrt(2) along +x and along +z.
+ */
+export function frontReachSquares(height: number, sub: number): number {
+  return Math.ceil(((height / Math.tan(Math.PI / 6)) * Math.SQRT1_2 + 1e-6) * sub) + 1;
+}
+
+/**
+ * For every square: the highest corner of the squares from it up to `reach` squares towards +x and +z (missing ground
+ * excluded; -1e4 when there is none). A view ray leaving a point of a square towards the camera stays inside that box
+ * until it has risen by the height frontReachSquares was given, so a flat square whose front maximum is its own level
+ * is the first surface the ray meets (groundRayHitNode's shortcut).
+ */
+export function frontMaxFromSquares(
+  squares: ArrayLike<number>,
+  columns: number,
+  rows: number,
+  reach: number,
+): Float32Array {
+  const own = new Float32Array(columns * rows);
+  for (let k = 0; k < columns * rows; k++) {
+    let m = NO_GROUND_HEIGHT;
+    for (let c = 0; c < 4; c++) {
+      const v = squares[k * 4 + c]!;
+      if (v < GRID_NO_GROUND && v > m) m = v;
+    }
+    own[k] = m;
+  }
+  // Separable running maximum over [i, i + reach] along x, then along z.
+  const alongX = new Float32Array(columns * rows);
+  for (let r = 0; r < rows; r++)
+    for (let c = 0; c < columns; c++) {
+      let m = NO_GROUND_HEIGHT;
+      for (let a = 0; a <= reach && c + a < columns; a++) m = Math.max(m, own[r * columns + c + a]!);
+      alongX[r * columns + c] = m;
+    }
+  const front = new Float32Array(columns * rows);
+  for (let r = 0; r < rows; r++)
+    for (let c = 0; c < columns; c++) {
+      let m = NO_GROUND_HEIGHT;
+      for (let b = 0; b <= reach && r + b < rows; b++) m = Math.max(m, alongX[(r + b) * columns + c]!);
+      front[r * columns + c] = m;
+    }
+  return front;
+}
+
+/** A front maximum grid as the R32F texture groundRayHitNode reads with loads. */
+export function frontMaxTexture(front: Float32Array, columns: number, rows: number): DataTexture {
+  const texture = new DataTexture(front, columns, rows, RedFormat, FloatType);
+  texture.minFilter = NearestFilter;
+  texture.magFilter = NearestFilter;
+  texture.needsUpdate = true;
+  return texture;
 }
 
 /** Height of the square grid's surface at world x/z: CPU twin of the shader's (see groundRayHitNode). */
@@ -98,7 +171,14 @@ export function groundRayHit(
   ray: readonly [number, number, number],
   anchor: number,
   { step, above, below: under, refine }: GroundRaySearch,
+  shortcut?: (x: number, z: number) => boolean,
 ): number {
+  if (shortcut) {
+    // groundRayHitNode's flat-ground shortcut: where the ray meets the anchor's plane on a square flat at that level
+    // with nothing higher in front, the search would end on that rung exactly.
+    const t = (anchor - point[1]) / ray[1];
+    if (shortcut(point[0] + ray[0] * t, point[2] + ray[2] * t)) return Math.round(anchor / step) * step;
+  }
   const below = (h: number): boolean => {
     const t = (h - point[1]) / ray[1];
     return heightAt(point[0] + ray[0] * t, point[2] + ray[2] * t) > h + 1e-4;
@@ -138,6 +218,7 @@ export function groundRayHitNode(
   ray: ShaderNode,
   anchor: ShaderNode,
   { step, above, below: under, refine }: GroundRaySearch,
+  front?: ShaderNode,
 ): ShaderNode {
   const columns: ShaderNode = gridInfo.x;
   const rows: ShaderNode = gridInfo.y;
@@ -169,7 +250,26 @@ export function groundRayHitNode(
   const found: ShaderNode = float(0).toVar();
   const lo: ShaderNode = top.toVar();
   const hi: ShaderNode = top.toVar();
-  If(below(top).not(), () => {
+  // Flat-ground shortcut (two loads instead of up to 20 evaluations): where the ray meets the anchor's plane on a square
+  // flat at that level and nothing in front of it (towards the camera, within the search's reach) is higher, that
+  // point is the first surface the ray meets, and the search would end exactly on its rung.
+  const searching: ShaderNode = float(1).toVar();
+  if (front) {
+    const t0: ShaderNode = anchor.sub(point.y).div(ray.y);
+    const g: ShaderNode = min(max(point.xz.add(ray.xz.mul(t0)).mul(sub), vec2(0, 0)), vec2(columns, rows));
+    const k: ShaderNode = ivec2(min(floor(g), vec2(columns.sub(1), rows.sub(1))) as ShaderNode);
+    const own: ShaderNode = textureLoad(grid as never, k);
+    const spread: ShaderNode = max(
+      max(abs(own.x.sub(anchor)), abs(own.y.sub(anchor))),
+      max(abs(own.z.sub(anchor)), abs(own.w.sub(anchor))),
+    );
+    const ahead: ShaderNode = textureLoad(front as never, k).r;
+    If(spread.lessThan(1e-4).and(ahead.lessThanEqual(anchor.add(1e-4))), () => {
+      searching.assign(0);
+      result.assign(floor(anchor.div(step).add(0.5)).mul(step));
+    });
+  }
+  If(searching.greaterThan(0.5).and(below(top).not()), () => {
     for (let k = 1; k <= above + under; k++) {
       If(found.lessThan(0.5), () => {
         const h: ShaderNode = rung.sub(k).mul(step);

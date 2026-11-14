@@ -2301,6 +2301,7 @@ export class HdRenderer {
     this.terrainDepth.dispose();
     this.terrain?.disposeWaterLooks?.();
     this.terrain?.surfaceSquares?.texture.dispose();
+    this.terrain?.surfaceSquares?.front.dispose();
     if (this.nodes !== DEFAULT_ATMOSPHERE_NODES) this.nodes.dispose();
     if (this.layerNodes !== this.nodes && this.layerNodes !== DEFAULT_ATMOSPHERE_NODES) this.layerNodes.dispose();
     this.renderer.dispose();
