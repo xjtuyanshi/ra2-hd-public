@@ -439,9 +439,15 @@ describe('overlay pipeline choice', () => {
       const emission = internal.pipelineNodes[0]!.getTextureNode!('emissive');
       expect(internal.pipelineNodes[0]!.getMRT?.()?.has('emissive')).toBe(true);
       expect(dependencies(internal.pipelineNodes[1] as unknown as GraphNode).has(emission)).toBe(true);
+      // Budget the new primitives at the writer, preserving legacy static overlays in the shared attachment.
       expect(dependencies(internal.pipeline.outputNode).has(hd.realEmissive!.frameGain as unknown as GraphNode)).toBe(
-        true,
+        false,
       );
+      expect(
+        dependencies(hd.realEmissive!.mesh.material.mrtNode as unknown as GraphNode).has(
+          hd.realEmissive!.frameGain as unknown as GraphNode,
+        ),
+      ).toBe(true);
       const key = internal.settingsPipelineKey();
       hd.nodes.realLight!.enabled.value = 0;
       expect(internal.settingsPipelineKey()).toBe(key);

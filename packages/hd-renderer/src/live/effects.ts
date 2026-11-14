@@ -600,6 +600,10 @@ export class LiveEffectsDriver {
   }
 
   private framePhysicalLights(now: number): void {
+    const cost = this.effects.physicalLights?.nodes.cost;
+    if (cost) cost.measure('emissiveBuild', () => this.buildPhysicalLights(now));
+  }
+  private buildPhysicalLights(now: number): void {
     const field = this.effects.physicalLights,
       effects = this.physicalEffects;
     if (!field || !effects) return;

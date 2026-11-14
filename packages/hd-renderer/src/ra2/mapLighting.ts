@@ -65,19 +65,13 @@ export class MapLightGrade {
   private light: CellLight;
   /** The base [Lighting] alone, without light sources (see setSourceWeight). */
   private plain: CellLight;
-  /** Physical night lamps replace only positive engine sources; darkening sources remain engine-exact. */
-  setPhysicalSources(enabled: boolean): void {
-    if (enabled === this.physicalSources) return;
-    this.physicalSources = enabled;
-    this.setSources(this.allSources, true);
-  }
+  /** Physical lamps are additive accents; they never alter the engine palette grade. */
+  setPhysicalSources(_enabled: boolean): void {}
 
   /** The [Lighting] the cells are lit with now: the authored one until setBase replaces it. */
   private baseLighting: EngineLighting;
   private sources: readonly EngineLight[] = [];
   private key = '';
-  private allSources: readonly EngineLight[] = [];
-  private physicalSources = false;
   private weight = 1;
   private sourceWeight = 1;
 
@@ -111,8 +105,6 @@ export class MapLightGrade {
 
   /** Replace the light sources (live matches: the light-emitting buildings standing now); cheap when unchanged. */
   setSources(sources: readonly EngineLight[], force = false): void {
-    this.allSources = sources.slice();
-    if (this.physicalSources) sources = sources.filter((s) => s.intensity <= 0);
     const key = sources.map((s) => `${s.position.join(',')}:${s.radius}:${s.intensity}:${s.tint.join(',')}`).join(';');
     if (!force && key === this.key) return;
     this.key = key;
@@ -174,13 +166,7 @@ export class MapLightGrade {
     const data = this.texture.image.data as Uint8Array;
     const w = this.weight;
     const encode = (v: number) => Math.max(0, Math.min(255, Math.round(((1 + (v - 1) * w) / MAP_LIGHT_RANGE) * 255)));
-    const s = this.physicalSources ? 1 : this.sourceWeight;
-    // Forced-night presentation can fade the authored base grade out. Negative sources still darken by their exact
-    // engine palette-domain delta; removing positive lamps must never remove NEGLAMP with the base grade.
-    const encodeNegative = (full: number, base: number) =>
-      w === 1
-        ? encode(full)
-        : Math.max(0, Math.min(255, Math.round(((1 + (base - 1) * w + full - base) / MAP_LIGHT_RANGE) * 255)));
+    const s = this.sourceWeight;
     const { intensity, tint, level } = this.light;
     const plain = this.plain;
     for (let c = 0; c < this.width * this.height; c++) {
@@ -192,15 +178,11 @@ export class MapLightGrade {
       for (let k = 0; k < 3; k++) {
         const full = i * tint[c * 3 + k]!;
         // Exactly the engine's value at the default share of 1.
-        data[c * 4 + k] = this.physicalSources
-          ? encodeNegative(full, p * plain.tint[c * 3 + k]!)
-          : encode(s === 1 ? full : p * plain.tint[c * 3 + k]! + (full - p * plain.tint[c * 3 + k]!) * s);
+        data[c * 4 + k] = encode(s === 1 ? full : p * plain.tint[c * 3 + k]! + (full - p * plain.tint[c * 3 + k]!) * s);
       }
       // Alpha: the object level (the engine's I without tint or its largest channel), weighted like the terrain light.
       const o = level[c]!;
-      data[c * 4 + 3] = this.physicalSources
-        ? encodeNegative(o, plain.level[c]!)
-        : encode(s === 1 ? o : plain.level[c]! + (o - plain.level[c]!) * s);
+      data[c * 4 + 3] = encode(s === 1 ? o : plain.level[c]! + (o - plain.level[c]!) * s);
     }
     this.texture.needsUpdate = true;
   }

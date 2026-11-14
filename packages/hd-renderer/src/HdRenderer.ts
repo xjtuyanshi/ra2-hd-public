@@ -1122,6 +1122,7 @@ export class HdRenderer {
       scene: this.scene,
       nodes: this.nodes,
       lightField: this.lightField,
+      physicalLights: this.realLightField,
       emitters: this.emitters,
       reference: this.lighting.referenceIrradiance(),
     });
@@ -1355,12 +1356,14 @@ export class HdRenderer {
         ? scenePass
             .getTextureNode('emissive')
             .rgb.mul(visible)
-            .mul(this.realEmissive.frameGain)
             .mul(physical)
             .mul(topAlpha ? float(1).sub(topAlpha) : 1)
         : null;
-    const bloomInput = physicalEmission && physical ? mix(shown, vec4(physicalEmission, 1), physical) : shown;
-    if (physicalEmission) shown = vec4(shown.rgb.add(physicalEmission), shown.a);
+    // Only the achromatic narrow core seeds bloom. Bounded source colour is added after scene tone/grade:
+    // Neutral's highlight desaturation must never whiten a sheath, and existing static overlays stay unchanged.
+    const coreEmission = physicalEmission;
+    const bloomInput = coreEmission && physical ? mix(shown, vec4(coreEmission, 1), physical) : shown;
+    const physicalDisplay = physicalEmission;
     // Bloom reads the unexposed scene; frame() sets its threshold from the exposure.
     const glow: ShaderNode = bloom(bloomInput, 1, 0.45, this.bloomThreshold);
     glow.strength = this.bloomStrength;
@@ -1406,6 +1409,7 @@ export class HdRenderer {
     if (unlitColour && topAlpha) unlitColour = unlitColour.mul(float(1).sub(topAlpha));
     const addEmission = (linear: ShaderNode): ShaderNode => {
       if (unlitColour) linear = linear.add(unlitColour);
+      if (physicalDisplay) linear = linear.add(physicalDisplay);
       return emission ? linear.add(emission) : linear;
     };
     let output: ShaderNode;
@@ -1815,7 +1819,11 @@ export class HdRenderer {
       this.realEmissive.right.value.copy(right);
       this.realEmissive.up.value.copy(up);
       this.realEmissive.toCamera.value.copy(toCamera);
-      this.realEmissive.update(now, !!this.nodes.realLight?.enabled.value);
+      if (this.nodes.realLight)
+        this.nodes.realLight.cost.measure('emissiveBuild', () =>
+          this.realEmissive!.update(now, !!this.nodes.realLight?.enabled.value),
+        );
+      else this.realEmissive.update(now, false);
     }
     const sprites = this.world?.sprites;
     const spriteScale = 1 / Math.PI + (1 / reference - 1 / Math.PI) * nightGrade;
@@ -1856,7 +1864,11 @@ export class HdRenderer {
     // world space, so the frame in between reads last frame's lights at the right places.
     if (this.forceLocalLights || this.drawnTier < 1 || this.frames % 2 === 0)
       this.lightField.update(now, this.renderer, this.staticGain, this.baseNightGain);
-    this.realLightField?.update(now, this.renderer, light.dressing);
+    if (this.realLightField) {
+      this.realLightField.setView(this.view.camera);
+      const rendered = this.realLightField.update(now, this.renderer, light.dressing);
+      this.nodes.realLight!.cost.finishFrame(rendered);
+    }
     this.forceLocalLights = false;
     this.mirrorDynamicEmitters(now);
     if (this.warmQueue) this.renderWarmFrame();
@@ -2217,7 +2229,7 @@ export class HdRenderer {
       e.push = source ? l.push : undefined;
       for (let c = 0; c < 3; c++) {
         e.glow[c] = source ? (l.glow?.[c] ?? 0) : fire ? 0 : l.colour[c]! * k * 0.12;
-        e.streak[c] = source && this.nodes?.realLight?.enabled.value ? 0 : l.colour[c]! * k * (fire ? 0.45 : 0.35);
+        e.streak[c] = l.colour[c]! * k * (fire ? 0.45 : 0.35);
       }
       out.push(e);
     }

@@ -211,6 +211,12 @@ export interface DynamicLight {
  * dynamic light is alive.
  */
 export class LightField {
+  private readonly nodes: AtmosphereNodes;
+  /** Runtime gate at the writer boundary: all legacy dynamic producers share it. */
+  private physicalDynamic(): boolean {
+    return !!this.nodes.realLight?.enabled.value;
+  }
+
   readonly target: RenderTarget;
   readonly texelsPerCell: number;
   /** Values are stored divided by this (8-bit fallback targets). */
@@ -226,6 +232,10 @@ export class LightField {
   /** The static mesh's attributes no longer match staticList. */
   private staticDirty = false;
   private readonly pulses: Record<PulsePool, Pulse[]> = { explosion: [], flash: [] };
+  // Muted event descriptions support same-frame A/B; they never enter the active legacy splat pools while on.
+  private readonly mutedPulses: Record<PulsePool, Pulse[]> = { explosion: [], flash: [] };
+  private readonly mutedCursor: Record<PulsePool, number> = { explosion: 0, flash: 0 };
+  private readonly mutedKept = new Map<string, Kept>();
   private readonly cursor: Record<PulsePool, number> = { explosion: 0, flash: 0 };
   private readonly kept = new Map<string, Kept>();
   private readonly sources = new Map<string, Source>();
@@ -286,7 +296,7 @@ export class LightField {
     this.dynamics = this.buildLights(DYNAMIC, float(1));
     this.scene.add(this.statics.mesh, this.dynamics.mesh);
 
-    const nodes = options.nodes ?? DEFAULT_ATMOSPHERE_NODES;
+    const nodes = (this.nodes = options.nodes ?? DEFAULT_ATMOSPHERE_NODES);
     nodes.lightFieldTexture.value = this.target.texture;
     nodes.lightFieldSize.value.set(width, height);
     nodes.lightFieldScale.value = this.encodeScale;
@@ -420,12 +430,14 @@ export class LightField {
     pool: PulsePool,
     envelope?: { hold: number; fade: number },
   ): void {
-    const list = this.pulses[pool];
+    const muted = this.physicalDynamic();
+    const list = muted ? this.mutedPulses[pool] : this.pulses[pool];
+    const cursor = muted ? this.mutedCursor : this.cursor;
     const entry: Pulse = { born: now, x: at.x, z: at.z, colour: [...colour], radius, peak, life, decay, envelope };
     if (list.length < POOLS[pool]) list.push(entry);
     else {
-      list[this.cursor[pool]] = entry;
-      this.cursor[pool] = (this.cursor[pool] + 1) % POOLS[pool];
+      list[cursor[pool]] = entry;
+      cursor[pool] = (cursor[pool] + 1) % POOLS[pool];
     }
   }
 
@@ -440,7 +452,8 @@ export class LightField {
     flicker: number,
     ttl: number,
   ): void {
-    const existing = this.kept.get(key);
+    const kept = this.physicalDynamic() ? this.mutedKept : this.kept;
+    const existing = kept.get(key);
     if (existing) {
       existing.x = at.x;
       existing.z = at.z;
@@ -449,8 +462,8 @@ export class LightField {
       existing.radius = radius;
       return;
     }
-    if (this.kept.size >= KEPT) return;
-    this.kept.set(key, {
+    if (kept.size >= KEPT) return;
+    kept.set(key, {
       key,
       x: at.x,
       z: at.z,
@@ -525,6 +538,20 @@ export class LightField {
    * dressing stays on while the base grid's light is owned by something else); absent, it follows `staticGain`.
    */
   update(now: number, renderer: WebGPURenderer, staticGain: number, baseNightGain = staticGain): boolean {
+    if (!this.physicalDynamic()) {
+      for (const pool of ['explosion', 'flash'] as const) {
+        for (const p of this.mutedPulses[pool]) {
+          if (this.pulses[pool].length < POOLS[pool]) this.pulses[pool].push(p);
+          else {
+            this.pulses[pool][this.cursor[pool]] = p;
+            this.cursor[pool] = (this.cursor[pool] + 1) % POOLS[pool];
+          }
+        }
+        this.mutedPulses[pool].length = 0;
+      }
+      for (const [key, p] of this.mutedKept) if (this.kept.has(key) || this.kept.size < KEPT) this.kept.set(key, p);
+      this.mutedKept.clear();
+    }
     this.staticGain = staticGain;
     this.staticGainNode.value = staticGain;
     const baseGain = this.baseStrength * (this.baseFollowsNight ? baseNightGain : 1);
@@ -542,17 +569,18 @@ export class LightField {
     // Every pool fits its reserved share of DYNAMIC, so writes never overflow.
     const dyn = this.dynamics;
     let n = 0;
-    for (const p of this.pulses.explosion) {
+    const physical = this.physicalDynamic();
+    for (const p of physical ? [] : this.pulses.explosion) {
       const k = LightField.pulseIntensity(p, now);
       if (k <= 0) continue;
       this.writeLight(dyn, n++, p.x, p.z, p.radius, SHAPE_POOL, p.colour, k, 0, 0);
     }
-    for (const p of this.pulses.flash) {
+    for (const p of physical ? [] : this.pulses.flash) {
       const k = LightField.pulseIntensity(p, now);
       if (k <= 0) continue;
       this.writeLight(dyn, n++, p.x, p.z, p.radius, SHAPE_POOL, p.colour, k, 0, 0);
     }
-    for (const f of this.kept.values()) {
+    for (const f of physical ? [] : this.kept.values()) {
       if (now - f.seen > f.ttl) {
         this.kept.delete(f.key);
         continue;
@@ -649,11 +677,11 @@ export class LightField {
       pool = [];
       this.mirrored.set(out, pool);
     }
-    for (const p of this.pulses.explosion) {
+    for (const p of this.physicalDynamic() ? [] : this.pulses.explosion) {
       const k = LightField.pulseIntensity(p, now);
       if (k > 0) out[n] = writeDynamicLight(pool, n++, p.x, p.z, p.colour, k, 'pulse');
     }
-    for (const f of this.kept.values()) {
+    for (const f of this.physicalDynamic() ? [] : this.kept.values()) {
       if (now - f.seen > f.ttl) continue;
       out[n] = writeDynamicLight(pool, n++, f.x, f.z, f.colour, f.peak * Math.min(1, (now - f.born) / 0.25), 'fire');
     }
@@ -687,6 +715,8 @@ export class LightField {
     });
     this.scene.clear();
     this.kept.clear();
+    this.mutedKept.clear();
+    this.mutedPulses.explosion.length = this.mutedPulses.flash.length = 0;
     this.sources.clear();
     this.pulses.explosion.length = 0;
     this.pulses.flash.length = 0;

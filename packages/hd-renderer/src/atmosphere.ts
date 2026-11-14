@@ -25,6 +25,7 @@ import {
 } from 'three/tsl';
 import type { AtmosphereProfile } from './contract';
 import type { EmitterLayer } from './emitters';
+import type { RealLightField } from './realLight';
 import type { LightField } from './lightField';
 import { SceneLightingUniforms } from './lighting';
 import type { ShaderNode } from './tsl';
@@ -180,18 +181,44 @@ export function objectMoonlit(colour: ShaderNode, paint: ShaderNode, nodes: Atmo
   })();
 }
 
-/** Local light irradiance at a ground point (world xz), linear RGB. */
+/** Unmodified legacy field: static sources remain present under the physical toggle. */
+export function legacyLightField(xz: ShaderNode, nodes = DEFAULT_ATMOSPHERE_NODES): ShaderNode {
+  return texture(nodes.lightFieldTexture, xz.div(nodes.lightFieldSize)).rgb.mul(nodes.lightFieldScale);
+}
+/** Participating media and water retain static light and add dynamic irradiance. */
 export function sampleLightField(xz: ShaderNode, nodes = DEFAULT_ATMOSPHERE_NODES, height?: ShaderNode): ShaderNode {
-  const legacy = texture(nodes.lightFieldTexture, xz.div(nodes.lightFieldSize)).rgb.mul(nodes.lightFieldScale);
+  const legacy = legacyLightField(xz, nodes);
   return nodes.realLight
-    ? mix(
-        legacy,
-        sampleRealLight(nodes.realLight, xz, height ?? float(0)).mul(nodes.referenceLevel),
-        nodes.realLight.enabled,
+    ? legacy.add(
+        sampleRealLight(
+          nodes.realLight,
+          xz,
+          height ?? float(0),
+          undefined,
+          1,
+          luminance((nodes.sceneLevel as ShaderNode).mul(nodes.sceneTerrainMul)),
+        )
+          .mul(nodes.referenceLevel)
+          .mul(nodes.realLight.enabled),
       )
     : legacy;
 }
 
+/**
+ * Dynamic physical light on a ground-level decal (soot, dust rings) in noon units; zero without an opted-in field.
+ * Decals laid over the terrain must take the light the terrain under them takes, or they cut a dark hole into a lit pool.
+ */
+export function physicalGroundDecalLight(xz: ShaderNode, nodes: AtmosphereNodes): ShaderNode {
+  if (!nodes.realLight) return vec3(0, 0, 0);
+  return sampleRealLight(
+    nodes.realLight,
+    xz,
+    texture(nodes.realLight.groundHeight, xz.div(nodes.realLight.size)).r,
+    undefined,
+    1,
+    luminance((nodes.sceneLevel as ShaderNode).mul(nodes.sceneTerrainMul)),
+  ).mul(nodes.realLight.enabled);
+}
 /** Opt-in receiver branch. Callers keep their exact legacy expression when the context has no physical field. */
 export function physicalSurfaceLight(
   nodes: AtmosphereNodes,
@@ -199,9 +226,20 @@ export function physicalSurfaceLight(
   height: ShaderNode,
   normal: ShaderNode,
   capScale = 1,
+  sceneLum?: ShaderNode,
 ): ShaderNode {
   if (!nodes.realLight) throw new Error('Physical light receiver requires an opted-in context');
-  return sampleRealLight(nodes.realLight, xz, height, normal, capScale).mul(nodes.referenceLevel);
+  return sampleRealLight(
+    nodes.realLight,
+    xz,
+    height,
+    normal,
+    capScale,
+    sceneLum ??
+      luminance(
+        (nodes.sceneLevel as ShaderNode).mul(capScale === OBJECT_KNEE ? nodes.sceneObjectMul : nodes.sceneTerrainMul),
+      ).add(capScale === OBJECT_KNEE ? luminance(legacyLightField(xz, nodes).div(nodes.referenceLevel)) : float(0)),
+  ).mul(nodes.referenceLevel);
 }
 
 /** Blend at the final added term so the experimental runtime toggle restores the legacy response. */
@@ -214,27 +252,67 @@ export function localSurfaceLight(
   normal: ShaderNode,
   scalarShare?: ShaderNode,
   capScale = 1,
+  sceneLum?: ShaderNode,
 ): ShaderNode {
   if (!nodes.realLight) return legacy;
-  let physical = physicalSurfaceLight(nodes, xz, height, normal, capScale);
+  let physical = physicalSurfaceLight(nodes, xz, height, normal, capScale, sceneLum);
   if (scalarShare)
     physical = mix(
       physical,
-      sampleRealLight(nodes.realLight, xz, height, undefined, capScale).mul(nodes.referenceLevel),
+      sampleRealLight(
+        nodes.realLight,
+        xz,
+        height,
+        undefined,
+        capScale,
+        sceneLum ?? luminance((nodes.sceneLevel as ShaderNode).mul(nodes.sceneTerrainMul)),
+      ).mul(nodes.referenceLevel),
       scalarShare,
     );
-  return mix(legacy, albedo.mul(physical).mul(1 / Math.PI), nodes.realLight.enabled);
+  return legacy.add(
+    albedo
+      .mul(physical)
+      .mul(1 / Math.PI)
+      .mul(nodes.realLight.enabled),
+  );
+}
+
+/** Final object diffuse, after all scene shading. Local light cannot enter specular, rim or baked-light bounce. */
+export function addObjectDiffuse(
+  scene: ShaderNode,
+  albedo: ShaderNode,
+  nodes: AtmosphereNodes,
+  xz: ShaderNode,
+  height: ShaderNode,
+  normal: ShaderNode,
+): ShaderNode {
+  if (!nodes.realLight) return scene;
+  const sceneLum = luminance(scene.div(albedo.max(1e-4)))
+    .mul(Math.PI)
+    .div(nodes.referenceLevel);
+  const physical = physicalSurfaceLight(nodes, xz, height, normal, OBJECT_KNEE, sceneLum);
+  return scene.add(
+    albedo
+      .mul(physical)
+      .mul(1 / Math.PI)
+      .mul(nodes.realLight.enabled),
+  );
 }
 
 /**
  * Local light as objects take it: the engine lights objects without the tint of light sources, so art keeps half of
  * the light's colour (OBJECT_TINT) and gets the rest as neutral brightness.
  */
-export function objectLight(xz: ShaderNode, nodes = DEFAULT_ATMOSPHERE_NODES, height?: ShaderNode): ShaderNode {
-  const lf: ShaderNode = sampleLightField(xz, nodes, height);
+export function objectLight(
+  xz: ShaderNode,
+  nodes = DEFAULT_ATMOSPHERE_NODES,
+  height?: ShaderNode,
+  includePhysical = true,
+): ShaderNode {
+  const lf: ShaderNode = includePhysical ? sampleLightField(xz, nodes, height) : legacyLightField(xz, nodes);
   const l: ShaderNode = luminance(lf);
   const legacy = mix(vec3(l, l, l), lf, float(OBJECT_TINT));
-  return nodes.realLight ? mix(legacy, lf, nodes.realLight.enabled) : legacy;
+  return nodes.realLight && includePhysical ? mix(legacy, lf, nodes.realLight.enabled) : legacy;
 }
 
 /**
@@ -328,6 +406,7 @@ export interface AtmosphereContext {
   nodes?: AtmosphereNodes;
   scene: Scene;
   lightField: LightField;
+  physicalLights?: RealLightField;
   emitters: EmitterLayer;
   /** Flat-ground noon irradiance. */
   reference: number;

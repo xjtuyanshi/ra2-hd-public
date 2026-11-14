@@ -1,4 +1,4 @@
-import type { RealEmissiveLayer, EmissivePrimitive } from '../realEmissive';
+import { emissiveCoreTint, type RealEmissiveLayer, type EmissivePrimitive } from '../realEmissive';
 import {
   AdditiveBlending,
   Color as ThreeColor,
@@ -531,7 +531,7 @@ export class LiveBeams {
           to: b,
           width: style.widths.inner || style.widths.halo * 0.4,
           colour: style.color,
-          hot: style.hot,
+          hot: emissiveCoreTint(style.color),
           gain: gain * (segmentGains?.[i - 1] ?? 1) * (style.linkFlow ? 0.08 : 1),
           disc: a.distanceToSquared(b) < 1e-12,
           noise: { mode: 2, rate: 8, scale: 9, amount: 0.12, seed, distance },

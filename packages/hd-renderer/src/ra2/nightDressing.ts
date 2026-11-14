@@ -18,6 +18,8 @@ import { LEVEL_HEIGHT } from '../world';
 import type { Ra2Cache } from './cache';
 import type { MapLightGrade } from './mapLighting';
 import { MapLights, type SourceLight } from './mapLights';
+import { engineLampLights } from './realLights';
+import type { PhysicalLight } from '../realLight';
 import { foundationPointPush } from './cardDepth';
 
 /**
@@ -212,13 +214,12 @@ export class Ra2NightDressing implements WorldDressing {
   update(frame: FrameAtmosphere): void {
     const context = this.context;
     if (!context) return;
-    const real = !!context.nodes?.realLight?.enabled.value;
-    const lamps = !real && this.lampsEnabled(frame.settings.lamps);
+    const lamps = this.lampsEnabled(frame.settings.lamps);
     // The map's own lamp posts get HD heads whenever HD lamps are not switched off, in every theater: they mark light
     // the map really places (the street-lamp policy only decides where HD lamps are invented).
-    const dummies = !real && frame.settings.lamps !== 'off' && frame.settings.lights;
-    const lights = !real && frame.settings.lights;
-    const windows = !real && frame.settings.windows;
+    const dummies = frame.settings.lamps !== 'off' && frame.settings.lights;
+    const lights = frame.settings.lights;
+    const windows = frame.settings.windows;
     const built = this.built;
     if (
       !built ||
@@ -246,6 +247,7 @@ export class Ra2NightDressing implements WorldDressing {
     const statics: LightEntry[] = [];
     const emitters: Emitter[] = [];
     const posts: Vector3[] = [];
+    const accents: PhysicalLight[] = [];
     const reference = context.reference;
     const width = this.options.cache.manifest.grid.width;
     this.lampCount = 0;
@@ -255,6 +257,19 @@ export class Ra2NightDressing implements WorldDressing {
         if (this.blocked?.has(lamp.cell[1] * width + lamp.cell[0])) continue;
         const base = this.lampBase(lamp.cell[0], lamp.cell[1], lamp.z);
         posts.push(base);
+        if (context.physicalLights)
+          accents.push(
+            ...engineLampLights(
+              {
+                position: [base.x * 256, base.z * 256, (base.y / LEVEL_HEIGHT) * 104],
+                radius: 640,
+                intensity: 0.1,
+                tint: LAMP_GLOW,
+              },
+              { ambient: 1, red: 1, green: 1, blue: 1, ground: 0, level: 0 },
+              this.lampHead,
+            ),
+          );
         this.lampCount++;
         statics.push({ x: base.x, z: base.z, radius: LAMP_POOL_RADIUS, shape: SHAPE_POOL, colour: LAMP_POOL });
         emitters.push({
@@ -323,6 +338,7 @@ export class Ra2NightDressing implements WorldDressing {
         emitters.push(...this.facadeReflections(b));
       }
     }
+    context.physicalLights?.setStatic(accents, 'street');
     context.lightField.setStatic(statics);
     context.emitters.setStatic(emitters);
     this.setPoles(posts, context.emitters);

@@ -9,7 +9,6 @@ import {
   lightLuminance,
   lightMoment,
   reconstructLight,
-  irradianceKnee,
   type PhysicalLight,
   type Point,
   type Rgb,
@@ -19,15 +18,17 @@ import { LEVEL_HEIGHT } from '../world';
 
 export const LIGHT_COLOURS = {
   fire: [1, 0.62, 0.36],
-  explosion: [1, 0.7, 0.45],
-  hot: [1, 0.9, 0.8],
-  tesla: [0.6, 0.7, 1],
+  explosion: [1, 0.74, 0.52],
+  hot: [1, 0.95, 0.9],
+  muzzle: [1, 0.88, 0.72],
+  tesla: capLightColour(beamColor([82, 80, 255]), 0.55),
   chrono: [0.75, 0.9, 1],
-  psychic: [0.8, 0.55, 1],
+  psychic: capLightColour(beamColor([190, 90, 255]), 0.55),
   iron: [1, 0.45, 0.4],
 } as const;
 export interface LightPolicy {
   height: number;
+  reach?: number;
   radius: number;
   ground: number;
   colour: Rgb;
@@ -37,10 +38,20 @@ export interface LightPolicy {
   flicker?: number;
   continuous?: boolean;
 }
-/** Sustained beams and waves (rad, temporal, sonic, magnetron) lowered: several 8-cell beams summed into a pale wash in the bench. Bolt and laser ground values: DESIGN 3.5 had 0.9/0.8 (the blue lane under a sandbox Tesla bolt barely read at night); 1.8/1.4 summed into a wash under sustained live Tesla tank fire, so 1.2/1.0. */
+/** Source-sized windows and peak irradiance in noon units. Large events retain explicit design reach. */
 export const REAL_LIGHT_POLICIES = {
-  fire: { height: 0.4, radius: 0.25, ground: 0.8, colour: LIGHT_COLOURS.fire, day: 0, flicker: 0.18, continuous: true },
+  fire: {
+    reach: 2.2,
+    height: 0.4,
+    radius: 0.25,
+    ground: 0.8,
+    colour: LIGHT_COLOURS.fire,
+    day: 0,
+    flicker: 0.18,
+    continuous: true,
+  },
   burning: {
+    reach: 2.2,
     height: 0.3,
     radius: 0.15,
     ground: 0.25,
@@ -49,21 +60,30 @@ export const REAL_LIGHT_POLICIES = {
     flicker: 0.18,
     continuous: true,
   },
-  muzzle: { height: 0.5, radius: 0.1, ground: 0.4, colour: LIGHT_COLOURS.hot, day: 0.25, hold: 2 / 62.5, fade: 0.03 },
-  chrono: { height: 0.5, radius: 0.6, ground: 1, colour: LIGHT_COLOURS.chrono, day: 0.15 },
-  dominator: { height: 2, radius: 2, ground: 3, colour: LIGHT_COLOURS.psychic, day: 0.15 },
-  iron: { height: 1, radius: 1.5, ground: 2, colour: LIGHT_COLOURS.iron, day: 0.15 },
-  nuke: { height: 3, radius: 3, ground: 12, colour: LIGHT_COLOURS.hot, day: 0.3, hold: 0.15, fade: 2 },
-  tesla: { height: 0.5, radius: 0.12, ground: 1.2, colour: LIGHT_COLOURS.tesla, day: 0.2 },
-  psychic: { height: 0.5, radius: 0.12, ground: 1.2, colour: LIGHT_COLOURS.psychic, day: 0.2 },
-  prism: { height: 0.5, radius: 0.1, ground: 1, colour: LIGHT_COLOURS.hot, day: 0.2 },
-  temporal: { height: 0.5, radius: 0.1, ground: 0.3, colour: LIGHT_COLOURS.chrono, day: 0.15 },
-  rad: { height: 0.5, radius: 0.1, ground: 0.25, colour: [0.65, 1, 0.6], day: 0.15 },
-  eruption: { height: 0.5, radius: 0.1, ground: 0.4, colour: LIGHT_COLOURS.fire, day: 0.15 },
-  sonic: { height: 0.5, radius: 0.15, ground: 0.25, colour: [0.65, 0.9, 1], day: 0.15 },
-  magnetron: { height: 0.5, radius: 0.15, ground: 0.25, colour: LIGHT_COLOURS.psychic, day: 0.15 },
-  link: { height: 0.5, radius: 0.08, ground: 0.08, colour: LIGHT_COLOURS.psychic, day: 0 },
-  storm: { height: 3, radius: 0.2, ground: 6, colour: LIGHT_COLOURS.tesla, day: 0.2, hold: 0.1, fade: 0.15 },
+  muzzle: {
+    reach: 1.2,
+    height: 0.5,
+    radius: 0.1,
+    ground: 0.25,
+    colour: LIGHT_COLOURS.muzzle,
+    day: 0.25,
+    hold: 2 / 62.5,
+    fade: 0.03,
+  },
+  chrono: { reach: 6, height: 0.5, radius: 0.6, ground: 1, colour: LIGHT_COLOURS.chrono, day: 0.15 },
+  dominator: { reach: 10, height: 2, radius: 2, ground: 3, colour: LIGHT_COLOURS.psychic, day: 0.15 },
+  iron: { reach: 6, height: 1, radius: 1.5, ground: 2, colour: LIGHT_COLOURS.iron, day: 0.15 },
+  nuke: { reach: 12, height: 3, radius: 3, ground: 12, colour: LIGHT_COLOURS.hot, day: 0.3, hold: 0.15, fade: 2 },
+  tesla: { reach: 2, height: 0.5, radius: 0.12, ground: 1.2, colour: LIGHT_COLOURS.tesla, day: 0.2 },
+  psychic: { reach: 2, height: 0.5, radius: 0.12, ground: 1.2, colour: LIGHT_COLOURS.psychic, day: 0.2 },
+  prism: { reach: 1.8, height: 0.5, radius: 0.1, ground: 1, colour: LIGHT_COLOURS.hot, day: 0.2 },
+  temporal: { reach: 1.5, height: 0.5, radius: 0.1, ground: 0.3, colour: LIGHT_COLOURS.chrono, day: 0.15 },
+  rad: { reach: 1.5, height: 0.5, radius: 0.1, ground: 0.25, colour: [0.65, 1, 0.6], day: 0.15 },
+  eruption: { reach: 1.5, height: 0.5, radius: 0.1, ground: 0.4, colour: LIGHT_COLOURS.fire, day: 0.15 },
+  sonic: { reach: 1.5, height: 0.5, radius: 0.15, ground: 0.25, colour: [0.65, 0.9, 1], day: 0.15 },
+  magnetron: { reach: 1.5, height: 0.5, radius: 0.15, ground: 0.25, colour: LIGHT_COLOURS.psychic, day: 0.15 },
+  link: { reach: 1.5, height: 0.5, radius: 0.08, ground: 0.08, colour: LIGHT_COLOURS.psychic, day: 0 },
+  storm: { reach: 4, height: 3, radius: 0.2, ground: 6, colour: LIGHT_COLOURS.tesla, day: 0.2, hold: 0.1, fade: 0.15 },
 } as const satisfies Record<string, LightPolicy>;
 const ANIM_POLICY: Record<string, keyof typeof REAL_LIGHT_POLICIES> = {
   FIRE01: 'fire',
@@ -83,9 +103,12 @@ const ANIM_POLICY: Record<string, keyof typeof REAL_LIGHT_POLICIES> = {
   WCLBOLT3: 'storm',
 };
 export function capLightColour(colour: Rgb, saturation: number): [number, number, number] {
-  const peak = Math.max(...colour, 1e-8),
-    floor = peak * (1 - saturation);
-  const capped = colour.map((c) => Math.max(floor, c)) as [number, number, number];
+  const peak = Math.max(...colour, 1e-8);
+  const current = 1 - Math.min(...colour) / peak;
+  if (current <= saturation) return [...colour];
+  // Interpolate toward equal-energy white, preserving HSV hue instead of clipping individual dark channels.
+  const share = saturation / Math.max(current, 1e-8);
+  const capped = colour.map((c) => peak + (c - peak) * share) as [number, number, number];
   const k = lightLuminance(colour) / Math.max(lightLuminance(capped), 1e-8);
   return capped.map((c) => c * k) as [number, number, number];
 }
@@ -100,6 +123,7 @@ export function policyLight(policy: LightPolicy, position: Point, end?: Point): 
     radius: policy.radius,
     intensity: policy.colour,
     dayFactor: policy.day,
+    reach: policy.reach,
     occlude: !policy.hold || policy.hold >= 0.15,
     flicker: policy.flicker,
   };
@@ -108,7 +132,7 @@ export function policyLight(policy: LightPolicy, position: Point, end?: Point): 
     ? { ...light, position: [-0.5, policy.height, 0], end: [0.5, policy.height, 0] }
     : { ...light, position: [0, policy.height, 0] };
   const receiver: Point = end ? [0, 0, 0.5] : [0.5, 0, 0];
-  const key = JSON.stringify([policy.height, policy.radius, policy.ground, policy.colour, !!end]);
+  const key = JSON.stringify([policy.height, policy.radius, policy.ground, policy.colour, policy.reach, !!end]);
   const cached = energyCache.get(key);
   if (cached !== undefined) {
     light.intensity = policy.colour.map((c) => c * cached) as [number, number, number];
@@ -148,18 +172,22 @@ export function animLightPolicy(
   if (row.c === 'muzzle') return { ...REAL_LIGHT_POLICIES.muzzle, hold: 2 / fps };
   if (row.c === 'explosion' || row.c === 'collapse') {
     const rho = Math.max(0.2, row.light?.[3] ?? row.s);
+    const life = row.life / fps;
     return {
-      height: 0.4 + 0.3 * rho,
-      radius: 0.3 * rho,
-      // Sandbox r2: 1.2 rho^0.7 lit only the ground under the blast art itself (EXPLOLRG covers ~1.5 cells). Live
-      // SOV07TMD night r4: with 2.4 and a fade of life + 0.6 s, sustained cannon fire summed into a steady 8-10 cell
-      // wash; 1.1 and a fade of half the art's life + 0.25 s keep each blast a flash that dies with its art (1.7 still
-      // lit a bright 6-cell yellow pool around a burning tank under SOV07TMD's very dark night).
-      ground: 1.1 * rho ** 0.7,
+      // A fireball is a large, raised source. With a point at 0.4 + 0.3 rho and a 1.6-cell reach the light stayed
+      // under the fireball's own HD art (sandbox EXPLOLRG at night: no visible light beside it). Height, size and reach
+      // follow the art's light radius rho, so the light reaches past the fireball: EXPLOLRG about 3.5 cells.
+      height: 0.5 + 0.8 * rho,
+      radius: 0.6 * rho,
+      // Calibrated at half a cell, which lies under the fireball; the night knee bounds that core, and what shows is
+      // the shoulder 1.5-3 cells out (about +11 / +6 L* on dark grass), comparable in size to the current pools.
+      ground: 3,
+      reach: Math.min(4, Math.max(1.5, 1.5 + 2.5 * rho)),
       colour: LIGHT_COLOURS.explosion,
       day: 0.2,
-      hold: 0.12,
-      fade: (0.5 * row.life) / fps + 0.25,
+      // Light lives as long as the fireball art: full for its first third, fading out with the rest of the anim.
+      hold: Math.max(0.12, 0.35 * life),
+      fade: Math.max(0.25, 0.65 * life),
     };
   }
   if (row.light)
@@ -196,8 +224,8 @@ export function nativeBeamLight(beam: LiveBeam): PhysicalLight {
   const psychic = beam.kind === 'bolt' && beam.colour[0] > 130;
   const policy: LightPolicy =
     beam.kind === 'bolt'
-      ? REAL_LIGHT_POLICIES[psychic ? 'psychic' : 'tesla']
-      : { ...REAL_LIGHT_POLICIES.prism, colour: capLightColour(beamColor(beam.colour), 0.6) };
+      ? { ...REAL_LIGHT_POLICIES[psychic ? 'psychic' : 'tesla'], colour: capLightColour(beamColor(beam.colour), 0.55) }
+      : { ...REAL_LIGHT_POLICIES.prism, colour: capLightColour(beamColor(beam.colour), 0.5) };
   return policyLight(policy, animWorld(beam.source as LiveAnim), animWorld(beam.target as LiveAnim));
 }
 export function auxiliaryBeamLights(effects: LiveEffects): { key: string; light: PhysicalLight }[] {
@@ -258,15 +286,14 @@ export function nearestLampHead(source: EngineLight, heads: readonly LampArtHead
 }
 
 /**
- * Ground irradiance one cell from the post, in noon units, for an engine lamp: the engine's own added brightness
- * there, kept within a lamp's range. Matching the engine farther out (a quarter of LightVisibility, ~5 cells) made the
- * inverse-square near field 30x brighter than noon under the post: the whole block read as daylight (sandbox r1).
+ * Directional accent budget on top of the unchanged engine grade/pools. Calibrated at one cell in noon units;
+ * the raw energy ceiling remains safe under every scene-relative knee.
  */
-export const LAMP_GROUND_AT_ONE_CELL = { min: 0.12, max: 0.45 } as const;
-/** Match engine added brightness one cell from the post (clamped, LAMP_GROUND_AT_ONE_CELL) after the knee. */
+export const LAMP_GROUND_AT_ONE_CELL = { min: 0.04, max: 0.12 } as const;
+/** Clamp the combined head/post energy before any receiver knee; terrain retains the legacy source only. */
 export function engineLampLights(source: EngineLight, lighting: EngineLighting, head = 1.25): PhysicalLight[] {
   if (!(source.intensity > 0)) return [];
-  const distance = Math.min(1, (source.radius / 256) * 0.25);
+  const distance = 1;
   const grid = {
     width: 1,
     height: 1,
@@ -285,7 +312,7 @@ export function engineLampLights(source: EngineLight, lighting: EngineLighting, 
   const base = ((source.position[2] ?? 0) / 104) * LEVEL_HEIGHT;
   const position: Point = [source.position[0] / 256, base + head, source.position[1] / 256];
   const lights: PhysicalLight[] = [
-    { position, radius: 0.15, intensity: colour, dayFactor: 0, occlude: true },
+    { position, radius: 0.15, intensity: colour, dayFactor: 0, occlude: true, reach: 2.5, planarReach: true },
     {
       position,
       end: [position[0], base + Math.max(0.1, head - 0.6), position[2]],
@@ -293,6 +320,8 @@ export function engineLampLights(source: EngineLight, lighting: EngineLighting, 
       intensity: colour.map((c) => c * 0.08) as [number, number, number],
       dayFactor: 0,
       occlude: true,
+      reach: 2.5,
+      planarReach: true,
     },
   ];
   const receiver: Point = [position[0] + distance, base, position[2]];
@@ -307,7 +336,7 @@ export function engineLampLights(source: EngineLight, lighting: EngineLighting, 
       m.s.forEach((c, i) => (sum[i]! += c));
       m.d.forEach((c, i) => (direction[i]! += c));
     }
-    return lightLuminance(irradianceKnee(reconstructLight(sum, direction, [0, 1, 0]), 1));
+    return lightLuminance(reconstructLight(sum, direction, [0, 1, 0]));
   };
   let lo = 0,
     hi = 1;
@@ -353,16 +382,10 @@ export interface BuildingOccluder {
 export function ra2LightOccluders(
   width: number,
   height: number,
-  levels: ArrayLike<number>,
+  _levels: ArrayLike<number>,
   buildings: readonly BuildingOccluder[],
 ): LightOccluders {
   const heights = new Float32Array(width * height * 4);
-  for (let z = 0; z < height; z++)
-    for (let x = 0; x < width; x++) {
-      const top = (levels[z * width + x] ?? 0) * LEVEL_HEIGHT;
-      for (let dz = 0; dz < 2; dz++)
-        for (let dx = 0; dx < 2; dx++) heights[(z * 2 + dz) * width * 2 + x * 2 + dx] = top;
-    }
   for (const b of buildings)
     for (let z = Math.max(0, b.z * 2); z < Math.min(height * 2, (b.z + b.depth) * 2); z++)
       for (let x = Math.max(0, b.x * 2); x < Math.min(width * 2, (b.x + b.width) * 2); x++) {

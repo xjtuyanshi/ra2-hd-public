@@ -2052,6 +2052,24 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
     ...(diagnostics ? { diagnostics: diagnostics.handle } : {}),
     /** Development: real light (hd-light=1) on/off at runtime, and the beam/charge probe. */
     light: {
+      ...(import.meta.env.DEV
+        ? {
+            hold(on: boolean) {
+              return live?.holdLight(on) ?? false;
+            },
+            cost() {
+              return live?.hd.nodes.realLight?.cost.snapshot() ?? null;
+            },
+            /** HD frames shown so far (for alternating same-scene frame-rate comparisons). */
+            frames() {
+              return shownFrames;
+            },
+            /** Logic frame of the newest game state received. */
+            logic() {
+              return latestState?.frame ?? null;
+            },
+          }
+        : {}),
       get probe() {
         return lightProbe;
       },

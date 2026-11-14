@@ -14,6 +14,7 @@ import {
   instancedBufferAttribute,
   length,
   max,
+  min,
   mix,
   mrt,
   mx_noise_float,
@@ -28,7 +29,7 @@ import {
 import { DirtyAttribute } from './dirtyAttribute';
 import { InstancedQuad } from './instancedQuad';
 import type { ShaderNode } from './tsl';
-import { lightLuminance, type Rgb } from './realLight';
+import { type Rgb } from './realLight';
 export interface EmissivePrimitive {
   source: string;
   from: Vector3;
@@ -43,14 +44,20 @@ export interface EmissivePrimitive {
   /** Existing electric noise, or the auxiliary beam's travelling sine modulation. */
   noise?: { mode: 1 | 2; rate: number; scale: number; amount: number; seed: number; distance: number };
 }
+/** Core colour: a pale tint of the source's own colour, so the hottest line and its bloom keep the hue (a white core read paler than the original bolt). */
+export function emissiveCoreTint(colour: Rgb): [number, number, number] {
+  const peak = Math.max(...colour, 1e-8);
+  return colour.map((c) => 0.55 + 0.45 * (c / peak)) as [number, number, number];
+}
 export const EMISSIVE_BUDGET = {
   source: 6,
   frame: 32,
   core: 5,
-  coreWidth: 0.25,
+  coreWidth: 0.2,
   outerWidth: 2.5,
   outerAlpha: 0.25,
   sheathCeiling: 0.8,
+  sheathChroma: 1.2,
 } as const;
 /** Conservative radiance times world area, including the maximum modulation; invariant to path subdivision. */
 export function emissiveEnergy(p: EmissivePrimitive): number {
@@ -92,8 +99,10 @@ export function emissiveProfile(r: number): { core: number; sheath: number; glow
 }
 /** CPU twin of the non-core luminance limit, applied after flicker and source gain. */
 export function emissiveSheathColour(colour: Rgb, gain: number): [number, number, number] {
-  const rgb = colour.map((c) => c * Math.max(0, gain)) as [number, number, number];
-  const scale = Math.min(1, EMISSIVE_BUDGET.sheathCeiling / Math.max(1e-8, lightLuminance(rgb)));
+  const peak = Math.max(...colour);
+  const boost = Math.min(EMISSIVE_BUDGET.sheathChroma, peak / Math.max(1e-8, peak - Math.min(...colour)));
+  const rgb = colour.map((c) => Math.max(0, peak - (peak - c) * boost) * Math.max(0, gain)) as [number, number, number];
+  const scale = Math.min(1, EMISSIVE_BUDGET.sheathCeiling / Math.max(1e-8, ...rgb));
   return rgb.map((c) => c * scale) as [number, number, number];
 }
 /** Fixed-capacity shared pool, updated after all producer channels; no game data or shape generation. */
@@ -168,14 +177,19 @@ export class RealEmissiveLayer {
     const angle = phase.y.add(along.clamp(0, span)).mul(9).sub(this.now.mul(8)).add(phase.x.mul(0.73));
     const travelling = angle.sin().mul(0.08).add(angle.mul(2.17).add(phase.x).sin().mul(0.04)).add(1);
     const modulation = noise.x.greaterThan(1.5).select(travelling, noise.x.greaterThan(0.5).select(electric, float(1)));
-    const body = colour.rgb.mul(sheath.add(glow)).mul(colour.w).mul(modulation);
+    const peak = max(colour.r, max(colour.g, colour.b));
+    const boost = float(EMISSIVE_BUDGET.sheathChroma).min(
+      peak.div(peak.sub(min(colour.r, min(colour.g, colour.b))).max(1e-8)),
+    );
+    const chromatic = vec3(peak).sub(vec3(peak).sub(colour.rgb).mul(boost)).max(0);
+    const body = chromatic.mul(sheath.add(glow)).mul(colour.w).mul(modulation);
     const bodyScale = float(EMISSIVE_BUDGET.sheathCeiling)
-      .div(dot(body, vec3(0.2126, 0.7152, 0.0722)).max(1e-8))
+      .div(max(body.r, max(body.g, body.b)).max(1e-8))
       .min(1);
     const rgb = hot.rgb.mul(core.mul(EMISSIVE_BUDGET.core)).mul(colour.w).mul(modulation).add(body.mul(bodyScale));
-    // Use the existing attachment: under physical mode it is composited before bloom, under legacy mode after it.
+    // Budget only these new primitives, preserving legacy static overlays that share the attachment.
     m.colorNode = vec4(0);
-    m.mrtNode = mrt({ output: vec4(0), emissive: vec4(rgb, 0) });
+    m.mrtNode = mrt({ output: vec4(0), emissive: vec4(rgb.mul(this.frameGain), 0) });
     this.mesh = new InstancedQuad(m, capacity);
     this.mesh.count = 0;
     this.mesh.renderOrder = 11;

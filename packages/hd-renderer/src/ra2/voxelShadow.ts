@@ -606,10 +606,7 @@ function createSurfaceMaterial(
         ? Math.min(SHADOW_OPACITY * look.shadowDarkness.value, 0.9)
         : SHADOW_OPACITY;
     return shadowCopyOpacity(
-      target *
-        nodes.weatherSunShare.value *
-        nodes.sceneSunShadow.value *
-        (1 - (nodes.realLight?.enabled.value ?? 0) * (nodes.realLight?.nightWeight.value ?? 0)),
+      target * nodes.weatherSunShare.value * nodes.sceneSunShadow.value,
       mode.soft ? SHADOW_COPIES.length : 1,
     );
   });

@@ -11,7 +11,6 @@ import {
   InstancedMesh,
   LinearFilter,
   MeshBasicNodeMaterial,
-  Mesh,
   OneFactor,
   OrthographicCamera,
   PlaneGeometry,
@@ -20,10 +19,14 @@ import {
   RGBAFormat,
   Scene,
   Vector2,
+  Vector3,
+  Vector4,
   UnsignedByteType,
   type WebGPURenderer,
 } from 'three/webgpu';
 import {
+  Fn,
+  If,
   atan,
   clamp,
   dot,
@@ -39,10 +42,12 @@ import {
   texture,
   smoothstep,
   uniform,
+  vec2,
   vec3,
   vec4,
 } from 'three/tsl';
 import { AmbientContactField, type AmbientContact } from './ambientContact';
+import { LightCost } from './lightCost';
 import { NIGHT_ART_DEFAULTS } from './nightArt';
 import { flicker, heldPulseEnvelope } from './lightField';
 import type { ShaderNode } from './tsl';
@@ -66,21 +71,21 @@ export interface PhysicalLight {
   occlude?: boolean;
   /** Static/kept sources use zero; short events may retain a subtle daylight share. */
   dayFactor: number;
+  /** Source-policy window, in cells from the point or closest point on the segment. */
+  reach?: number;
+  /** Posts can bound the ground footprint independently of their elevation. */
+  planarReach?: boolean;
   flicker?: number;
   seed?: number;
 }
 export const segmentLength = (l: PhysicalLight): number =>
   l.end ? Math.hypot(...l.end.map((v, i) => v - l.position[i]!)) : 0;
-/**
- * Reach cap in cells, scaled by source size for large events. Live SOV07TMD night (2026-11-14): a sustained Tesla
- * tank bolt (luminance x length about 4) derived a 26-cell reach; its faint inverse-distance tail summed into a pale
- * wash over the whole screen under night exposure. The window still takes every light smoothly to zero at the cap.
- */
-export const REAL_LIGHT_REACH = { cells: 6, perRadius: 4 } as const;
+/** Global dynamic default; source policy supplies tighter windows and explicit large-event exceptions. */
+export const REAL_LIGHT_REACH = { cells: 3 } as const;
 /** Conservative unwindowed scalar threshold, capped; the window reaches exactly zero at this derived distance. */
 export function lightReach(l: PhysicalLight): number {
   return Math.min(
-    Math.max(REAL_LIGHT_REACH.cells, REAL_LIGHT_REACH.perRadius * l.radius),
+    l.reach ?? REAL_LIGHT_REACH.cells,
     Math.sqrt(
       Math.max(
         0,
@@ -112,7 +117,10 @@ export function lightMoment(l: PhysicalLight, p: Point, windowed = true): LightM
     const a = Math.sqrt(Math.max(1e-8, d2 - (along - u) ** 2 + l.radius ** 2));
     factor = (Math.atan((len - along) / a) + Math.atan(along / a)) / a;
   }
-  if (windowed) factor *= lightWindow(distance / Math.max(lightReach(l), 1e-8));
+  if (windowed)
+    factor *= lightWindow(
+      (l.planarReach ? Math.hypot(delta[0]!, delta[2]!) : distance) / Math.max(lightReach(l), 1e-8),
+    );
   const s = l.intensity.map((c) => c * factor) as [number, number, number];
   const lum = lightLuminance(s);
   return {
@@ -128,11 +136,17 @@ export function reconstructLight(s: Rgb, d: Point, normal: Point): [number, numb
   const k = (dominant * cosine + 0.5 * Math.max(0, lum - dominant)) / Math.max(lum, 1e-8);
   return s.map((c) => c * k) as [number, number, number];
 }
-export function irradianceKnee(e: Rgb, night: number, capScale = 1): [number, number, number] {
-  const lum = lightLuminance(e),
-    cap = (1.2 + 1.3 * Math.min(1, Math.max(0, night))) * capScale;
-  const k = lum > 0 ? Math.min(1, (cap * -Math.expm1(-lum / cap)) / lum) : 1;
+/** Hue-preserving exponential knee in noon irradiance units. */
+export function cappedIrradiance(e: Rgb, cap: number): [number, number, number] {
+  const lum = lightLuminance(e);
+  const k = cap > 0 && lum > 0 ? Math.min(1, (cap * -Math.expm1(-lum / cap)) / lum) : 0;
   return e.map((c) => c * k) as [number, number, number];
+}
+export function irradianceKnee(e: Rgb, night: number, capScale = 1, ambientLum = 0.4): [number, number, number] {
+  return cappedIrradiance(e, (1.2 + (3 * ambientLum - 1.2) * Math.min(1, Math.max(0, night))) * capScale);
+}
+export function objectIrradianceKnee(e: Rgb, sceneLum: number, noon = 1): [number, number, number] {
+  return cappedIrradiance(e, Math.max(0, 0.8 * noon - sceneLum));
 }
 /** Generic R16F contract. Row-major top heights, world y, 2 texels/cell; no object identity or game policy. */
 export interface LightOccluders {
@@ -182,6 +196,8 @@ export function occlusionNode(
 
 /** Allocated only by an opted-in world, before it constructs materials. */
 export class RealLightNodes {
+  readonly cost = new LightCost();
+  logicFrame = -1;
   readonly enabled = uniform(1);
   readonly directional = uniform(1);
   readonly nightWeight = uniform(0);
@@ -213,6 +229,7 @@ export class RealLightNodes {
     this.ambientContact.value = this.contactField.texture;
   }
   readonly size = uniform(new Vector2(1, 1));
+  readonly dynamicBounds = uniform(new Vector4(0, 0, 1, 1));
   private readonly black = new DataTexture(new Float32Array(4), 1, 1, RGBAFormat, FloatType);
   private readonly flat = new DataTexture(new Uint16Array(1), 1, 1, RedFormat, HalfFloatType);
   /**
@@ -223,6 +240,14 @@ export class RealLightNodes {
   readonly groundHeight = texture(this.flat);
   readonly occluderHeight = texture(this.flat);
   readonly ambientContact = texture(this.flat);
+  readonly accentGroundUv = uniform(new Vector4(1, 1, 0, 0));
+  readonly accentUpperUv = uniform(new Vector4(1, 1, 0, 0));
+  readonly accentGroundHalf = uniform(new Vector2(0.5, 0.5));
+  readonly accentUpperHalf = uniform(new Vector2(0.5, 0.5));
+  readonly accentGround = texture(this.black);
+  readonly accentUpper = texture(this.black);
+  readonly accentGroundDirection = texture(this.black);
+  readonly accentUpperDirection = texture(this.black);
   readonly ground = texture(this.black);
   readonly groundDirection = texture(this.black);
   readonly upper = texture(this.black);
@@ -238,18 +263,13 @@ export class RealLightNodes {
     this.flat.dispose();
   }
 }
-/**
- * Knee ceiling for objects (units, building art) relative to the ground's: a voxel face turned to a blast takes full
- * cosine while the ground beside it takes a grazing one, and at the ground's 2.5 night ceiling a Rhino two cells from
- * EXPLOLRG clipped on 53 % of its lit side (sandbox r3, M6). Objects keep their paint at 0.3 of it (0.45 still clipped 49 %).
- */
-export const OBJECT_KNEE = 0.3;
-function kneeNode(e: ShaderNode, night: ShaderNode, capScale = 1): ShaderNode {
+/** Object total-light ceiling in noon units; identifies the object receiver branch. */
+export const OBJECT_KNEE = 0.8;
+export function kneeNode(e: ShaderNode, cap: ShaderNode): ShaderNode {
   const lum = dot(e, vec3(...LUMA));
-  const cap = mix(float(1.2), float(2.5), night).mul(capScale);
   return e.mul(
     cap
-      .mul(float(1).sub(exp(lum.negate().div(cap))))
+      .mul(float(1).sub(exp(lum.negate().div(cap.max(1e-8)))))
       .div(max(lum, 1e-8))
       .min(1),
   );
@@ -261,16 +281,41 @@ export function sampleRealLight(
   height: ShaderNode,
   normal?: ShaderNode,
   capScale = 1,
+  ambientLum: ShaderNode = float(0.4),
 ): ShaderNode {
   const uv = xz.div(nodes.size);
   // Callers pass absolute world y; the layers follow the ground.
   height = max(height.sub(texture(nodes.groundHeight, uv).r), 0);
   const t = clamp(height.div(REAL_LIGHT_UPPER), 0, 1).mul(nodes.directional);
+  const bounds = nodes.dynamicBounds;
+  const inView = xz.x
+    .greaterThanEqual(bounds.x)
+    .and(xz.y.greaterThanEqual(bounds.y))
+    .and(xz.x.lessThanEqual(bounds.z))
+    .and(xz.y.lessThanEqual(bounds.w))
+    .select(float(1), float(0));
   const g = texture(nodes.ground, uv);
-  const s = mix(g.rgb, texture(nodes.upper, uv).rgb, t).mul(nodes.scale);
+  let s = mix(g.rgb, texture(nodes.upper, uv).rgb, t).mul(nodes.scale).mul(inView);
+  // Static accents light upright art only. Ground keeps its legacy grade/pools exactly between events.
+  const agUv = clamp(uv, nodes.accentGroundHalf, vec2(1).sub(nodes.accentGroundHalf))
+    .mul(nodes.accentGroundUv.xy)
+    .add(nodes.accentGroundUv.zw);
+  const auUv = clamp(uv, nodes.accentUpperHalf, vec2(1).sub(nodes.accentUpperHalf))
+    .mul(nodes.accentUpperUv.xy)
+    .add(nodes.accentUpperUv.zw);
+  if (capScale === OBJECT_KNEE)
+    s = s.add(mix(texture(nodes.accentGround, agUv).rgb, texture(nodes.accentUpper, auUv).rgb, t).mul(nodes.scale));
   let e: ShaderNode = s;
   if (normal) {
-    const d = mix(texture(nodes.groundDirection, uv).xyz, texture(nodes.upperDirection, uv).xyz, t).mul(nodes.scale);
+    let d = mix(texture(nodes.groundDirection, uv).xyz, texture(nodes.upperDirection, uv).xyz, t)
+      .mul(nodes.scale)
+      .mul(inView);
+    if (capScale === OBJECT_KNEE)
+      d = d.add(
+        mix(texture(nodes.accentGroundDirection, agUv).xyz, texture(nodes.accentUpperDirection, auUv).xyz, t).mul(
+          nodes.scale,
+        ),
+      );
     const lum = dot(s, vec3(...LUMA));
     const magnitude = length(d);
     const dominant = magnitude.min(lum);
@@ -278,10 +323,18 @@ export function sampleRealLight(
     const reconstructed = s.mul(dominant.mul(cosine).add(lum.sub(dominant).max(0).mul(0.5)).div(max(lum, 1e-8)));
     e = mix(s, reconstructed, nodes.directional);
     // Preserve the alpha contract: upright receivers take only the reduced ground-only share.
-    const groundShare = mix(g.a, texture(nodes.upper, uv).a, t).mul(nodes.scale).div(max(lum, 1e-8)).clamp(0, 1);
+    const groundShare = mix(g.a, texture(nodes.upper, uv).a, t)
+      .mul(nodes.scale)
+      .mul(inView)
+      .div(max(lum, 1e-8))
+      .clamp(0, 1);
     e = e.mul(float(1).sub(groundShare.mul(max(normal.y.negate().add(1), 0).min(1)).mul(0.7)));
   }
-  return kneeNode(e.mul(exp(max(height.sub(REAL_LIGHT_UPPER), 0).mul(-0.45))), nodes.nightWeight, capScale);
+  const cap =
+    capScale === OBJECT_KNEE
+      ? float(OBJECT_KNEE).sub(ambientLum).max(0)
+      : mix(float(1.2), ambientLum.mul(3), nodes.nightWeight);
+  return kneeNode(e.mul(exp(max(height.sub(REAL_LIGHT_UPPER), 0).mul(-0.45))), cap);
 }
 
 interface TimedLight {
@@ -304,14 +357,59 @@ export class RealLightField {
   private readonly meshes: InstancedMesh[] = [];
   private readonly layers: number[];
   private readonly cursors = new Map<RealLightPool, number>();
-  private dirty = true;
   private lastNight = -1;
   private staticDirty = true;
   readonly staticTargets: RenderTarget[];
   readonly staticScenes: Scene[];
-  readonly copyScenes: Scene[];
   staticRenders = 0;
-  private lastDynamic = false;
+  private readonly viewport = { x0: 0, z0: 0, x1: Infinity, z1: Infinity };
+  private viewKey = '';
+  private lastViewKey = '';
+  private lastCount = -1;
+  private previousDynamic: Float32Array[][] = [];
+  private groundMin = 0;
+  private groundMax = 0;
+  private readonly corner = new Vector3();
+  /** Top-down bounds of the visible ground at both terrain extrema, expanded by the dynamic reach budget. */
+  setView(camera: OrthographicCamera): void {
+    let x0 = Infinity,
+      z0 = Infinity,
+      x1 = -Infinity,
+      z1 = -Infinity;
+    const direction = this.corner.set(0, 0, -1).transformDirection(camera.matrixWorld).clone();
+    for (const y of [this.groundMin, this.groundMax])
+      for (const x of [-1, 1])
+        for (const z of [-1, 1]) {
+          const p = this.corner.set(x, z, -1).unproject(camera);
+          const t = (y - p.y) / Math.min(-1e-8, direction.y);
+          const px = p.x + direction.x * t,
+            pz = p.z + direction.z * t;
+          x0 = Math.min(x0, px);
+          z0 = Math.min(z0, pz);
+          x1 = Math.max(x1, px);
+          z1 = Math.max(z1, pz);
+        }
+    const target = this.targets[0]!;
+    // Snap outwards to texels: subpixel camera motion need not re-render a stationary field.
+    const sx = target.width / this.width,
+      sz = target.height / this.height;
+    Object.assign(this.viewport, {
+      x0: Math.min(this.width, Math.max(0, Math.floor((x0 - 3) * sx) / sx)),
+      z0: Math.min(this.height, Math.max(0, Math.floor((z0 - 3) * sz) / sz)),
+      x1: Math.max(0, Math.min(this.width, Math.ceil((x1 + 3) * sx) / sx)),
+      z1: Math.max(0, Math.min(this.height, Math.ceil((z1 + 3) * sz) / sz)),
+    });
+    this.nodes.dynamicBounds.value.set(this.viewport.x0, this.viewport.z0, this.viewport.x1, this.viewport.z1);
+    const key = Object.values(this.viewport).join(',');
+    if (key !== this.viewKey) {
+      this.viewKey = key;
+    }
+  }
+  /** Empty dynamic field has exactly zero local irradiance on every terrain receiver. */
+  get dynamicBounds() {
+    return { ...this.viewport };
+  }
+
   private occluders: DataTexture | null = null;
   private groundTexture: DataTexture | null = null;
   private groundHeights: ArrayLike<number> = [];
@@ -327,6 +425,7 @@ export class RealLightField {
     nodes.directional.value = directional ? 1 : 0;
     nodes.scale.value = halfFloat ? 1 : 8;
     nodes.size.value.set(width, height);
+    nodes.dynamicBounds.value.set(0, 0, width, height);
     nodes.initContacts(width, height);
     this.layers = directional ? [0, REAL_LIGHT_UPPER] : [0];
     this.camera = new OrthographicCamera(0, width, 0, height, -10, 10);
@@ -350,7 +449,23 @@ export class RealLightField {
       if (directional) target.textures[1]!.name = 'direction';
       return target;
     });
-    this.staticTargets = this.targets.map((t) => t.clone());
+    // Pack both cached heights into one MRT atlas: upright art must remain within the 16-texture stage limit.
+    const ground = this.targets[0]!,
+      upper = this.targets[1];
+    const atlas = ground.clone();
+    atlas.setSize(ground.width + (upper?.width ?? 0), ground.height);
+    this.staticTargets = [atlas];
+    nodes.accentGroundUv.value.set(ground.width / atlas.width, 1, 0, 0);
+    nodes.accentGroundHalf.value.set(0.5 / ground.width, 0.5 / ground.height);
+    nodes.accentUpperUv.value.set(
+      (upper?.width ?? ground.width) / atlas.width,
+      1,
+      upper ? ground.width / atlas.width : 0,
+      0,
+    );
+    nodes.accentUpperHalf.value.set(0.5 / (upper?.width ?? ground.width), 0.5 / ground.height);
+    nodes.accentGround.value = nodes.accentUpper.value = atlas.textures[0]!;
+    if (directional) nodes.accentGroundDirection.value = nodes.accentUpperDirection.value = atlas.textures[1]!;
     nodes.ground.value = this.targets[0]!.textures[0]!;
     nodes.upper.value = (this.targets[1] ?? this.targets[0])!.textures[0]!;
     if (directional) {
@@ -360,20 +475,6 @@ export class RealLightField {
     for (const pool of Object.keys(CAPACITIES) as RealLightPool[]) this.pools.set(pool, new Map());
     this.scenes = this.layers.map((y) => this.build(y, directional));
     this.staticScenes = this.layers.map((y) => this.build(y, directional));
-    this.copyScenes = this.staticTargets.map((target) => {
-      const m = new MeshBasicNodeMaterial();
-      m.depthTest = m.depthWrite = false;
-      m.positionNode = vec3(positionGeometry.xy.add(0.5).mul(nodes.size), 0);
-      const uv = positionWorld.xy.div(nodes.size);
-      const output = texture(target.textures[0]!, uv);
-      m.colorNode = output;
-      if (directional) m.mrtNode = mrt({ output, direction: texture(target.textures[1]!, uv) });
-      const scene = new Scene();
-      const mesh = new Mesh(new PlaneGeometry(), m);
-      mesh.frustumCulled = false;
-      scene.add(mesh);
-      return scene;
-    });
   }
   private build(y: number, directional: boolean): Scene {
     const capacity = Object.values(CAPACITIES).reduce((a, b) => a + b, 0);
@@ -413,14 +514,22 @@ export class RealLightField {
     const integral = atan(len.sub(along).div(perpendicular))
       .add(atan(along.div(perpendicular)))
       .div(perpendicular);
+    const windowDistance = extra.w.greaterThan(0.5).select(length(delta.xz), distance);
     const weight = float(1)
-      .sub(clamp(distance.div(max(b.w, 1e-8)), 0, 1).pow(4))
+      .sub(clamp(windowDistance.div(max(b.w, 1e-8)), 0, 1).pow(4))
       .pow(2);
+    const transmission = Fn(() => {
+      const value = float(1).toVar();
+      If(extra.y.greaterThan(0.5), () => {
+        value.assign(occlusionNode(p, p.add(delta), this.nodes.occluderHeight, this.nodes.size, extra.y));
+      });
+      return value;
+    })();
     const scalar = extra.z
       .greaterThan(0.5)
       .select(integral, float(1).div(max(d2, 1e-8)))
       .mul(weight)
-      .mul(occlusionNode(p, p.add(delta), this.nodes.occluderHeight, this.nodes.size, extra.y));
+      .mul(transmission);
     const s = c.rgb.mul(scalar),
       lum = dot(s, vec3(...LUMA));
     const output = vec4(directional ? s : s.mul(max(delta.y.div(max(distance, 1e-8)), 0)), lum.mul(extra.x));
@@ -454,12 +563,18 @@ export class RealLightField {
     );
     this.occluders.needsUpdate = true;
     this.nodes.occluderHeight.value = this.occluders;
-    this.staticDirty = this.dirty = true;
+    this.staticDirty = true;
   }
   /** Ground height per cell (world y), row-major width x height cells. */
   setGround(heights: ArrayLike<number>): void {
     if (heights.length !== this.width * this.height) throw new Error('Invalid light ground dimensions');
     this.groundHeights = Float32Array.from(heights);
+    this.groundMin = Infinity;
+    this.groundMax = -Infinity;
+    for (let i = 0; i < heights.length; i++) {
+      this.groundMin = Math.min(this.groundMin, heights[i]!);
+      this.groundMax = Math.max(this.groundMax, heights[i]!);
+    }
     this.nodes.contactField?.invalidate();
     this.groundTexture?.dispose();
     this.groundTexture = new DataTexture(
@@ -473,13 +588,14 @@ export class RealLightField {
     this.groundTexture.needsUpdate = true;
     this.nodes.groundHeight.value = this.groundTexture;
     this.staticDirty = true;
-    this.dirty = true;
   }
-  setStatic(lights: readonly PhysicalLight[]): void {
+  private readonly staticChannels = new Map<string, readonly PhysicalLight[]>();
+  setStatic(lights: readonly PhysicalLight[], channel = 'engine'): void {
+    this.staticChannels.set(channel, lights);
+    lights = [...this.staticChannels.values()].flat();
     this.staticDirty = true;
     this.pools.get('static')!.clear();
     lights.slice(0, CAPACITIES.static).forEach((l, i) => this.put('static', String(i), 0, l));
-    this.dirty = true;
   }
   put(pool: RealLightPool, key: string, now: number, light: PhysicalLight, hold = 0, fade = 0.15, ttl?: number): void {
     const entries = this.pools.get(pool)!;
@@ -490,7 +606,6 @@ export class RealLightField {
     }
     if (pool === 'static') this.staticDirty = true;
     entries.set(key, { light, born: old?.born ?? now, seen: now, hold, fade, ttl });
-    this.dirty = true;
   }
   pulse(pool: 'flash' | 'explosion', now: number, light: PhysicalLight, hold: number, fade: number): void {
     const id = this.cursors.get(pool) ?? 0;
@@ -501,33 +616,41 @@ export class RealLightField {
     for (const key of this.pools.get(pool)!.keys())
       if (!keys.has(key)) {
         this.pools.get(pool)!.delete(key);
-        this.dirty = true;
       }
   }
   clearDynamic(): void {
     for (const [name, pool] of this.pools) if (name !== 'static') pool.clear();
-    this.dirty = true;
   }
   clear(): void {
+    this.staticChannels.clear();
     for (const p of this.pools.values()) p.clear();
     this.staticDirty = true;
-    this.dirty = true;
   }
   update(now: number, renderer: WebGPURenderer, night: number): boolean {
+    if (this.nodes.enabled.value && night > 0)
+      this.nodes.cost.measure('contactRasterUpload', () => {
+        const updated = this.nodes.contactField?.update(
+          (x, z) =>
+            this.groundHeights[
+              Math.min(this.height - 1, Math.max(0, Math.floor(z))) * this.width +
+                Math.min(this.width - 1, Math.max(0, Math.floor(x)))
+            ] ?? 0,
+          this.nodes.logicFrame >= 0 ? this.nodes.logicFrame : Math.floor(now * 60),
+        );
+        if (updated && this.nodes.contactField) renderer.initTexture?.(this.nodes.contactField.texture);
+      });
+    return this.nodes.cost.measure('fieldUpdate', () => this.updateField(now, renderer, night));
+  }
+  private updateField(now: number, renderer: WebGPURenderer, night: number): boolean {
     this.nodes.nightWeight.value = night;
-    if (!this.nodes.enabled.value) return false;
-    if (night > 0)
-      this.nodes.contactField?.update(
-        (x, z) =>
-          this.groundHeights[
-            Math.min(this.height - 1, Math.max(0, Math.floor(z))) * this.width +
-              Math.min(this.width - 1, Math.max(0, Math.floor(x)))
-          ] ?? 0,
-      );
+    if (!this.nodes.enabled.value) {
+      this.nodes.cost.lightsSplatted = this.nodes.cost.texelsSplattedEstimate = 0;
+      return false;
+    }
     const refreshStatic = this.staticDirty || this.lastNight !== night;
     let staticCount = 0;
-    let count = 0,
-      dynamic = false;
+    let count = 0;
+    let texels = 0;
     for (const [pool, entries] of this.pools)
       for (const [key, entry] of entries) {
         if (pool === 'static' && !refreshStatic) continue;
@@ -541,16 +664,27 @@ export class RealLightField {
         if (now < born) continue;
         if (envelope <= 0) {
           entries.delete(key);
-          this.dirty = true;
+
           continue;
         }
         const gain =
           (envelope / this.nodes.scale.value) *
           (l.dayFactor + (1 - l.dayFactor) * night) *
           flicker(l.seed ?? 0, now, l.flicker);
-        dynamic ||= pool !== 'static' || !!l.flicker;
         if (!(gain > 0)) continue;
         const isStatic = pool === 'static';
+        const reach = lightReach(l),
+          v = this.viewport;
+        const x0 = Math.max(v.x0, Math.min(l.position[0], l.end?.[0] ?? l.position[0]) - reach),
+          z0 = Math.max(v.z0, Math.min(l.position[2], l.end?.[2] ?? l.position[2]) - reach),
+          x1 = Math.min(v.x1, Math.max(l.position[0], l.end?.[0] ?? l.position[0]) + reach),
+          z1 = Math.min(v.z1, Math.max(l.position[2], l.end?.[2] ?? l.position[2]) + reach);
+        if (!isStatic && (x1 <= x0 || z1 <= z0)) continue;
+        if (!isStatic)
+          texels +=
+            (((((x1 - x0) * (z1 - z0) * this.targets[0]!.width) / this.width) * this.targets[0]!.height) /
+              this.height) *
+            1.25;
         const index = isStatic ? staticCount : count;
         const selected = isStatic
           ? this.attributes.slice(this.layers.length)
@@ -560,16 +694,38 @@ export class RealLightField {
           attrs[1]!.setXYZW(index, ...(l.end ?? l.position), lightReach(l));
           const intensity = l.initialIntensity && now - born < (l.hotSeconds ?? 0) ? l.initialIntensity : l.intensity;
           attrs[2]!.setXYZW(index, intensity[0] * gain, intensity[1] * gain, intensity[2] * gain, 0);
-          attrs[3]!.setXYZW(index, l.groundOnly ?? 0, l.occlude === false ? 0 : 1, l.end ? 1 : 0, 0);
+          attrs[3]!.setXYZW(
+            index,
+            l.groundOnly ?? 0,
+            l.occlude === false || (!isStatic && (ttl ?? hold + fade) < 0.3) || lightReach(l) < 1.5 ? 0 : 1,
+            l.end ? 1 : 0,
+            l.planarReach ? 1 : 0,
+          );
         }
         if (isStatic) staticCount++;
         else count++;
       }
-    if (!this.dirty && !dynamic && !this.lastDynamic && this.lastNight === night) return false;
+    let changed = this.lastCount !== count || this.lastViewKey !== this.viewKey;
+    for (let layer = 0; layer < this.layers.length; layer++) {
+      const previous = (this.previousDynamic[layer] ??= []);
+      for (let i = 0; i < 4; i++) {
+        const values = this.attributes[layer]![i]!.array;
+        const old = (previous[i] ??= new Float32Array(values.length));
+        for (let c = 0; c < count * 4; c++)
+          if (old[c] !== values[c]) {
+            changed = true;
+            old[c] = values[c]!;
+          }
+      }
+    }
+    this.nodes.cost.lightsSplatted = changed || refreshStatic ? count + staticCount : 0;
+    this.nodes.cost.texelsSplattedEstimate = changed || refreshStatic ? Math.ceil(texels) : 0;
+    if (!changed && !refreshStatic) return false;
+    this.lastCount = count;
+    this.lastViewKey = this.viewKey;
     this.staticDirty = false;
-    this.dirty = false;
+
     this.lastNight = night;
-    this.lastDynamic = dynamic;
     const previous = renderer.getRenderTarget(),
       previousMrt = renderer.getMRT(),
       alpha = renderer.getClearAlpha();
@@ -592,18 +748,26 @@ export class RealLightField {
         renderer.render(scene, this.camera);
       };
       for (let i = 0; i < this.layers.length; i++) {
-        if (refreshStatic)
-          draw(i + this.layers.length, staticCount, this.staticScenes[i]!, this.staticTargets[i]!, true);
-        renderer.autoClear = true;
-        renderer.setRenderTarget(this.targets[i]!);
-        const copy = this.copyScenes[i]!;
-        renderer.setMRT(
-          this.nodes.directional.value
-            ? (copy.children[0] as Mesh<PlaneGeometry, MeshBasicNodeMaterial>).material.mrtNode
-            : null,
-        );
-        renderer.render(copy, this.camera);
-        draw(i, count, this.scenes[i]!, this.targets[i]!, false);
+        if (refreshStatic) {
+          const atlas = this.staticTargets[0]!,
+            layer = this.targets[i]!,
+            offset = i ? this.targets[0]!.width : 0;
+          atlas.viewport.set(offset, 0, layer.width, atlas.height);
+          atlas.scissor.copy(atlas.viewport);
+          atlas.scissorTest = true;
+          draw(i + this.layers.length, staticCount, this.staticScenes[i]!, atlas, true);
+        }
+        const target = this.targets[i]!,
+          v = this.viewport;
+        const sx = target.width / this.width,
+          sz = target.height / this.height;
+        const x0 = Math.floor(v.x0 * sx),
+          z0 = Math.floor(v.z0 * sz),
+          x1 = Math.min(target.width, Math.ceil(v.x1 * sx)),
+          z1 = Math.min(target.height, Math.ceil(v.z1 * sz));
+        target.scissor.set(x0, z0, Math.max(0, x1 - x0), Math.max(0, z1 - z0));
+        target.scissorTest = true;
+        draw(i, count, this.scenes[i]!, target, true);
       }
       if (refreshStatic) this.staticRenders++;
     } finally {
@@ -617,12 +781,6 @@ export class RealLightField {
   }
   dispose(): void {
     for (const t of [...this.targets, ...this.staticTargets]) t.dispose();
-    for (const scene of this.copyScenes) {
-      const mesh = scene.children[0] as Mesh<PlaneGeometry, MeshBasicNodeMaterial>;
-      mesh.geometry.dispose();
-      mesh.material.dispose();
-      scene.clear();
-    }
     for (const m of this.meshes) {
       m.geometry.dispose();
       (m.material as MeshBasicNodeMaterial).dispose();

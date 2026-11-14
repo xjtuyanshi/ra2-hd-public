@@ -7,6 +7,7 @@ import {
   RealEmissiveLayer,
   capOverlaySource,
   emissiveBudget,
+  emissiveCoreTint,
   emissiveEnergy,
   emissiveSheathColour,
   emissiveProfile,
@@ -90,7 +91,7 @@ describe('emissive budgets and finite graph', () => {
     expect(emissiveBudget(new Map()).gain).toBe(1);
     expect(emissiveBudget(new Map([['a', -1]])).total).toBe(0);
   });
-  it('uses a quarter-width hot core, coloured sheath and a soft 2.5-width tail', () => {
+  it('uses a narrow white core, coloured sheath and a soft 2.5-width tail', () => {
     expect(emissiveProfile(0)).toEqual({ core: 1, sheath: 1, glow: 0.25 });
     expect(emissiveProfile(0.25).core).toBe(0);
     expect(emissiveProfile(1).sheath).toBe(0);
@@ -101,11 +102,11 @@ describe('emissive budgets and finite graph', () => {
   it('keeps non-core sheath/glow below both bloom thresholds even at peak flicker', () => {
     const original = [0.4, 1, 0.6] as const;
     const capped = emissiveSheathColour(original, 10);
-    expect(lightLuminance(capped)).toBeCloseTo(0.8);
-    expect(capped[0] / capped[1]).toBeCloseTo(original[0] / original[1]);
+    expect(Math.max(...capped)).toBeCloseTo(0.8);
+    expect(capped[0] / capped[1]).toBeLessThan(original[0] / original[1]);
     expect(emissiveSheathColour(original, 0)).toEqual([0, 0, 0]);
     expect(emissiveSheathColour(original, -1)).toEqual([0, 0, 0]);
-    expect(emissiveSheathColour(original, 0.1)).toEqual(original.map((c) => c * 0.1));
+    expect(emissiveSheathColour(original, 0.1)).toEqual(original.map((c) => Math.max(0, 1 - (1 - c) * 1.2) * 0.1));
   });
   it('caps each reactor sphere and all its filaments as one source, without mutating art policy', () => {
     const source = buildingLightPlacements('NAPOWR', { x: 0, y: 0, z: 0, uid: 1, id: 1 }, [3, 2]);
@@ -221,8 +222,9 @@ describe('RA2 source lifetime and shape preservation', () => {
       expect(primitives[i]!.from.toArray()).toEqual([...base.from.array.slice(i * 3, i * 3 + 3)]);
       expect(primitives[i]!.to.toArray()).toEqual([...base.to.array.slice(i * 3, i * 3 + 3)]);
     }
-    expect(primitives.at(-1)!.hot).toEqual([1, 0.1, 0]);
-    expect(primitives.at(-1)!.colour).toEqual([0.2, 0, 0]);
+    // The core is a pale tint of the beam's own colour (a white core read paler than the original).
+    expect(primitives.at(-1)!.hot).toEqual(emissiveCoreTint([1, 0.1, 0]));
+    expect(primitives.at(-1)!.colour).toEqual([1, 0.1, 0]);
     layer.setBeams([]);
     emission.update(1, true);
     expect(emission.mesh.count).toBe(0);
@@ -358,7 +360,7 @@ describe('static caching and semantic invalidation', () => {
     expect(field.staticRenders).toBe(3);
     field.update(0.5, r, 0);
     expect(field.staticRenders).toBe(4);
-    for (const [i, scene] of field.copyScenes.entries())
+    for (const [i, scene] of field.scenes.entries())
       scene.traverse((m) => {
         if (m instanceof Mesh) expect(shaderBytes(m, field.targets[i])).not.toMatch(/\b(?:NaN|undefined)\b/);
       });

@@ -1,3 +1,4 @@
+import { addObjectDiffuse } from '../atmosphere';
 import { nightArtNode, nightAmbient, nightArtWeight } from '../nightArt';
 import {
   Color,
@@ -46,12 +47,9 @@ import type { VoxelLightingFile } from '../../../ra2-assets/src/vpl';
 import {
   DEFAULT_ATMOSPHERE_NODES,
   localLightHeadroom,
-  localSurfaceLight,
   objectMoonlit,
   moonlit,
   objectLight,
-  physicalSurfaceLight,
-  OBJECT_KNEE,
   type AtmosphereNodes,
 } from '../atmosphere';
 import type { ShaderNode } from '../tsl';
@@ -551,17 +549,10 @@ function createGraph(
   // light: it fades with the model's height above the ground (meshLocalLight) and, like sprite and terrain art, only
   // fills the display headroom left above the scene-lit colour (B2 #18: a burning Kirov over explosions went white).
   const paint: ShaderNode = step(15.5, pindex).mul(step(pindex, 31.5));
-  const legacyLocal: ShaderNode = objectLight(positionWorld.xz, nodes)
+  const legacyLocal: ShaderNode = objectLight(positionWorld.xz, nodes, undefined, false)
     .mul(1 / Math.PI)
     .mul(float(0.55).add(max(n.y, 0).mul(0.45)))
     .mul(meshLocalLight);
-  const local: ShaderNode = nodes.realLight
-    ? mix(
-        legacyLocal,
-        physicalSurfaceLight(nodes, positionWorld.xz, positionWorld.y, normalWorld, OBJECT_KNEE).mul(1 / Math.PI),
-        nodes.realLight.enabled,
-      )
-    : legacyLocal;
   let sceneShade: ShaderNode = sceneLitColour(objectMoonlit(lit, paint, nodes).mul(voxelFill), nodes.sceneObjectMul);
   if (nodes.realLight)
     sceneShade = nightArtNode(
@@ -572,14 +563,9 @@ function createGraph(
       nodes.realLight,
       nodes.realLight.nightWeight,
     );
-  const added = nodes.realLight
-    ? mix(
-        localLightHeadroom(sceneShade, lit.mul(legacyLocal), nodes.localLightCap),
-        raw.mul(local),
-        nodes.realLight.enabled,
-      )
-    : localLightHeadroom(sceneShade, lit.mul(local), nodes.localLightCap);
+  const added = localLightHeadroom(sceneShade, lit.mul(legacyLocal), nodes.localLightCap);
   let shaded: ShaderNode = sceneShade.add(added).mul(ao);
+  let physicalAlbedo: ShaderNode = raw;
   let uncovered: ShaderNode = float(1);
   if (projection) {
     const projected = projectedVoxelColour(
@@ -611,19 +597,16 @@ function createGraph(
         nodes.realLight.projectedArtScale,
       );
     const projectedShade: ShaderNode = projectedScene.add(
-      localSurfaceLight(
-        localLightHeadroom(projectedScene, colour.mul(legacyLocal), nodes.localLightCap),
-        projected.colour,
-        nodes,
-        positionWorld.xz,
-        positionWorld.y,
-        n,
-        undefined,
-        OBJECT_KNEE,
-      ),
+      localLightHeadroom(projectedScene, colour.mul(legacyLocal), nodes.localLightCap),
     );
     // The redraw already contains AO and directional shading. Only uncovered engine art receives mesh AO/sheen.
     shaded = mix(shaded, projectedShade, projected.coverage);
+    // Projection pages carry their authored exposure/gain; use the same noon art normalization as nightArtNode.
+    physicalAlbedo = mix(
+      raw,
+      nodes.realLight ? projected.colour.mul(nodes.realLight.projectedArtScale) : projected.colour,
+      projected.coverage,
+    );
     uncovered = float(1).sub(projected.coverage);
     material.matp = vec3(matp.xy, matp.z.mul(uncovered));
   }
@@ -637,7 +620,14 @@ function createGraph(
   material.outputNode = Fn(() =>
     vec4(
       applyObjectTint(
-        voxelLookFinish(output.rgb, state, normalWorld),
+        addObjectDiffuse(
+          voxelLookFinish(output.rgb, state, normalWorld),
+          physicalAlbedo,
+          nodes,
+          positionWorld.xz,
+          positionWorld.y,
+          normalWorld,
+        ),
         meshObjectTint.x,
         meshObjectTint.y,
         level,
@@ -652,7 +642,7 @@ function createGraph(
     const sourcePosition: ShaderNode = sourceMatrix.mul(vec4(positionGeometry, 1)).xyz;
     const sourceLevel: ShaderNode = objectLevelAt(grade, sourceOrigin.xz).add(voxelExtraLight);
     const sourceLit: ShaderNode = srgbScale(paletteLit(sourceNormal, sourceMatrix), sourceLevel);
-    const sourceLocal: ShaderNode = objectLight(sourcePosition.xz, nodes)
+    const sourceLocal: ShaderNode = objectLight(sourcePosition.xz, nodes, undefined, false)
       .mul(1 / Math.PI)
       .mul(float(0.55).add(max(sourceNormal.y, 0).mul(0.45)))
       .mul(meshLocalLight);

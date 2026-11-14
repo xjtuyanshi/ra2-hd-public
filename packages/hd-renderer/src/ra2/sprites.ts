@@ -869,35 +869,27 @@ class SpriteGraph {
           .mul(exp(height.mul(-LOCAL_LIGHT_HEIGHT_FALLOFF)));
         // Map light, then the shared moon grade on scene radiance; physical night paint shares the terrain grade.
         // Local lights always use the full-colour albedo.
+        let physicalAlbedo: ShaderNode | undefined;
         const shade = (c: ShaderNode, paint: ShaderNode, rim: ShaderNode = float(0)): ShaderNode => {
           const lit: ShaderNode = objectLit(c);
           const base = objectMoonlit(lit, paint, nodes).mul(this.light);
           let eventBase = sceneLitColour(base, sceneMultiplier);
           if (nodes.realLight)
-            eventBase = nightArtNode(
+            eventBase = select(
+              flat,
               eventBase,
-              c,
-              nightAmbient(lit, this.light.mul(sceneMultiplier), moonlit(vec3(1), nodes)),
-              rim.mul(float(1).sub(step(0.5, aFlat))),
-              nodes.realLight,
-              nodes.realLight.nightWeight,
-            );
-          return select(
-            isUnlit.greaterThan(0.5),
-            c.mul(look.unlitBaseLight),
-            eventBase.add(
-              localSurfaceLight(
-                localLightHeadroom(eventBase, lit.mul(local), nodes.localLightCap),
+              nightArtNode(
+                eventBase,
                 c,
-                nodes,
-                ground,
-                height.add(aAnchor.y),
-                physicalNormal ?? vec3(0, 1, 0),
-                undefined,
-                OBJECT_KNEE,
+                nightAmbient(lit, this.light.mul(sceneMultiplier), moonlit(vec3(1), nodes)),
+                rim.mul(float(1).sub(step(0.5, aFlat))),
+                nodes.realLight,
+                nodes.realLight.nightWeight,
               ),
-            ),
-          );
+            );
+          const legacyAdded = localLightHeadroom(eventBase, lit.mul(local), nodes.localLightCap);
+          if (nodes.realLight) physicalAlbedo = c;
+          return select(isUnlit.greaterThan(0.5), c.mul(look.unlitBaseLight), eventBase.add(legacyAdded));
         };
         // Lit windows at night: warm amber panes (85 %) or a dimmer cool white (15 %) by the window's variant, each pane
         // with its own brightness; variants above 0.85 stay dark. Kept below the tone mapper's shoulder so panes stay
@@ -1168,8 +1160,6 @@ class SpriteGraph {
             If(look.contactShade.notEqual(1), () => {
               shadeAlpha.assign(shadeAlpha.mul(look.contactShade).min(0.85));
             });
-            if (nodes.realLight)
-              shadeAlpha.mulAssign(float(1).sub(nodes.realLight.enabled.mul(nodes.realLight.nightWeight)));
             result.assign(vec4(0, 0, 0, shadeAlpha));
           });
           // Wet reflection: the lit art mirrored about its base line, on paved ground only, fading with distance.
@@ -1208,16 +1198,6 @@ class SpriteGraph {
         If(isShadow.greaterThan(0.5).and(isInfantryShadow.lessThan(0.5)).and(sunShare.notEqual(1)), () => {
           result.a.mulAssign(sunShare);
         });
-        if (nodes.realLight)
-          If(
-            isShadow
-              .greaterThan(0.5)
-              .and(isInfantryShadow.greaterThan(0.5).or(hasFoundation).or(aTint.z.greaterThan(0))),
-            () => {
-              // Trees keep their existing shadow policy; only owners replaced by the ambient pool fade here.
-              result.a.mulAssign(float(1).sub(nodes.realLight!.enabled.mul(nodes.realLight!.nightWeight)));
-            },
-          );
         // Clear water: shadows on open water darken it to no less than about 0.94 of its brightness (the lit water
         // column still glows); the hard near-black bridge frames read as rendering faults against the lighter water.
         If(isShadow.greaterThan(0.5).and(nodes.clearWater.greaterThan(0.5)), () => {
@@ -1228,8 +1208,54 @@ class SpriteGraph {
         // The object's picture tint last: the game darkens, flashes and colours the whole finished picture. On the
         // unlit colours its light factor is already in unlitLevel (the converter ignores the intensity from 0.236 up
         // and never brightens them), so only the blitter's added colour applies there.
-        const tintedLit: ShaderNode = applyObjectTint(result.rgb, aTint.x, aTint.y, grade.x, look.unlitBaseLight);
-        const tintedUnlit: ShaderNode = applyObjectTint(unlitColour, float(1), aTint.y, 1, look.unlitBaseLight);
+        // Add physical diffuse after scene relight, crystal sheen, AO and rim. Even ungraded ground ore receives it;
+        // shadows/contact/reflection instances and upright self-lit art never acquire a second illumination term.
+        let diffuse: ShaderNode | undefined;
+        if (nodes.realLight && physicalAlbedo) {
+          const sceneLum = luminance(result.rgb.div(physicalAlbedo.max(1e-4)));
+          // Flat smudges, ore, overlays, bridge decks and ground cards share the terrain receiver.
+          diffuse = select(
+            flat,
+            localSurfaceLight(
+              vec3(0),
+              physicalAlbedo,
+              nodes,
+              ground,
+              height.add(aAnchor.y),
+              vec3(0, 1, 0),
+              undefined,
+              1,
+              sceneLum,
+            ),
+            localSurfaceLight(
+              vec3(0),
+              physicalAlbedo,
+              nodes,
+              ground,
+              height.add(aAnchor.y),
+              physicalNormal!,
+              undefined,
+              OBJECT_KNEE,
+              sceneLum,
+            ),
+          )
+            .mul(aFlat.lessThan(1.5).select(float(1), float(0)))
+            .mul(isUnlit.greaterThan(0.5).and(aFlat.lessThan(0.5)).select(float(0), float(1)));
+        }
+        const tintedLit: ShaderNode = applyObjectTint(
+          diffuse ? result.rgb.add(diffuse) : result.rgb,
+          aTint.x,
+          aTint.y,
+          grade.x,
+          look.unlitBaseLight,
+        );
+        const tintedUnlit: ShaderNode = applyObjectTint(
+          diffuse ? unlitColour.add(diffuse) : unlitColour,
+          float(1),
+          aTint.y,
+          1,
+          look.unlitBaseLight,
+        );
         return vec4(mix(tintedLit, tintedUnlit, unlitShare), result.a.mul(bodyOpacity));
       })();
     const mainColour = colourNode();

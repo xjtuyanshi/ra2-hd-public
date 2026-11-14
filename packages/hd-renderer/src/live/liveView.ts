@@ -1,6 +1,6 @@
 import { spriteContactFootprint } from '../ra2/nightObjects';
 import type { AmbientContact } from '../ambientContact';
-import { capOverlaySource, type EmissivePrimitive } from '../realEmissive';
+import { type EmissivePrimitive } from '../realEmissive';
 import { firingHead, physicalBuildingKey, physicalLampKey, physicalExposureFlash } from '../ra2/realEmission';
 import { hdInfantryPageIsBare } from '../ra2/infantryArt';
 import {
@@ -104,7 +104,6 @@ import {
   buildingLightPlacements,
 } from './buildingLights';
 import {
-  buildingPhysicalLight,
   engineLampLights,
   isLampArt,
   lampArtHead,
@@ -1452,6 +1451,20 @@ export class LiveView {
     return new LiveView(hd, world, cache, { ...options, debugPlaceholders: debug }, library, state);
   }
 
+  private lightHeld = false;
+  private heldPending: { snapshot: LiveSnapshot; at: number } | null = null;
+  /** Development capture latch: VM delivery continues, only this presentation stops accepting snapshots. */
+  holdLight(on: boolean): boolean {
+    if (!import.meta.env.DEV) return false;
+    this.lightHeld = on;
+    if (!on && this.heldPending) {
+      const pending = this.heldPending;
+      this.heldPending = null;
+      this.push(pending.snapshot, pending.at);
+    }
+    return true;
+  }
+
   /** Available only in a view created with realLight; keeps the presentation clock and geometry unchanged. */
   setRealLight(enabled: boolean): boolean {
     const nodes = this.hd.nodes.realLight;
@@ -1511,6 +1524,11 @@ export class LiveView {
 
   /** A logic frame is not a publication revision: AI and draw passes can still change it between polls. */
   push(snapshot: LiveSnapshot, at = performance.now()): void {
+    if (import.meta.env.DEV && this.lightHeld) {
+      this.heldPending = { snapshot, at };
+      return;
+    }
+    if (this.hd?.nodes?.realLight) this.hd.nodes.realLight.logicFrame = snapshot.frame;
     if (snapshot.frame !== WARM_FRAME) {
       if (this.matchSnapshot === snapshot) return;
       this.matchSnapshot = snapshot;
@@ -1672,7 +1690,11 @@ export class LiveView {
         this.wind,
       );
     this.updateOverlays(snapshot);
-    this.liveBeams.update(snapshot.effects, this.effectDriver.style, this.hidden);
+    if (this.hd.nodes?.realLight)
+      this.hd.nodes.realLight.cost.measure('emissiveBuild', () =>
+        this.liveBeams.update(snapshot.effects, this.effectDriver.style, this.hidden),
+      );
+    else this.liveBeams.update(snapshot.effects, this.effectDriver.style, this.hidden);
     this.updateSmudges(snapshot);
     if (snapshot.cells) {
       this.cellsFromEngine = true;
@@ -1924,43 +1946,21 @@ export class LiveView {
         light.glow = null;
         light.glowSize = 0;
       }
+      if (this.hd.nodes?.realLight?.enabled.value && light.type === 'TESLA') continue;
       this.hd.lightField.source(light.key, now, light);
       this.activeSourceKeys.add(light.key);
       light.fade = this.hd.lightField.sourceFade(light.key, now);
     }
     this.hd.lightField.retainSources(this.activeSourceKeys);
-    const physicalKeys = new Set<string>();
-    if (this.hd.realLightField)
-      for (const light of lights) {
-        const physical = buildingPhysicalLight(light.type ?? '', light);
-        if (!physical) continue;
-        this.hd.realLightField.put('source', light.key, now, physical, 0, 0, 0.6);
-        physicalKeys.add(light.key);
-      }
-    this.hd.realLightField?.retain('source', physicalKeys);
-    const visibleLights = this.hd.nodes?.realLight?.enabled.value ? lights.filter((l) => l.type !== 'TESLA') : lights;
+    // Existing static pools, visible sources and reflection streaks remain unchanged (idle Tesla pool excluded).
     const camera = {
       right: this.hd.emissiveOverlay.cameraRight.value,
       up: this.hd.emissiveOverlay.cameraUp.value,
       toCamera: this.hd.emissiveOverlay.toCamera.value,
     };
     const physical = !!this.hd.nodes?.realLight?.enabled.value;
-    const overlay = {
-      discs: [] as import('../emissiveOverlay').EmissiveDisc[],
-      strokes: [] as import('../emissiveOverlay').EmissiveStroke[],
-    };
-    let energy = 0;
-    if (physical) {
-      // A source's sphere and all its filaments share one cap, rather than one cap per segment.
-      for (const light of visibleLights) {
-        const original = buildingLightOverlay([light], snapshot?.frame ?? 0, now, camera);
-        const capped = capOverlaySource(original.discs, original.strokes, PIXELS_PER_CELL_EDGE);
-        overlay.discs.push(...capped.discs);
-        overlay.strokes.push(...capped.strokes);
-        energy += capped.energy;
-      }
-    } else Object.assign(overlay, buildingLightOverlay(visibleLights, snapshot?.frame ?? 0, now, camera));
-    if (this.hd.realEmissive) this.hd.realEmissive.legacyEnergy = energy;
+    const overlay = buildingLightOverlay(lights, snapshot?.frame ?? 0, now, camera);
+    if (this.hd.realEmissive) this.hd.realEmissive.legacyEnergy = 0;
     this.hd.emissiveOverlay.setDiscs(overlay.discs);
     this.hd.emissiveOverlay.setStrokes(overlay.strokes);
     this.updateFiringHeads(snapshot, physical);
@@ -2046,7 +2046,7 @@ export class LiveView {
     this.pageUploads.step((this.outOfSight ? this.hiddenUploadPixels : UPLOAD_PIXELS_PER_FRAME) * Math.min(2, frames));
     const current = this.current;
     if (current) {
-      const previous = this.previous;
+      const previous = import.meta.env.DEV && this.lightHeld ? null : this.previous;
       const interval = previous ? Math.min(250, Math.max(10, current.at - previous.at)) : 1;
       // Draw one logic frame behind, blending towards the newest snapshot: smooth motion at any display rate.
       const alpha = previous ? Math.min(1, Math.max(0, (now - current.at) / interval)) : 1;
@@ -2150,7 +2150,8 @@ export class LiveView {
     }
     // A view shown while it still warms draws the rest in full warm frames: a slice frame has only some objects in it.
     if (!this.hiddenFromSight && this.hd.warming) this.hd.finishWarm();
-    if (this.hd.realLightField) this.updatePhysicalLamps(current?.snapshot);
+    if (this.hd.realLightField)
+      this.hd.nodes.realLight!.cost.measure('physicalLampUpdate', () => this.updatePhysicalLamps(current?.snapshot));
     this.hd.frame(dt);
     // Loads settle between frames, never inside one: what is still on its way now was missing from this frame. A
     // warm frame (HdRenderer.warm) is not a frame of the match either: it draws what is hidden and builds shaders.

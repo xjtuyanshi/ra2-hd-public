@@ -23,7 +23,7 @@ import {
   nightArtNode,
   nightAmbient,
 } from '../src/nightArt';
-import { lightLuminance, reconstructLight, RealLightNodes } from '../src/realLight';
+import { lightLuminance, reconstructLight, RealLightField, RealLightNodes } from '../src/realLight';
 import { facingReceiverNormal, facingReceiverNormalNode, spriteContactFootprint } from '../src/ra2/nightObjects';
 import { voxelAmbientContact } from '../src/ra2/voxelShadow';
 import { SpriteLayer } from '../src/ra2/sprites';
@@ -281,6 +281,8 @@ describe('physical unit receivers and night graph construction', () => {
     'builds projected redraw alpha-neighbour/wrap/LOD graphs without a GPU, WebGL=%s',
     (forceWebGL) => {
       const nodes = new AtmosphereNodes({ realLight: true });
+      const field = new RealLightField(2, 2, nodes.realLight!);
+      field.setGround(new Float32Array(4));
       const tex = () => nodes.own(new DataTexture(new Uint8Array(320 * 32 * 4), 320, 32));
       const spec: VoxelProjectionManifest = {
         version: 1,
@@ -341,9 +343,12 @@ describe('physical unit receivers and night graph construction', () => {
       bindSlots(material);
       builder.build();
       expect(builder.fragmentShader).not.toMatch(/\b(?:NaN|undefined)\b/);
+      const sampled = new Set([...builder.fragmentShader.matchAll(/var\s+(\w+)\s*:\s*texture_2d/g)].map((m) => m[1]));
+      if (!forceWebGL) expect(sampled.size).toBeLessThanOrEqual(16);
       expect(builder.fragmentShader).toContain('0.12');
       expect(builder.fragmentShader).toMatch(/texture(?:SampleBias|Lod)?\(/);
       geometry.dispose();
+      field.dispose();
       nodes.dispose();
     },
   );

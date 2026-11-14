@@ -88,9 +88,7 @@ describe('physical light CPU twins', () => {
     expect(lightLuminance(weak.intensity) / (rw * rw + weak.radius ** 2)).toBeCloseTo(REAL_LIGHT_THRESHOLD, 12);
     expect(lightReach({ ...weak, intensity: [0.06, 0.05, 0.04] })).toBeGreaterThan(rw);
     // Strong sources stop at the cap (scaled by source size for large events), still windowed smoothly to zero.
-    expect(lightReach({ ...point, intensity: [50, 50, 50] })).toBe(
-      Math.max(REAL_LIGHT_REACH.cells, REAL_LIGHT_REACH.perRadius * point.radius),
-    );
+    expect(lightReach({ ...point, intensity: [50, 50, 50] })).toBe(REAL_LIGHT_REACH.cells);
     expect(lightWindow(0)).toBe(1);
     expect(lightWindow(1)).toBe(0);
     expect(lightWindow(2)).toBe(0);
@@ -171,7 +169,7 @@ describe('physical field ownership and GPU graph generation', () => {
     expect(field.pools.get('flash')!.size).toBe(256);
     expect(field.pools.get('kept')!.size).toBe(1);
     field.update(0.05, renderer, 0);
-    expect(renderer.render).toHaveBeenCalledTimes(6);
+    expect(renderer.render).toHaveBeenCalledTimes(4);
     field.update(0.4, renderer, 1);
     expect(field.pools.get('flash')!.size).toBe(0);
     expect(field.pools.get('kept')!.size).toBe(0);
@@ -182,11 +180,11 @@ describe('physical field ownership and GPU graph generation', () => {
     field.dispose();
     nodes.dispose();
   });
-  it('rasterizes terrain levels and clipped building top heights at two texels per cell', () => {
+  it('rasterizes only clipped building top heights at two texels per cell', () => {
     const o = ra2LightOccluders(2, 2, [0, 0, 0, 1], [{ x: -1, z: 0, width: 2, depth: 1, top: 3 }]);
     expect(o.heights).toHaveLength(16);
     expect(Array.from(o.heights.slice(0, 4))).toEqual([3, 3, 0, 0]);
-    expect(o.heights[15]).toBeGreaterThan(0);
+    expect(o.heights[15]).toBe(0);
     expect(o.heights[8]).toBe(0);
   });
   it('validates the 2-texels/cell top-height contract', () => {
@@ -307,7 +305,7 @@ describe('RA2 source policy and capture integration', () => {
       negative = new MapLightGrade(grid, lighting, [sources[1]!]);
     const original = (grade.texture.image.data as Uint8Array).slice();
     grade.setPhysicalSources(true);
-    expect(grade.texture.image.data).toEqual(negative.texture.image.data);
+    expect(grade.texture.image.data).toEqual(original);
     grade.setPhysicalSources(false);
     expect(grade.texture.image.data).toEqual(original);
     const lamps = engineLampLights(sources[0]!, lighting);
@@ -341,7 +339,7 @@ describe('RA2 source policy and capture integration', () => {
       lighting.ambient,
     );
     const engine = lightLuminance([delta[0]!, delta[1]!, delta[2]!]);
-    expect(lightLuminance(irradianceKnee(reconstructLight(s, direction, [0, 1, 0]), 1))).toBeCloseTo(
+    expect(lightLuminance(reconstructLight(s, direction, [0, 1, 0]))).toBeCloseTo(
       Math.min(LAMP_GROUND_AT_ONE_CELL.max, Math.max(LAMP_GROUND_AT_ONE_CELL.min, engine)),
       8,
     );

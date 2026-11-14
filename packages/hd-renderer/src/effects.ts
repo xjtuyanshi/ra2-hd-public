@@ -1,4 +1,4 @@
-import { type RealEmissiveLayer, type EmissivePrimitive } from './realEmissive';
+import { emissiveCoreTint, type RealEmissiveLayer, type EmissivePrimitive } from './realEmissive';
 import {
   AdditiveBlending,
   Color,
@@ -58,7 +58,7 @@ import {
   vec4,
   viewportSharedTexture,
 } from 'three/tsl';
-import { DEFAULT_ATMOSPHERE_NODES, objectLight } from './atmosphere';
+import { DEFAULT_ATMOSPHERE_NODES, objectLight, physicalGroundDecalLight } from './atmosphere';
 import type { LightField } from './lightField';
 import type { RealLightField } from './realLight';
 import { DirtyAttribute } from './dirtyAttribute';
@@ -812,6 +812,14 @@ export class EffectsLayer {
    * and the unknown-projectile dots are lit, not emissive. A live view shares the sprite layer's Color here.
    */
   readonly sceneLight = uniform(new Color(1, 1, 1));
+  /** Scene light plus the physical light the terrain takes at this fragment (hd-light); exactly sceneLight without it. */
+  private groundLight(): ShaderNode {
+    const local = this.groundLocal();
+    return local ? (this.sceneLight as ShaderNode).add(local) : this.sceneLight;
+  }
+  private groundLocal(): ShaderNode | null {
+    return this.nodes.realLight ? physicalGroundDecalLight(positionWorld.xz, this.nodes) : null;
+  }
   /** Enhanced heat halo around HD-art blasts: gain and centre temperature (ENHANCED.halo; uniforms for look reviews). */
   readonly hdHaloGain = uniform(ENHANCED.halo.hdIntensity);
   readonly hdHaloCore = uniform(ENHANCED.halo.hdCore);
@@ -1142,7 +1150,9 @@ export class EffectsLayer {
             .mul(smoothstep(0.08, 0.0, t))
             .mul(4),
         );
-        const plain = vec4(color(0x0d0b09).add(ember), mask.mul(0.8).mul(smoothstep(1.0, 0.6, t)));
+        const local = this.groundLocal();
+        const sootColour: ShaderNode = local ? (color(0x0d0b09) as ShaderNode).mul(local.add(1)) : color(0x0d0b09);
+        const plain = vec4(sootColour.add(ember), mask.mul(0.8).mul(smoothstep(1.0, 0.6, t)));
         // Charred ground: rays of soot (noise along the angle, stretched along the radius) over a dark disc.
         const angle = p.y.atan(p.x);
         const rays = mx_noise_float(vec3(angle.cos().mul(2.6), angle.sin().mul(2.6), seed.mul(40).add(r.mul(0.7))));
@@ -1152,7 +1162,7 @@ export class EffectsLayer {
         const soot = smoothstep(reach, reach.mul(0.4), r)
           .mul(0.55)
           .add(smoothstep(0.6, 0.15, r.add(fine.mul(0.08))).mul(0.5));
-        const shade: ShaderNode = mix(color(0x120e0b), color(0x2e251c), fine.mul(0.5).add(0.5)).mul(this.sceneLight);
+        const shade: ShaderNode = mix(color(0x120e0b), color(0x2e251c), fine.mul(0.5).add(0.5)).mul(this.groundLight());
         // The hot rim is the crater flash's (embers pool); the char itself is cold soot that darkens in quickly.
         const char = vec4(
           shade,
@@ -1573,7 +1583,7 @@ export class EffectsLayer {
         const skirt = smoothstep(front, front.sub(0.6), d).mul(0.12);
         // Dark, slightly warm soil; the inner skirt is scorched darker still.
         const dustColour: ShaderNode = mix(color(0x3e342a), color(0x75644f), smoothstep(0.3, 0.75, d)).mul(
-          this.sceneLight,
+          this.groundLight(),
         );
         const alpha = ring
           .mul(mix(float(0.35), float(1), broken))
@@ -2200,7 +2210,9 @@ export class EffectsLayer {
    * blue-white impact pulse.
    */
   setBeams(now: number, beams: readonly BeamSpec[], flash = true): void {
-    this.beams.setBeams(beams, this.enhancedBeams);
+    if (this.physicalLights)
+      this.physicalLights.nodes.cost.measure('emissiveBuild', () => this.beams.setBeams(beams, this.enhancedBeams));
+    else this.beams.setBeams(beams, this.enhancedBeams);
     if (!flash) return;
     const light = GARNISH_LIGHTS.beam;
     const flashing = beams.some((beam) => beam.flash === false) ? beams.filter((beam) => beam.flash !== false) : beams;
@@ -2534,8 +2546,8 @@ export class BeamLayer {
               from,
               to,
               width: BEAM_WIDTH,
-              colour: (beam.outerColour ?? beam.colour).toArray() as [number, number, number],
-              hot: beam.bolt ? [1, 1, 1] : (beam.colour.toArray() as [number, number, number]),
+              colour: beam.colour.toArray() as [number, number, number],
+              hot: emissiveCoreTint(beam.colour.toArray() as [number, number, number]),
               gain: 1,
               noise: beam.bolt
                 ? { mode: 1, rate: e.flickerRate, scale: e.noiseScale, amount: e.flicker, seed: 0, distance: 0 }

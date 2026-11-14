@@ -390,63 +390,72 @@ materials are built. Without the option, no physical field, extra receiver unifo
 are allocated. Parent shader/buffer fingerprints are pinned in `tests/fixtures/realLightDefault.json` (three r186,
 parent 308aceb); only three's process-global `NodeBuffer` identifier is canonicalized in shader text.
 
-An opted-in view supports same-frame A/B without resetting its clock or replacing any effect geometry:
+An opted-in view supports runtime A/B without replacing effect geometry. The development game bridge exposes:
 
 ```js
-window.__fx.live.setRealLight(false); // Existing local-light response.
-window.__fx.live.render();
-window.__fx.live.setRealLight(true); // Physical response on the same deterministic frame.
-window.__fx.live.render();
+__hdBridge.light.hold(true); // Present the last received snapshot; the native game continues running.
+__hdBridge.light.set(false);
+// Capture the current response, then switch and capture again.
+__hdBridge.light.set(true);
+__hdBridge.light.cost();
+__hdBridge.light.hold(false); // Apply the newest queued snapshot and resume delivery.
 ```
 
-In the game page the development bridge offers the same switch and a light dump:
-`__hdBridge.light.set(false|true)`, `__hdBridge.light.stats()` (pool sizes) and `__hdBridge.light.top(n)` (the
-strongest pooled lights: pool, key, position, luminance times segment length).
+`hold` and `cost` exist on the bridge only in development. Presentation-clock animation continues while held.
+`LiveView.holdLight` also guards its implementation with `import.meta.env.DEV`. `setRealLight` returns false on
+views created without physical graphs. `stats()` reports pool sizes; `top(n)` reports source positions and energy.
+The sandbox can call `window.__fx.live.setRealLight(false|true)` and render its deterministic snapshot directly.
 
-Each light's reach follows from its strength (`lightReach`, threshold `REAL_LIGHT_THRESHOLD`) but is capped at
-`REAL_LIGHT_REACH` (6 cells, or 4 source radii for large events); the window still takes it smoothly to zero there.
-Uncapped, a sustained Tesla tank bolt derived a 26-cell reach in a live SOV07TMD night fight, and its faint tail
-summed into a pale wash over the whole screen.
+**Source fidelity.** Engine cell-grade bytes, including positive lamps and negative sources, remain unchanged.
+Night dressing retains street poles, heads, visible map lamps, their pools, and window panes/ground glow. Existing
+building pools and reflections stay in the legacy field, except the invented idle Tesla pool. The physical system
+replaces only dynamic explosion/flash/fire/weapon pools. The generic legacy writer gate follows the runtime flag;
+muted event descriptions retain their original timestamps for same-frame A/B, without entering active legacy splats.
 
-`setRealLight` returns false on a view created without `realLight`; enabling new graphs requires creating an
-opted-in view. `src/realLight.ts` owns generic point and finite-segment lights, source-sized attenuation, bounded
-pools, terrain-relative ground/upper directional MRT layers, irradiance-only knees, and the scalar ground fallback.
-The upper layer is 1.25 cells above the terrain. Objects retain the reviewed 0.3 knee multiplier; explosion ground
-energy remains doubled and fire ground calibration remains 0.8. Generic graphics code contains no RA2 names, addresses
-or animation policies; `src/ra2/realLights.ts` and `src/ra2/realEmission.ts` supply those policies on every host.
+The engine and HD street lamps also supply small, night-only directional accents for upright art: nonnegative,
+at most 0.12 noon irradiance one cell out, zero by 2.5 cells. Terrain retains precisely its legacy grade and pools
+between dynamic events; static physical accents do not enter terrain. Ground colour, contact shadows and wet static
+reflections keep the current path. The two physical layers follow terrain height; the upper is 1.25 cells above it.
 
-Each splat marches eight samples toward the closest point on the light, comparing absolute world ray height
-(terrain height plus receiver-layer height) against the R16F occluder top heights. Each step multiplies transmission
-by `1 - smoothstep(0, 0.4, H - rayY)`, with a final floor of 0.1. Samples within 0.35 cells of the source are ignored;
-`occlude: false` gives full transmission. `occlusionTransmission` is the CPU twin. Static lamps have separate cached
-targets: only static-set, night-gain, terrain or occluder changes resplat them. Dynamic pools draw additively over a
-copy of the cached moments. Live lamp and building inputs use semantic keys before allocating source/occluder lists;
-ordinary animation-frame changes do not rebuild the stable housing/foundation occluder geometry.
+`src/realLight.ts` owns generic point/finite-segment attenuation, bounded pools, directional moments, the scalar
+fallback and knees. `src/ra2/realLights.ts` owns source data and conversions on every host. Default reach is three
+cells; each source has a tighter window: bolts 2, muzzle 1.2, Prism 1.8, fire 2.2 and sustained beams 1.5. Explosions
+use `clamp(0.75 + tableRadius, 1.2, 3)`. Large events retain explicit longer windows. Every window reaches zero.
+Bolt peak ground irradiance is 0.8, muzzle 0.25 for two logic frames, explosions 1.1 with at most a 0.35-second tail.
+Bolt and Prism illumination desaturate their captured linear colours while preserving hue (saturation at most
+0.55 and 0.5 respectively). Muzzle colour is (1, 0.88, 0.72); explosions use (1, 0.74, 0.52), preceded by 120 ms hot.
 
-Night engine lamps replace positive grade sources; negative sources retain the engine formula. Calibration is at
-one cell (or a quarter of visibility for very small sources), clamped to `LAMP_GROUND_AT_ONE_CELL` (0.12–0.45 noon
-units) after the knee. A visible lamp-art head within one cell supplies its height, otherwise 1.25 cells plus a short
-post segment. Daytime grade is unchanged. Physical static/kept lights contribute zero by day, while transient events
-retain a small daytime share. Invented HD poles, window ground pools and idle Tesla pools remain absent. **HD lit-window
-panes are enabled exactly as in the legacy path**, with the same masks, hour gates and window gain.
+Ground's dynamic irradiance cap is `mix(1.2, 3 * ambientLum, night)`, including the receiver's existing map/scene
+grade. Upright receivers give physical light only the remaining `max(0, 0.8 - sceneLum)` noon-unit headroom, after
+accounting for existing static light. A hue-preserving exponential knee approaches that cap. Local physical light
+is diffuse times the final albedo/house paint, never an input to specular, rim, VPL bounce or emitter bloom. Projection pages use their existing 0.21 noon-art normalization before physical diffuse. Existing static
+lighting is preserved even where it already exceeds this physical headroom.
 
-Physical emission uses the existing emissive attachment before bloom, without allocating a fifth full-resolution
-attachment. `src/realEmissive.ts` adds layers around the exact generated bolt, laser, ribbon, ring and link vertices:
-a quarter-width hot core at radiance 5, an original-colour sheath, and a soft 2.5-width outer glow at alpha 0.25.
-Non-core luminance is limited to 0.8 after flicker and gain, below both bloom thresholds.
-Lasers use their captured inner/outer colours; electric modulation uses the existing presentation-clock noise.
-Links receive a faint 0.08 share. Captured fire anims/systems add small warm, light-synchronized base discs, muzzle
-anims add short cores, and explosion/collapse anims add a table-radius core for the first 0.15 seconds. Native anim
-frames, base geometry and publication lifetimes are unchanged. Tesla and Prism heads light only when a captured bolt
-or laser source is within 0.6 cells of the art-derived head in 3D; no charge frames are inferred.
+Smudges, overlays, ore/gems, bridge decks and other flat cards use the ground knee and bypass upright art toning.
+Terrain, cliff and plain-fallback shaders share the additive receiver. Occluders contain building tops only: terrain
+steps, units and flat art are receivers, never tall blockers. Eight samples compare absolute ray height with the
+building-top texture, using `1 - smoothstep(0, 0.4, H - rayY)` and a 0.1 transmission floor. Samples within 0.35 cells
+of the source are ignored. A real shader branch bypasses the march for events shorter than 0.3 seconds or reach
+below 1.5 cells. Static accent moments use a cached two-height MRT atlas, keeping full receiver stages within sixteen textures.
 
-An emitter's complete path shares a source energy cap, including all strands/rings. Existing building orbs and their
-filaments also share one cap per source. `EMISSIVE_BUDGET` defaults to 6 radiance-area units per source and a smooth
-32-unit frame cap. The cap scales radiance without changing hue, geometry or clocks. Physical bloom reads only this
-budgeted emission (threshold 1 by day, 0.85 at night), so sunlit roofs cannot bloom. Runtime-off restores the legacy
-post-bloom overlay and bloom input in the same graph. Unsupported emissive MRT blending retains the legacy fallback.
-Nuke, dominator, storm-bolt and collapse publications add a non-accumulating 0.15-second kick through the existing sky
-flash multiplier, bounded at +0.25 EV by day and +0.5 EV at night.
+Dynamic splats use a scissor over the projected viewport plus three cells, retaining whole-map static caches.
+Offscreen lights do not upload splats; sampling is masked outside the current region so stale scissored texels cannot reappear. Unchanged encoded light attributes, night and viewport skip the field render.
+The contact mask uses a numeric 1/64-unit hash, at most four texels/cell and 1024 per side, dirty 16-texel rectangles
+covering old/new footprints, and at most one raster/upload per accepted logic frame. The full small texture still
+uploads through three. `cost()` reports a 120-frame moving CPU average for contact raster/upload submission, field
+update, emissive construction and physical-lamp update, plus splat/texel estimates and field renders in the last
+second. These are CPU timings, not GPU completion time or proof of the full-match +1 ms budget.
+
+Physical emission shares the existing attachment. Exact beam vertices/timing are retained, with a white core at
+most 0.2 of the sheath width, a saturated original-colour sheath and a 2.5-width outer glow at alpha 0.25. Sheath
+chroma increases by 1.2 without raising its peak; peak radiance is capped at 0.8 after modulation/gain. Emission
+uses bounded additive display-linear composition after scene tone/grade, so Neutral's highlight desaturation
+does not whiten it. The new primitives apply their own frame budget before writing the shared attachment; existing
+static overlays retain their original display colour and gain. Only the achromatic core seeds physical bloom. Source/frame energy caps remain
+6/32 radiance-area units. Runtime-off restores the legacy bloom/overlay response. Unsupported MRT keeps the
+legacy fallback. Fires receive physical light without invented base discs; muzzle and explosion cores retain
+source-art timing. Captured firing endpoints gate coil/Prism head emission; no charge frames are inferred.
+Nuke, dominator, storm-bolt and collapse events retain the bounded exposure kick through the existing sky flash.
 
 `&lightdbg=1` is instrumentation-only and adds no drawing or setting changes. The bench already exposes
 `window.__fx.live.hd.realLightField`: inspect `pools`, `renders` and `staticRenders` there. `light=real` enables the
@@ -476,14 +485,10 @@ coverage are never modified, so there is no halo or enlarged silhouette. The pro
 as `sharpen * (1 - nightWeight)`; its original alpha sample/LOD stays unchanged. The rendered device-pixel width
 still needs native-resolution visual acceptance.
 
-Contact decals supply building foundations; voxel contact twins supply body bounds. The shared generic
-`src/ambientContact.ts` field max-unions those footprints with grounded SHP/infantry footprints, so multiple parts
-or pages cannot stack their darkness. Units have a 0.4-cell soft edge and buildings a 0.3-cell base band. Height
-rejection prevents a raised footprint darkening unrelated lower ground, and airborne units register no pool.
-Terrain samples this mask **only in its scene terms**; local irradiance is unaffected. The replaced black
-unit/building contact and sun passes fade out with the same weight; trees retain their existing shadow policy.
-The renderer owns the mask and releases it with its lighting context. The mask currently targets terrain receivers;
-AO reception on raised bridge decks is not implemented (height rejection prevents a pool on the terrain below).
+Contact decals supply building foundations; voxel contact twins supply body bounds. The generic
+`src/ambientContact.ts` field retains max-union footprint registration, height rejection and explicit disposal.
+Terrain does not sample this experimental AO mask: retaining the current ground grade and shadows takes priority
+over the previous night contact replacement. Object highlight toning, normal response and rim changes remain.
 Infantry without material normals blend into an engine-facing body normal with the night weight, preserving their
 daytime response. Material-atlas normals and projected/PBR mesh normals keep their physical directions on every host.
 
