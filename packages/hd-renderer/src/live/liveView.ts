@@ -1,3 +1,5 @@
+import { spriteContactFootprint } from '../ra2/nightObjects';
+import type { AmbientContact } from '../ambientContact';
 import { capOverlaySource, type EmissivePrimitive } from '../realEmissive';
 import { firingHead, physicalBuildingKey, physicalLampKey, physicalExposureFlash } from '../ra2/realEmission';
 import { hdInfantryPageIsBare } from '../ra2/infantryArt';
@@ -2560,6 +2562,7 @@ export class LiveView {
   }
 
   dispose(): void {
+    this.hd?.nodes?.realLight?.deleteContacts(this);
     if (this.hd.beforeDepthCapture === this.classifyFireEngulf) this.hd.beforeDepthCapture = undefined;
     this.liveBeams.dispose();
     this.glints?.layer.dispose();
@@ -2723,6 +2726,7 @@ export class LiveView {
       if (visual.root.visible === hidden) this.painterDirty = true;
       visual.root.visible = !hidden;
       if (hidden) {
+        this.hd?.nodes?.realLight?.deleteContacts(visual.root);
         if (visual.motion) visual.motion.hasShown = false;
         continue;
       }
@@ -2750,6 +2754,8 @@ export class LiveView {
         painter.z = Math.floor(object.y / LEPTONS_PER_CELL);
       }
       this.spritePool.painter = painter;
+      this.spritePool.physicalFacing =
+        object.kind === 'infantry' || object.kind === 'vehicle' || object.kind === 'aircraft' ? pose.facing : undefined;
       // Every card of this object carries its tint as instance data; the next object sets its own.
       this.spritePool.tintLight = tintLight(object.tint);
       this.spritePool.tintColour = packTintColour(object.tint?.add);
@@ -2784,6 +2790,18 @@ export class LiveView {
       if (object.kind === 'building') {
         pose.facing = Math.PI / 2;
         this.voxelUnits.pose(unit, pose, null);
+        const foundation = painter.foundation;
+        if (this.hd?.nodes?.realLight && foundation)
+          this.hd.nodes.realLight.setContacts(unit.root, [
+            {
+              x: painter.x + foundation[0] / 2,
+              z: painter.z + foundation[1] / 2,
+              width: foundation[0],
+              depth: foundation[1],
+              height: unit.root.position.y,
+              band: true,
+            },
+          ]);
         continue;
       }
       const grounded = this.groundCard(object);
@@ -2811,6 +2829,44 @@ export class LiveView {
       if (current.byUid.has(uid) || retained?.has(uid)) continue;
       this.removeVisual(this.visuals.get(uid)!);
       this.visuals.delete(uid);
+    }
+    if (this.hd?.nodes?.realLight) {
+      const contacts: AmbientContact[] = [];
+      const seen = new Set<number>();
+      for (const sprites of batch.values())
+        for (const sprite of sprites) {
+          const uid = sprite.painter?.uid;
+          if (uid === undefined || seen.has(uid) || sprite.flat || sprite.shadow || sprite.kind) continue;
+          const object = current.byUid.get(uid) ?? retained?.get(uid)?.object;
+          if (!object || object.nativeHidden || this.visuals.get(uid)?.mode === 'voxel') continue;
+          const foundation = sprite.painter?.foundation;
+          if (object.kind === 'building' && foundation) {
+            contacts.push({
+              x: sprite.painter!.x + foundation[0] / 2,
+              z: sprite.painter!.z + foundation[1] / 2,
+              width: foundation[0],
+              depth: foundation[1],
+              height: sprite.anchor.y,
+              band: true,
+            });
+          } else if (
+            (object.kind === 'infantry' || object.kind === 'vehicle' || object.kind === 'aircraft') &&
+            this.groundCard(object)
+          ) {
+            contacts.push(
+              spriteContactFootprint(
+                sprite.anchor.x,
+                sprite.anchor.z,
+                sprite.anchor.y,
+                sprite.frame.rect[2],
+                object.kind === 'infantry',
+                (object.facingRaw / 65536) * 2 * Math.PI,
+              ),
+            );
+          }
+          seen.add(uid);
+        }
+      this.hd.nodes.realLight.setContacts(this, contacts);
     }
     if (!this.painterDirty) this.flushSprites(batch, false);
   }

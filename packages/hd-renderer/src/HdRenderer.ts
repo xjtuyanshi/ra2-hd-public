@@ -1734,6 +1734,7 @@ export class HdRenderer {
     this.nodes.sceneBrightness.value =
       ((0.2126 * level.r + 0.7152 * level.g + 0.0722 * level.b) * reference) / noonFlatLuminance();
     this.nodes.night.value = light.night;
+    if (this.nodes.realLight) this.nodes.realLight.nightWeight.value = light.dressing;
     this.nodes.rainAmount.value = rainAmount;
     this.nodes.weatherSunShare.value = light.weatherSunShare;
     this.nodes.weatherDesaturation.value =

@@ -59,7 +59,8 @@ export function projectedVoxelColour(
   currentLight: ShaderNode,
   gains: VoxelLookGains,
   basis?: ProjectionBasis,
-): { colour: ShaderNode; albedo: ShaderNode; coverage: ShaderNode; paint: ShaderNode } {
+  nightWeight?: ShaderNode,
+): { colour: ShaderNode; albedo: ShaderNode; coverage: ShaderNode; paint: ShaderNode; rim: ShaderNode } {
   const matrix = basis?.matrix ?? modelWorldMatrix;
   const axis: ShaderNode = matrix.mul(vec4(1, 0, 0, 0)).xyz;
   const theta: ShaderNode = axis.z.negate().atan(axis.x).toVar();
@@ -76,7 +77,7 @@ export function projectedVoxelColour(
   const worldOffset: ShaderNode = matrix.mul(vec4(basis?.position ?? positionLocal, 0)).xyz.toVar();
   const jx = part.jacobianX,
     jy = part.jacobianY;
-  const sample = (k: ShaderNode): { colour: ShaderNode; alpha: ShaderNode; paint: ShaderNode } => {
+  const sample = (k: ShaderNode): { colour: ShaderNode; alpha: ShaderNode; paint: ShaderNode; rim: ShaderNode } => {
     const delta: ShaderNode = float(Math.PI / 2)
       .sub(k.mul(part.frameAngle))
       .sub(theta);
@@ -96,12 +97,33 @@ export function projectedVoxelColour(
       .mul(float(1).sub(step(rect.y.add(rect.w), px.y)));
     // Top-left atlas convention, upload flipY=false. Clamp to this frame even when coverage is zero.
     const uv: ShaderNode = px.clamp(rect.xy.add(0.5), rect.xy.add(rect.zw).sub(0.5)).div(part.atlasSize);
-    const bias: ShaderNode = state.sharpen.clamp(0, 2).negate();
+    const bias: ShaderNode = nightWeight
+      ? state.sharpen.clamp(0, 2).mul(float(1).sub(nightWeight)).negate()
+      : state.sharpen.clamp(0, 2).negate();
     const colour: ShaderNode = texture(part.colour, uv).bias(bias).toVar();
+    // RGB may lose its noon sharpen bias, but coverage must keep the exact original alpha sample/LOD.
+    const coverageAlpha: ShaderNode = nightWeight
+      ? texture(part.colour, uv).bias(state.sharpen.clamp(0, 2).negate()).toVar().a
+      : colour.a;
     const paint: ShaderNode = texture(part.paint, uv).bias(bias).rgb.toVar();
     // Pages with headroom store sRGB / exposure (see VoxelProjectionManifest.exposure); 1 leaves the sample as is
     // (a product with 1 is exact), and as a uniform it keeps the shader text the same for every page.
-    return { colour: sRGBTransferEOTF(colour.rgb.mul(part.exposure)), alpha: colour.a.mul(inside), paint };
+    let rim: ShaderNode = float(0);
+    if (nightWeight) {
+      let solid: ShaderNode = float(1);
+      for (const offset of [vec2(-1, 0), vec2(1, 0), vec2(0, -1), vec2(0, 1)]) {
+        const at = px.add(offset);
+        const inFrame: ShaderNode = step(rect.xy, at).mul(float(1).sub(step(rect.xy.add(rect.zw), at)));
+        solid = solid.min(
+          texture(part.colour, at.clamp(rect.xy.add(0.5), rect.xy.add(rect.zw).sub(0.5)).div(part.atlasSize))
+            .bias(state.sharpen.clamp(0, 2).negate())
+            .a.mul(inFrame.x)
+            .mul(inFrame.y),
+        );
+      }
+      rim = float(1).sub(solid);
+    }
+    return { colour: sRGBTransferEOTF(colour.rgb.mul(part.exposure)), alpha: coverageAlpha.mul(inside), paint, rim };
   };
   const a = sample(k0),
     b = sample(k1);
@@ -186,5 +208,6 @@ export function projectedVoxelColour(
     albedo,
     coverage: coverage.mul(state.strength.clamp()),
     paint: house ? mask : float(0),
+    rim: a.rim.mul(wa).add(b.rim.mul(wb)).div(max(coverage, 1e-5)),
   };
 }

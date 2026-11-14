@@ -42,6 +42,8 @@ import {
   vec3,
   vec4,
 } from 'three/tsl';
+import { AmbientContactField, type AmbientContact } from './ambientContact';
+import { NIGHT_ART_DEFAULTS } from './nightArt';
 import { flicker, heldPulseEnvelope } from './lightField';
 import type { ShaderNode } from './tsl';
 
@@ -172,6 +174,30 @@ export class RealLightNodes {
   readonly directional = uniform(1);
   readonly nightWeight = uniform(0);
   readonly scale = uniform(1);
+  readonly artRolloff = uniform(NIGHT_ART_DEFAULTS.rolloff as number);
+  readonly artBase = uniform(NIGHT_ART_DEFAULTS.base as number);
+  readonly artWrap = uniform(NIGHT_ART_DEFAULTS.wrap as number);
+  readonly ambientOcclusion = uniform(NIGHT_ART_DEFAULTS.ao as number);
+  contactField?: AmbientContactField;
+  private readonly contacts = new Map<object, readonly AmbientContact[]>();
+  setContacts(owner: object, contacts: readonly AmbientContact[]): void {
+    if (!contacts.length) {
+      this.deleteContacts(owner);
+      return;
+    }
+    this.contacts.set(owner, contacts);
+    this.contactField?.set(owner, contacts);
+  }
+  deleteContacts(owner: object): void {
+    this.contacts.delete(owner);
+    this.contactField?.delete(owner);
+  }
+  initContacts(width: number, depth: number): void {
+    this.contactField?.dispose();
+    this.contactField = new AmbientContactField(width, depth);
+    for (const [owner, contacts] of this.contacts) this.contactField.set(owner, contacts);
+    this.ambientContact.value = this.contactField.texture;
+  }
   readonly size = uniform(new Vector2(1, 1));
   private readonly black = new DataTexture(new Float32Array(4), 1, 1, RGBAFormat, FloatType);
   private readonly flat = new DataTexture(new Uint16Array(1), 1, 1, RedFormat, HalfFloatType);
@@ -182,6 +208,7 @@ export class RealLightNodes {
    */
   readonly groundHeight = texture(this.flat);
   readonly occluderHeight = texture(this.flat);
+  readonly ambientContact = texture(this.flat);
   readonly ground = texture(this.black);
   readonly groundDirection = texture(this.black);
   readonly upper = texture(this.black);
@@ -191,6 +218,8 @@ export class RealLightNodes {
     this.flat.needsUpdate = true;
   }
   dispose(): void {
+    this.contactField?.dispose();
+    this.contacts.clear();
     this.black.dispose();
     this.flat.dispose();
   }
@@ -271,6 +300,7 @@ export class RealLightField {
   private lastDynamic = false;
   private occluders: DataTexture | null = null;
   private groundTexture: DataTexture | null = null;
+  private groundHeights: ArrayLike<number> = [];
   private readonly clearColour = new Color();
   renders = 0;
   constructor(
@@ -283,6 +313,7 @@ export class RealLightField {
     nodes.directional.value = directional ? 1 : 0;
     nodes.scale.value = halfFloat ? 1 : 8;
     nodes.size.value.set(width, height);
+    nodes.initContacts(width, height);
     this.layers = directional ? [0, REAL_LIGHT_UPPER] : [0];
     this.camera = new OrthographicCamera(0, width, 0, height, -10, 10);
     this.camera.position.set(0, 0, 5);
@@ -414,6 +445,8 @@ export class RealLightField {
   /** Ground height per cell (world y), row-major width x height cells. */
   setGround(heights: ArrayLike<number>): void {
     if (heights.length !== this.width * this.height) throw new Error('Invalid light ground dimensions');
+    this.groundHeights = Float32Array.from(heights);
+    this.nodes.contactField?.invalidate();
     this.groundTexture?.dispose();
     this.groundTexture = new DataTexture(
       Uint16Array.from(heights as ArrayLike<number>, (h) => DataUtils.toHalfFloat(h)),
@@ -469,6 +502,14 @@ export class RealLightField {
   update(now: number, renderer: WebGPURenderer, night: number): boolean {
     this.nodes.nightWeight.value = night;
     if (!this.nodes.enabled.value) return false;
+    if (night > 0)
+      this.nodes.contactField?.update(
+        (x, z) =>
+          this.groundHeights[
+            Math.min(this.height - 1, Math.max(0, Math.floor(z))) * this.width +
+              Math.min(this.width - 1, Math.max(0, Math.floor(x)))
+          ] ?? 0,
+      );
     const refreshStatic = this.staticDirty || this.lastNight !== night;
     let staticCount = 0;
     let count = 0,

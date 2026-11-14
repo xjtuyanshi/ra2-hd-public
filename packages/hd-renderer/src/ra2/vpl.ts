@@ -1,3 +1,4 @@
+import { nightArtNode, nightAmbient, nightArtWeight } from '../nightArt';
 import {
   Color,
   DataTexture,
@@ -46,6 +47,7 @@ import {
   DEFAULT_ATMOSPHERE_NODES,
   localLightHeadroom,
   localSurfaceLight,
+  objectMoonlit,
   moonlit,
   objectLight,
   physicalSurfaceLight,
@@ -544,7 +546,7 @@ function createGraph(
   // The cell's light for objects at the unit's origin plus the units' extra light, in the palette's scale.
   const level: ShaderNode = objectLevelAt(grade, modelPosition.xz).add(voxelExtraLight);
   lit = srgbScale(lit, level);
-  // Scene light on the night-desaturated colour (house paint keeps its colour), local lights (lamps, fires,
+  // Scene light on the shared moon grade (including physical night paint), local lights (lamps, fires,
   // explosions) on the full colour, strongest on faces turned up towards the lit ground's glow. The field is ground
   // light: it fades with the model's height above the ground (meshLocalLight) and, like sprite and terrain art, only
   // fills the display headroom left above the scene-lit colour (B2 #18: a burning Kirov over explosions went white).
@@ -560,10 +562,16 @@ function createGraph(
         nodes.realLight.enabled,
       )
     : legacyLocal;
-  const sceneShade: ShaderNode = sceneLitColour(
-    mix(moonlit(lit, nodes), lit, paint).mul(voxelFill),
-    nodes.sceneObjectMul,
-  );
+  let sceneShade: ShaderNode = sceneLitColour(objectMoonlit(lit, paint, nodes).mul(voxelFill), nodes.sceneObjectMul);
+  if (nodes.realLight)
+    sceneShade = nightArtNode(
+      sceneShade,
+      raw,
+      nightAmbient(lit, (voxelFill as ShaderNode).mul(nodes.sceneObjectMul), moonlit(vec3(1), nodes)),
+      float(0),
+      nodes.realLight,
+      nodes.realLight.nightWeight,
+    );
   const added = nodes.realLight
     ? mix(
         localLightHeadroom(sceneShade, lit.mul(legacyLocal), nodes.localLightCap),
@@ -582,14 +590,25 @@ function createGraph(
       lightDirection,
       look.sunDirection,
       gains,
+      undefined,
+      nodes.realLight ? nightArtWeight(nodes.realLight, nodes.realLight.nightWeight) : undefined,
     );
     const projState = voxelProjectionFor(nodes);
     const formAo: ShaderNode = poweredOcclusion(float(1).sub(occlusion.mul(projState.formAO.clamp())), gains.aoPower);
     const colour: ShaderNode = srgbScale(projected.colour, level.div(projState.levelRef.max(0.01))).mul(formAo);
-    const projectedScene: ShaderNode = sceneLitColour(
-      mix(moonlit(colour, nodes), colour, projected.paint).mul(voxelFill),
+    let projectedScene: ShaderNode = sceneLitColour(
+      objectMoonlit(colour, projected.paint, nodes).mul(voxelFill),
       nodes.sceneObjectMul,
     );
+    if (nodes.realLight)
+      projectedScene = nightArtNode(
+        projectedScene,
+        projected.colour,
+        nightAmbient(colour, (voxelFill as ShaderNode).mul(nodes.sceneObjectMul), moonlit(vec3(1), nodes)),
+        projected.rim,
+        nodes.realLight,
+        nodes.realLight.nightWeight,
+      );
     const projectedShade: ShaderNode = projectedScene.add(
       localSurfaceLight(
         localLightHeadroom(projectedScene, colour.mul(legacyLocal), nodes.localLightCap),
@@ -636,13 +655,13 @@ function createGraph(
       .mul(1 / Math.PI)
       .mul(float(0.55).add(max(sourceNormal.y, 0).mul(0.45)))
       .mul(meshLocalLight);
-    let ceiling: ShaderNode = mix(moonlit(sourceLit, nodes), sourceLit, paint)
+    let ceiling: ShaderNode = objectMoonlit(sourceLit, paint, nodes)
       .mul(voxelFill)
       .add(sourceLit.mul(sourceLocal))
       .mul(ao);
     // The VPL palette ramp is the engine's fixed sculpted surface colour, independent of the scene's sun. Raw
     // palette indices alone would turn its pale/white hulls dark grey; retain that ramp at half ambient radiance.
-    let albedo: ShaderNode = mix(moonlit(sourceLit, nodes), sourceLit, paint).mul(ao);
+    let albedo: ShaderNode = objectMoonlit(sourceLit, paint, nodes).mul(ao);
     if (projection) {
       const projState = voxelProjectionFor(nodes);
       const projected = projectedVoxelColour(
@@ -659,12 +678,10 @@ function createGraph(
       const projectionLevel: ShaderNode = sourceLevel.div(projState.levelRef.max(0.01));
       const projectedAlbedo: ShaderNode = srgbScale(projected.albedo, projectionLevel).mul(formAo);
       const projectedLit: ShaderNode = srgbScale(projected.colour, projectionLevel).mul(formAo);
-      albedo = mix(albedo, mix(moonlit(projectedAlbedo, nodes), projectedAlbedo, projected.paint), projected.coverage);
+      albedo = mix(albedo, objectMoonlit(projectedAlbedo, projected.paint, nodes), projected.coverage);
       ceiling = mix(
         ceiling,
-        mix(moonlit(projectedLit, nodes), projectedLit, projected.paint)
-          .mul(voxelFill)
-          .add(projectedLit.mul(sourceLocal)),
+        objectMoonlit(projectedLit, projected.paint, nodes).mul(voxelFill).add(projectedLit.mul(sourceLocal)),
         projected.coverage,
       );
     }

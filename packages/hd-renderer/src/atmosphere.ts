@@ -10,6 +10,8 @@ import {
   type Vector3,
 } from 'three/webgpu';
 import {
+  Fn,
+  If,
   clamp,
   float,
   luminance,
@@ -162,6 +164,20 @@ export function puddleNoise(position: ShaderNode, softDay: ShaderNode = float(0)
 export function moonlit(colour: ShaderNode, nodes = DEFAULT_ATMOSPHERE_NODES): ShaderNode {
   const l: ShaderNode = luminance(colour);
   return mix(colour, (nodes.moonNeutral as ShaderNode).mul(l), nodes.moonDesaturation);
+}
+
+/** Physical night art takes precisely the terrain grade, including house paint. Legacy/day retain the old ramp. */
+export function objectMoonlit(colour: ShaderNode, paint: ShaderNode, nodes: AtmosphereNodes): ShaderNode {
+  const legacy = mix(moonlit(colour, nodes), colour, paint);
+  if (!nodes.realLight) return legacy;
+  return Fn(() => {
+    const result = legacy.toVar();
+    If(nodes.realLight!.nightWeight.greaterThan(0), () => {
+      // moonDesaturation already carries the night fade. Weighting it twice would leave paint less graded than terrain.
+      result.assign(mix(legacy, moonlit(colour, nodes), nodes.realLight!.enabled));
+    });
+    return result;
+  })();
 }
 
 /** Local light irradiance at a ground point (world xz), linear RGB. */

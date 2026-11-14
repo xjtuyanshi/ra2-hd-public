@@ -169,8 +169,9 @@ describe('RA2 source lifetime and shape preservation', () => {
   });
   it('uses actual firing endpoints near the head, never idle/charge frames', () => {
     expect(firingHead(new Vector3(), [])).toBe(false);
-    expect(firingHead(new Vector3(), [new Vector3(0.6, 0, 0)])).toBe(true);
-    expect(firingHead(new Vector3(), [new Vector3(0, 0.61, 0)])).toBe(false);
+    expect(firingHead(new Vector3(), [new Vector3(0.85, -1.2, 0)])).toBe(true);
+    expect(firingHead(new Vector3(), [new Vector3(0, -1.51, 0)])).toBe(false);
+    expect(firingHead(new Vector3(), [new Vector3(0.95, 0, 0)])).toBe(false);
   });
   it('caps the 150 ms sky-path kick in EV and recognizes only large events', () => {
     expect(eventExposureKick(0, 0)).toBeCloseTo(2 ** 0.25 - 1);

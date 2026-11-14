@@ -29,7 +29,7 @@ import {
 import { voxelPbrMaterialFor } from '../ra2/voxelPbr';
 import { createSmoothVoxelPool, type SmoothSectionBuilder } from '../ra2/voxelSmoothPool';
 import { projectionParts, voxelProjectionLibrary, type VoxelProjectionLibrary } from '../ra2/voxelProjection';
-import { setShadowContact } from '../ra2/voxelShadow';
+import { setShadowContact, voxelAmbientContact } from '../ra2/voxelShadow';
 import type { VoxelCardTies } from '../ra2/voxelNativeDepth';
 import { selectedVoxelTurretIndex } from '../ra2/voxelTurrets';
 
@@ -339,6 +339,17 @@ export class VoxelUnits {
    */
   setGroundContact(unit: VoxelUnit, grounded: boolean, normal?: Vector3, bottomFace = false): void {
     setShadowContact(unit.root, grounded, normal, bottomFace);
+    const real = this.hd?.nodes?.realLight;
+    if (real) {
+      const body = unit.root instanceof VoxelRoot ? unit.root.partMeshes[0] : undefined;
+      const p = unit.root.position;
+      const footprint =
+        grounded && unit.root.visible && body
+          ? voxelAmbientContact(body.geometry, p.x, p.z, p.y, unit.root.rotation.y)
+          : null;
+      if (footprint) real.setContacts(unit.root, [footprint]);
+      else real.deleteContacts(unit.root);
+    }
   }
 
   /**
@@ -403,6 +414,7 @@ export class VoxelUnits {
 
   /** Take a unit out of the scene (geometry stays cached for the next instance of its type). */
   dispose(unit: VoxelUnit): void {
+    this.hd?.nodes?.realLight?.deleteContacts(unit.root);
     this.setCaptureCode(unit, NOT_CAPTURED_CODE);
     for (const waiting of this.pending.values()) waiting.delete(unit);
     for (const standIn of this.standIns.values()) standIn.units.delete(unit.root);

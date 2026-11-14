@@ -37,6 +37,7 @@ export interface LightPolicy {
   flicker?: number;
   continuous?: boolean;
 }
+/** Sustained beams and waves (rad, temporal, sonic, magnetron) lowered: several 8-cell beams summed into a pale wash in the bench. Bolt and laser ground values doubled from DESIGN 3.5 after sandbox r3: at 0.9 the blue lane under a Tesla bolt barely read at night. */
 export const REAL_LIGHT_POLICIES = {
   fire: { height: 0.4, radius: 0.25, ground: 0.8, colour: LIGHT_COLOURS.fire, day: 0, flicker: 0.18, continuous: true },
   burning: {
@@ -53,14 +54,14 @@ export const REAL_LIGHT_POLICIES = {
   dominator: { height: 2, radius: 2, ground: 3, colour: LIGHT_COLOURS.psychic, day: 0.15 },
   iron: { height: 1, radius: 1.5, ground: 2, colour: LIGHT_COLOURS.iron, day: 0.15 },
   nuke: { height: 3, radius: 3, ground: 12, colour: LIGHT_COLOURS.hot, day: 0.3, hold: 0.15, fade: 2 },
-  tesla: { height: 0.5, radius: 0.12, ground: 0.9, colour: LIGHT_COLOURS.tesla, day: 0.2 },
-  psychic: { height: 0.5, radius: 0.12, ground: 0.9, colour: LIGHT_COLOURS.psychic, day: 0.2 },
-  prism: { height: 0.5, radius: 0.1, ground: 0.8, colour: LIGHT_COLOURS.hot, day: 0.2 },
-  temporal: { height: 0.5, radius: 0.1, ground: 0.4, colour: LIGHT_COLOURS.chrono, day: 0.15 },
-  rad: { height: 0.5, radius: 0.1, ground: 0.4, colour: [0.65, 1, 0.6], day: 0.15 },
+  tesla: { height: 0.5, radius: 0.12, ground: 1.8, colour: LIGHT_COLOURS.tesla, day: 0.2 },
+  psychic: { height: 0.5, radius: 0.12, ground: 1.8, colour: LIGHT_COLOURS.psychic, day: 0.2 },
+  prism: { height: 0.5, radius: 0.1, ground: 1.4, colour: LIGHT_COLOURS.hot, day: 0.2 },
+  temporal: { height: 0.5, radius: 0.1, ground: 0.3, colour: LIGHT_COLOURS.chrono, day: 0.15 },
+  rad: { height: 0.5, radius: 0.1, ground: 0.25, colour: [0.65, 1, 0.6], day: 0.15 },
   eruption: { height: 0.5, radius: 0.1, ground: 0.4, colour: LIGHT_COLOURS.fire, day: 0.15 },
-  sonic: { height: 0.5, radius: 0.15, ground: 0.4, colour: [0.65, 0.9, 1], day: 0.15 },
-  magnetron: { height: 0.5, radius: 0.15, ground: 0.4, colour: LIGHT_COLOURS.psychic, day: 0.15 },
+  sonic: { height: 0.5, radius: 0.15, ground: 0.25, colour: [0.65, 0.9, 1], day: 0.15 },
+  magnetron: { height: 0.5, radius: 0.15, ground: 0.25, colour: LIGHT_COLOURS.psychic, day: 0.15 },
   link: { height: 0.5, radius: 0.08, ground: 0.08, colour: LIGHT_COLOURS.psychic, day: 0 },
   storm: { height: 3, radius: 0.2, ground: 6, colour: LIGHT_COLOURS.tesla, day: 0.2, hold: 0.1, fade: 0.15 },
 } as const satisfies Record<string, LightPolicy>;

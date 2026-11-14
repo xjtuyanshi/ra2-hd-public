@@ -1,3 +1,4 @@
+import { nightArtNode, nightAmbient } from '../nightArt';
 import {
   Color,
   DataTexture,
@@ -43,6 +44,7 @@ import {
 } from 'three/tsl';
 import {
   DEFAULT_ATMOSPHERE_NODES,
+  objectMoonlit,
   moonlit,
   objectLight,
   physicalSurfaceLight,
@@ -459,7 +461,17 @@ function createGraph(
   )();
   // Standard Lambert already divides irradiance by pi. HdRenderer's noon exposure is pi/E_noon; no emissive
   // daylight fill or second exposure factor belongs here. Metal energy conservation and GGX remain physical.
-  material.colorNode = mix(moonlit(lit, nodes), lit, house);
+  const moonArt = objectMoonlit(lit, house, nodes);
+  material.colorNode = nodes.realLight
+    ? nightArtNode(
+        moonArt,
+        albedo,
+        nightAmbient(lit, vec3(1), moonlit(vec3(1), nodes)),
+        float(0),
+        nodes.realLight,
+        nodes.realLight.nightWeight,
+      )
+    : moonArt;
   // Ground light fades with the model's height above the ground (vpl.ts meshLocalLight).
   const legacyLocal: ShaderNode = objectLight(positionWorld.xz, nodes)
     .mul(1 / Math.PI)
@@ -504,7 +516,7 @@ function createGraph(
     const sourceLevel: ShaderNode = objectLevelAt(grade, origin.xz).add(voxelLightingFor(nodes).voxelExtraLight);
     const gradedSurface = (surface: ReturnType<typeof surfaceTerms>): ShaderNode => {
       const base: ShaderNode = srgbScale(surfaceAlbedo(surface), sourceLevel);
-      return mix(moonlit(base, nodes), base, house);
+      return objectMoonlit(base, house, nodes);
     };
     // The weaker hemisphere endpoint is a lower bound for every perturbed tread normal. Use the same diffuse
     // energy loss to metalness as the upright physical material; disabling sun/specular cannot brighten its twin.

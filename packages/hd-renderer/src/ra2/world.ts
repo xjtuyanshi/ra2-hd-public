@@ -1,3 +1,6 @@
+import { voxelAmbientContact } from './voxelShadow';
+import { spriteContactFootprint } from './nightObjects';
+import type { AmbientContact } from '../ambientContact';
 import { DataTexture, LinearFilter, Object3D, RGFormat, UnsignedByteType, Vector3 } from 'three/webgpu';
 import { SURFACE, surfaceFromLandType } from '../../../ra2-assets/src/lights';
 import type { MapObject } from '../../../ra2-assets/src/manifest';
@@ -165,6 +168,7 @@ export async function loadRa2World(
   // Enhanced-look decals (spriteLook.ts; drawn only while their effect is on): ground contact shades first, under
   // every other decal, and wet-paving mirror images of upright art.
   const lookDecals: SpriteInstance[] = [];
+  const ambientContacts: AmbientContact[] = [];
   const bridgeCells = new Set(
     objects
       .filter((object) => object.kind === 'overlay' && isHighBridge(object.type))
@@ -205,6 +209,22 @@ export async function loadRa2World(
       // Engine facing 0 = north (world -z), clockwise; the model's nose is local +x.
       const phi = ((object.facing ?? 0) / 256) * Math.PI * 2;
       vehicle.rotation.y = Math.PI / 2 - phi;
+      if (nodes.realLight && groundUnit && vehicle.partMeshes[0]) {
+        const p = vehicle.position;
+        const footprint = voxelAmbientContact(vehicle.partMeshes[0].geometry, p.x, p.z, p.y, vehicle.rotation.y);
+        if (footprint) ambientContacts.push(footprint);
+      }
+      if (nodes.realLight && object.kind === 'building') {
+        const foundation = cache.lights?.types[object.type]?.foundation ?? [1, 1];
+        ambientContacts.push({
+          x: object.x + foundation[0] / 2,
+          z: object.y + foundation[1] / 2,
+          width: foundation[0],
+          depth: foundation[1],
+          height: vehicle.position.y,
+          band: true,
+        });
+      }
       root.add(vehicle);
       updateVoxelNativeDepth(vehicle, vehicle.position, 0, groundUnit);
       continue;
@@ -216,6 +236,17 @@ export async function loadRa2World(
     const palette = paletteFor(cache, entry.palette, entry.remap, object.owner);
     const frame = entry.frames[frameIndex]!;
     const flat = !!object.flat;
+    if (nodes.realLight && groundUnit)
+      ambientContacts.push(
+        spriteContactFootprint(
+          anchor.x,
+          anchor.z,
+          anchor.y,
+          frame.rect[2],
+          object.kind === 'infantry',
+          ((object.facing ?? 0) / 256) * Math.PI * 2,
+        ),
+      );
     const push = cardPush(frame);
     // The extractor records how the engine lights each object (absent = 'full', terrain-class art).
     const lighting = object.lighting ?? 'full';
@@ -265,6 +296,10 @@ export async function loadRa2World(
         flat: true,
         painter,
         terrainShadow: object.kind === 'tree' || undefined,
+        physicalFacing:
+          object.kind === 'infantry' || object.kind === 'vehicle' || object.kind === 'aircraft'
+            ? ((object.facing ?? 0) / 256) * Math.PI * 2
+            : undefined,
       });
     if (object.kind === 'building' && entry.foundation) {
       const [w, h] = entry.foundation;
@@ -302,6 +337,10 @@ export async function loadRa2World(
       palette,
       push,
       shadow: false,
+      physicalFacing:
+        object.kind === 'infantry' || object.kind === 'vehicle' || object.kind === 'aircraft'
+          ? ((object.facing ?? 0) / 256) * Math.PI * 2
+          : undefined,
       flat,
       glint: object.kind === 'overlay' && flat && lighting === 'none' ? 1 : undefined,
       unlit: isUnlitMapOverlay(object),
@@ -334,6 +373,7 @@ export async function loadRa2World(
         });
     }
   }
+  nodes.realLight?.setContacts(root, ambientContacts);
   sprites.unshift(...lookDecals);
   const spriteLayer = new SpriteLayer(
     cache,

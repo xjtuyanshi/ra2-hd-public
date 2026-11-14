@@ -444,6 +444,55 @@ flash multiplier, bounded at +0.25 EV by day and +0.5 EV at night.
 whole physical path without requiring this debug query. Emissive energy/source counters are on
 `window.__fx.live.hd.realEmissive`.
 
+### Night object integration (Round 3)
+
+`?fx=squad&map=SOV07TMD&hours=map&light=real` uses the same night-art policy as the development
+`hd-light=1` game path. `setRealLight(false)` restores the legacy response without changing frames, object parts,
+coverage, poses or clocks. The new transfer uses the lighting's **dressing** weight: authored night maps can have
+`night=0` (their original map illumination) and `dressing=1`. Ordinary day maps have weight zero. Moon desaturation,
+moon-neutral grey and tint still come from the terrain's existing `moonlit` function; sprites and both voxel paths
+now apply that same grade to house paint too. Intentionally self-lit palette colours remain self-lit.
+
+`src/nightArt.ts` holds the generic linear-light defaults in `NIGHT_ART_DEFAULTS`. Only ambient/scene radiance enters
+the highlight shoulder and rim mix; physical lamps, fires and weapon irradiance are added afterwards. The smooth
+shoulder begins at art luminance 0.24 and preserves hue. Synthetic calibration at luminance 0.48 removes about
+9 L* at full night; a synthetic body with 94% midtone paint and 6% highlights loses less than 2 L* in mean luminance.
+These are transfer-function checks, **not measurements of the installed HD pages**.
+
+Four alpha neighbours at one page texel detect sprite and projected-redraw rims. Their RGB moves toward the pixel's
+own grey albedo under moonlit ambient light, with a per-channel upper bound at the unwrapped colour. Alpha and
+coverage are never modified, so there is no halo or enlarged silhouette. The projection's negative RGB mip bias fades
+as `sharpen * (1 - nightWeight)`; its original alpha sample/LOD stays unchanged. The rendered device-pixel width
+still needs native-resolution visual acceptance.
+
+Contact decals supply building foundations; voxel contact twins supply body bounds. The shared generic
+`src/ambientContact.ts` field max-unions those footprints with grounded SHP/infantry footprints, so multiple parts
+or pages cannot stack their darkness. Units have a 0.4-cell soft edge and buildings a 0.3-cell base band. Height
+rejection prevents a raised footprint darkening unrelated lower ground, and airborne units register no pool.
+Terrain samples this mask **only in its scene terms**; local irradiance is unaffected. The replaced black
+unit/building contact and sun passes fade out with the same weight; trees retain their existing shadow policy.
+The renderer owns the mask and releases it with its lighting context. The mask currently targets terrain receivers;
+AO reception on raised bridge decks is not implemented (height rejection prevents a pool on the terrain below).
+Infantry without material normals blend into an engine-facing body normal with the night weight, preserving their
+daytime response. Material-atlas normals and projected/PBR mesh normals keep their physical directions on every host.
+
+Tune the uniforms live, then render the same frame:
+
+```js
+const n = window.__fx.live.hd.nodes.realLight;
+n.artRolloff.value = 0.8; // Highlight compression, default 0.8.
+n.artBase.value = 0.24; // Linear art luminance at the shoulder's base.
+n.artWrap.value = 0.35; // Maximum rim RGB mix, default 35%.
+n.ambientOcclusion.value = 0.4; // Scene-only contact strength, default 40%.
+window.__fx.live.render();
+```
+
+`tests/realLightRound3.test.ts` covers the pure transfers, exact CPU day identity and guarded day shader output,
+contact union/cache/removal/height rejection, facing normals and WebGPU/WebGL graph construction. The existing
+flag-off shader/buffer fingerprints remain unchanged. No GPU execution or visual acceptance is implied by those
+checks. The SOV07TMD tank percentiles, body mean, outline gradient, device-pixel rim width, live toggle appearance
+and performance remain **UNVERIFIED** until measured on the owner's native-resolution frame.
+
 This remains experimental. CPU twins, finite shader-graph construction, cache invalidation and default shader/buffer
 fingerprints are asset-free checks, not GPU or live-match acceptance. Native-resolution day/night appearance,
 M1–M10, the +1 ms budget, fallback GPU execution and full live battles remain **UNVERIFIED**. Self-lit pixel-cluster

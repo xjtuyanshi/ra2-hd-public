@@ -1,3 +1,5 @@
+import { nightArtNode, nightAmbient } from '../nightArt';
+import { facingReceiverNormalNode } from './nightObjects';
 import type { TerrainDepth } from '../terrainDepth';
 import { NOT_CAPTURED_CODE } from '../objectDepth';
 import { DirtyAttribute } from '../dirtyAttribute';
@@ -58,6 +60,7 @@ import type { LightingClass, MapObject, SpriteFrame } from '../../../ra2-assets/
 import {
   type AtmosphereNodes,
   DEFAULT_ATMOSPHERE_NODES,
+  objectMoonlit,
   moonlit,
   LOCAL_LIGHT_HEIGHT_FALLOFF,
   localLightHeadroom,
@@ -121,6 +124,8 @@ export interface SpriteInstance {
   shadow: boolean;
   /** Body-card alpha multiplier, default 1. Shadows and ground extras keep their own opacity. */
   opacity?: number;
+  /** Engine-facing radians for physical light reception on unit art without a material normal. */
+  physicalFacing?: number;
   /** Infantry's inline SHP footprint stays at the draw point with a solid contact core in every look. */
   infantryShadow?: boolean;
   /**
@@ -515,10 +520,10 @@ class SpriteGraph {
     const aLightSample: ShaderNode = aLighting.xy;
     // Constant over an instance: flat, so the untinted value stays exactly (1, 0) in every fragment.
     // (The varying must not share the attribute's name: three then resolves one through the other without end.)
-    const aTint: ShaderNode = varying(attribute('spriteTint', 'vec2'), 'spriteTintFlat').setInterpolation(
-      'flat',
-      'either',
-    );
+    const aTint: ShaderNode = varying(
+      attribute('spriteTint', nodes.realLight ? 'vec3' : 'vec2'),
+      'spriteTintFlat',
+    ).setInterpolation('flat', 'either');
     // Three independent bits share this existing component; no extra instance attribute or vertex buffer is needed.
     const houseConverter: ShaderNode = step(3.5, aLighting.z).toVar('spriteHouseConverter');
     const lightingBits: ShaderNode = aLighting.z.sub(houseConverter.mul(4)).toVar('spriteLightingBits');
@@ -834,28 +839,49 @@ class SpriteGraph {
         const own: ShaderNode = aAnchor.xz
           .add(foundationOrigin)
           .add(clamp(projected.sub(foundationOrigin), inset, max(aOcclusion.xy.sub(inset), inset)));
+        const facingNormal: ShaderNode = nodes.realLight
+          ? Fn(() => {
+              const normal = vec3(this.toCamera).toVar();
+              const weight = nodes.realLight!.enabled.mul(nodes.realLight!.nightWeight);
+              If(weight.greaterThan(0).and(aTint.z.greaterThan(0)), () => {
+                normal.assign(mix(this.toCamera, facingReceiverNormalNode(aTint.z.sub(1)), weight).normalize());
+              });
+              return normal;
+            })()
+          : this.toCamera;
         const physicalNormal: ShaderNode | undefined = nodes.realLight
           ? features.materials
             ? select(
                 flat,
                 vec3(0, 1, 0),
-                mix(
-                  this.toCamera,
-                  sampleMaterial(materialPage, atlasUv).normal,
-                  sampleMaterial(materialPage, atlasUv).has,
+                (
+                  mix(
+                    facingNormal,
+                    sampleMaterial(materialPage, atlasUv).normal,
+                    sampleMaterial(materialPage, atlasUv).has,
+                  ) as ShaderNode
                 ).normalize(),
               )
-            : select(flat, vec3(0, 1, 0), this.toCamera)
+            : select(flat, vec3(0, 1, 0), facingNormal)
           : undefined;
         const local: ShaderNode = objectLightAt(ground, own, building, nodes)
           .div(referenceLevel)
           .mul(exp(height.mul(-LOCAL_LIGHT_HEIGHT_FALLOFF)));
-        // The map's light, then the scene light on the night-desaturated colour (house paint keeps its colour) and local
-        // lights on the full colour.
-        const shade = (c: ShaderNode, paint: ShaderNode): ShaderNode => {
+        // Map light, then the shared moon grade on scene radiance; physical night paint shares the terrain grade.
+        // Local lights always use the full-colour albedo.
+        const shade = (c: ShaderNode, paint: ShaderNode, rim: ShaderNode = float(0)): ShaderNode => {
           const lit: ShaderNode = objectLit(c);
-          const base = mix(moonlit(lit, nodes), lit, paint).mul(this.light);
-          const eventBase = sceneLitColour(base, sceneMultiplier);
+          const base = objectMoonlit(lit, paint, nodes).mul(this.light);
+          let eventBase = sceneLitColour(base, sceneMultiplier);
+          if (nodes.realLight)
+            eventBase = nightArtNode(
+              eventBase,
+              c,
+              nightAmbient(lit, this.light.mul(sceneMultiplier), moonlit(vec3(1), nodes)),
+              rim.mul(float(1).sub(step(0.5, aFlat))),
+              nodes.realLight,
+              nodes.realLight.nightWeight,
+            );
           return select(
             isUnlit.greaterThan(0.5),
             c.mul(look.unlitBaseLight),
@@ -983,7 +1009,17 @@ class SpriteGraph {
           const fringed: ShaderNode = mix(colour.mul(limit), colour, solid).toVar('spriteFringedColour');
           unlitShare = houseArt.mul(unlitShareNode(unlitTaps!, opaqueTaps!)).toVar('spriteUnlitShareHere');
           unlitColour = unlitOf(fringed).toVar('spriteUnlitColour');
-          lit = shade(fringed, paint).toVar();
+          let rim: ShaderNode = float(0);
+          if (nodes.realLight) {
+            let solid: ShaderNode = float(1);
+            for (const offset of [vec2(-1, 0), vec2(1, 0), vec2(0, -1), vec2(0, 1)]) {
+              const at = texel.add(offset.div(this.hdScale));
+              const inFrame = step(lo, at).mul(float(1).sub(step(hi, at)));
+              solid = solid.min(texture(hdColour, at.div(atlasSize)).a.mul(inFrame.x).mul(inFrame.y));
+            }
+            rim = float(1).sub(solid);
+          }
+          lit = shade(fringed, paint, rim).toVar();
           litGlow = vec3(glow).toVar();
           litAlpha = hdArt.a.mul(edge).toVar();
           art = vec4(lit.add(litGlow), litAlpha);
@@ -1132,6 +1168,8 @@ class SpriteGraph {
             If(look.contactShade.notEqual(1), () => {
               shadeAlpha.assign(shadeAlpha.mul(look.contactShade).min(0.85));
             });
+            if (nodes.realLight)
+              shadeAlpha.mulAssign(float(1).sub(nodes.realLight.enabled.mul(nodes.realLight.nightWeight)));
             result.assign(vec4(0, 0, 0, shadeAlpha));
           });
           // Wet reflection: the lit art mirrored about its base line, on paved ground only, fading with distance.
@@ -1170,6 +1208,16 @@ class SpriteGraph {
         If(isShadow.greaterThan(0.5).and(isInfantryShadow.lessThan(0.5)).and(sunShare.notEqual(1)), () => {
           result.a.mulAssign(sunShare);
         });
+        if (nodes.realLight)
+          If(
+            isShadow
+              .greaterThan(0.5)
+              .and(isInfantryShadow.greaterThan(0.5).or(hasFoundation).or(aTint.z.greaterThan(0))),
+            () => {
+              // Trees keep their existing shadow policy; only owners replaced by the ambient pool fade here.
+              result.a.mulAssign(float(1).sub(nodes.realLight!.enabled.mul(nodes.realLight!.nightWeight)));
+            },
+          );
         // Clear water: shadows on open water darken it to no less than about 0.94 of its brightness (the lit water
         // column still glows); the hard near-black bridge frames read as rendering faults against the lighter water.
         If(isShadow.greaterThan(0.5).and(nodes.clearWater.greaterThan(0.5)), () => {
@@ -1439,7 +1487,8 @@ export class SpriteLayer {
     // Pack related fields into shared vertex buffers. Capacity never introduces an unused instance matrix.
     // Draw anchor, map-light sample and grade exemption share one buffer/attribute pair.
     // The picture tint (light factor, packed colour) rides in the same buffer: two more floats, no vertex buffer.
-    this.anchor = new DirtyAttribute(new Float32Array(count * 8), 8);
+    const anchorStride = nodes.realLight ? 9 : 8;
+    this.anchor = new DirtyAttribute(new Float32Array(count * anchorStride), anchorStride);
     this.rect = new DirtyAttribute(new Float32Array(count * 4), 4);
     this.params = new DirtyAttribute(new Float32Array(count * 4), 4);
     const nativeOffset = capture ? 9 : 8;
@@ -1473,7 +1522,7 @@ export class SpriteLayer {
     const flags = this.flags.interleaved();
     geometry.setAttribute('spriteAnchor', new InterleavedBufferAttribute(anchors, 3, 0));
     geometry.setAttribute('spriteLighting', new InterleavedBufferAttribute(anchors, 3, 3));
-    geometry.setAttribute('spriteTint', new InterleavedBufferAttribute(anchors, 2, 6));
+    geometry.setAttribute('spriteTint', new InterleavedBufferAttribute(anchors, nodes.realLight ? 3 : 2, 6));
     geometry.setAttribute('spriteRect', this.rect);
     geometry.setAttribute('spriteParams', this.params);
     geometry.setAttribute('spriteFlags', new InterleavedBufferAttribute(flags, 4, 0));
@@ -1553,6 +1602,7 @@ export class SpriteLayer {
       for (const passMesh of passes) passMesh.material.dispose();
     });
     this.mesh.addEventListener('dispose', () => {
+      nodes.realLight?.deleteContacts(this);
       this.readOnlyMesh.dispose();
       this.unitMesh.dispose();
       this.translucentMesh.dispose();
@@ -1569,6 +1619,21 @@ export class SpriteLayer {
   /** With unchanged membership/metadata, interpolation only updates the retained records and skips ordering. */
   setInstances(instances: readonly SpriteInstance[], reorder = true): void {
     this.instances = instances;
+    const contacts = this.cache.nodes?.realLight;
+    if (contacts)
+      contacts.setContacts(
+        this,
+        instances
+          .filter((s) => s.kind === 'contact' && s.painter?.foundation)
+          .map((s) => ({
+            x: s.painter!.x + s.painter!.foundation![0] / 2,
+            z: s.painter!.z + s.painter!.foundation![1] / 2,
+            width: s.painter!.foundation![0],
+            depth: s.painter!.foundation![1],
+            height: s.anchor.y,
+            band: true,
+          })),
+      );
     const cards = this.orderedCards;
     // Instanced meshes are not sorted by Three. Back-to-front within each page preserves soft-edge blending;
     // physical fragment depth resolves opaque overlaps between pages and voxel meshes independently of draw calls.
@@ -1601,6 +1666,14 @@ export class SpriteLayer {
         const tinted = !s.shadow && !s.kind;
         this.anchor.setComponent(i, 6, tinted ? (s.tintLight ?? 1) : 1);
         this.anchor.setComponent(i, 7, tinted ? (s.tintColour ?? 0) : 0);
+        if (this.cache.nodes?.realLight)
+          this.anchor.setComponent(
+            i,
+            8,
+            s.physicalFacing === undefined
+              ? 0
+              : 1 + (((s.physicalFacing % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI)),
+          );
         this.rect.setXYZW(i, s.frame.rect[0], s.frame.rect[1], s.frame.rect[2], s.frame.rect[3]);
         this.params.setXYZW(i, s.frame.offset[0], s.frame.offset[1], paletteRowOf(this.cache, s.palette), s.push);
         this.flags.setXYZW(

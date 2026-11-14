@@ -1,3 +1,4 @@
+import { ambientContactNode } from '../ambientContact';
 import {
   createWaterTuning,
   writeWaterTuning,
@@ -892,7 +893,9 @@ function plainArtMaterial(colour: ShaderNode, nodes: AtmosphereNodes, albedo = c
   const material = new ArtMaterial();
   material.sceneMultiplier = nodes.sceneTerrainMul;
   // The sun and sky see the night-desaturated albedo; local lights (emissive) the full colour.
-  material.colorNode = moonlit(colour, nodes);
+  material.colorNode = nodes.realLight
+    ? moonlit(colour, nodes).mul(ambientContactNode(nodes.realLight, positionWorld.xz))
+    : moonlit(colour, nodes);
   material.gloss = float(0);
   material.roughnessNode = float(0.95);
   material.metalnessNode = float(0);
@@ -1302,7 +1305,9 @@ function createMaterials(
     return value;
   })();
   albedo = albedo.mul(contactRelief ? mix(contact, float(1), contactRelief) : contact);
-  ground.colorNode = moonlit(albedo, nodes);
+  ground.colorNode = nodes.realLight
+    ? moonlit(albedo, nodes).mul(ambientContactNode(nodes.realLight, positionWorld.xz))
+    : moonlit(albedo, nodes);
   // Dry original art has no sheen of its own; wet ground and puddles reflect the sun.
   ground.gloss = gloss;
   ground.roughnessNode = roughness;
@@ -1310,6 +1315,10 @@ function createMaterials(
   // Local lights from the light field (exactly zero by day without explosions), plus the wet paved sheen.
   // Water reflection/glint is reflected scene light despite its emissive implementation. Local source pools below
   // stay additive: event darkness must not dim an explosion, lamp, or lightning strike's illumination.
+  if (nodes.realLight)
+    ground.emissiveNode = (ground.emissiveNode as ShaderNode).mul(
+      ambientContactNode(nodes.realLight, positionWorld.xz),
+    );
   ground.emissiveNode = sceneLitColour(ground.emissiveNode as ShaderNode, nodes.sceneTerrainMul)
     .add(
       localSurfaceLight(

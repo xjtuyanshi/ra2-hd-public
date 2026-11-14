@@ -1,3 +1,4 @@
+import type { AmbientContact } from '../ambientContact';
 import {
   BackSide,
   BufferGeometry,
@@ -605,7 +606,10 @@ function createSurfaceMaterial(
         ? Math.min(SHADOW_OPACITY * look.shadowDarkness.value, 0.9)
         : SHADOW_OPACITY;
     return shadowCopyOpacity(
-      target * nodes.weatherSunShare.value * nodes.sceneSunShadow.value,
+      target *
+        nodes.weatherSunShare.value *
+        nodes.sceneSunShadow.value *
+        (1 - (nodes.realLight?.enabled.value ?? 0) * (nodes.realLight?.nightWeight.value ?? 0)),
       mode.soft ? SHADOW_COPIES.length : 1,
     );
   });
@@ -973,6 +977,31 @@ class VoxelSurfaceMesh extends Mesh {
     for (const child of this.children) child.updateMatrixWorld(force);
     return false;
   }
+}
+
+/** The same body's bounds as the contact twin, with a soft ambient edge instead of a sun projection. */
+export function voxelAmbientContact(
+  geometry: BufferGeometry,
+  x: number,
+  z: number,
+  height: number,
+  yaw: number,
+): AmbientContact | null {
+  if (!geometry.boundingBox) geometry.computeBoundingBox();
+  const box = geometry.boundingBox;
+  if (!box || box.isEmpty()) return null;
+  const cx = (box.min.x + box.max.x) / 2,
+    cz = (box.min.z + box.max.z) / 2;
+  const c = Math.cos(yaw),
+    s = Math.sin(yaw);
+  return {
+    x: x + c * cx + s * cz,
+    z: z - s * cx + c * cz,
+    height,
+    width: box.max.x - box.min.x,
+    depth: box.max.z - box.min.z,
+    yaw: -yaw,
+  };
 }
 
 /** Land/air shadow twin, switching to straight-down contact darkening at a grounded water origin. */

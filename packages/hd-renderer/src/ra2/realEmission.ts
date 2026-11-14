@@ -6,7 +6,7 @@ import type { LiveAnim } from '../live/effects';
 import type { EmissivePrimitive } from '../realEmissive';
 import { flicker } from '../lightField';
 import { animWorld, animLightPolicy, REAL_LIGHT_POLICIES } from './realLights';
-export const EMISSIVE_EVENTS = { seconds: 0.15, dayEV: 0.25, nightEV: 0.5, headDistance: 0.6 } as const;
+export const EMISSIVE_EVENTS = { seconds: 0.15, dayEV: 0.25, nightEV: 0.5, headDistance: 0.9, headRise: 1.5 } as const;
 export function eventExposureKick(age: number, night: number): number {
   if (age < 0 || age >= EMISSIVE_EVENTS.seconds) return 0;
   const ev =
@@ -23,9 +23,17 @@ export function largeLightEvent(type: string): boolean {
     EFFECT_TABLE[type]?.c === 'collapse'
   );
 }
-/** A captured beam source must be near the head in all three dimensions. No charge-frame inference. */
+/**
+ * A captured beam source must start at the building head: within headDistance on the ground plane and headRise in
+ * height (the head is estimated from the art's top, which sits above the coil's orb and fire point; a 0.6 sphere
+ * missed the sandbox coil firing from 700 leptons). No charge-frame inference.
+ */
 export function firingHead(head: Vector3, sources: readonly Vector3[]): boolean {
-  return sources.some((p) => head.distanceToSquared(p) <= EMISSIVE_EVENTS.headDistance ** 2);
+  return sources.some(
+    (p) =>
+      Math.hypot(head.x - p.x, head.z - p.z) <= EMISSIVE_EVENTS.headDistance &&
+      Math.abs(head.y - p.y) <= EMISSIVE_EVENTS.headRise,
+  );
 }
 export function animEmission(anim: LiveAnim, age: number, now: number, fps = 62.5): EmissivePrimitive | null {
   const row = EFFECT_TABLE[anim.type];

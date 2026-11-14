@@ -12,6 +12,7 @@ export class SpritePool {
    * Picture tint of the object whose cards are being taken (objectTint.ts: light factor and packed colour); reset
    * by begin and set per object, so every body card, layer and bib of one object carries the same tint.
    */
+  physicalFacing?: number;
   tintLight = 1;
   tintColour = 0;
   private readonly instances: SpriteInstance[] = [];
@@ -22,6 +23,7 @@ export class SpritePool {
   begin(): void {
     this.used = this.anchorsUsed = 0;
     this.painter = undefined;
+    this.physicalFacing = undefined;
     this.deckHeight = undefined;
     this.tintLight = 1;
     this.tintColour = 0;
@@ -57,6 +59,7 @@ export class SpritePool {
     instance.push = push;
     instance.shadow = shadow;
     instance.opacity = undefined;
+    instance.physicalFacing = this.physicalFacing;
     instance.infantryShadow = undefined;
     instance.infantryBare = undefined;
     instance.terrainShadow = undefined;
