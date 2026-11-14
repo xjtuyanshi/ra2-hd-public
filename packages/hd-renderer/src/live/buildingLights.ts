@@ -259,6 +259,8 @@ type Building = Pick<
 
 export interface BuildingLightPlacement extends SourceSpec {
   key: string;
+  type?: string;
+  physicalGain?: number;
   groundY: number;
   headPosition: Vector3;
   damaged: number;
@@ -317,7 +319,7 @@ export function buildingLightPlacements(
 export function buildingLightSources(
   buildings: readonly Building[],
   /** night: the renderer's lamp gain (0 by day, 1 at night) for lights with a `day` share below one. */
-  settings: { sourceLights: number; night?: number; nativeDetail?: 'ignore' | 'mirror' },
+  settings: { sourceLights: number; night?: number; nativeDetail?: 'ignore' | 'mirror'; realLight?: boolean },
   foundation: (type: string) => readonly [number, number] | undefined,
   shrouded: (building: Building) => boolean,
   conditionYellow = 0.5,
@@ -365,6 +367,11 @@ export function buildingLightSources(
         rgb[1] * k,
         rgb[2] * k,
       ];
+      if (settings.realLight) {
+        light.type = building.type;
+        light.physicalGain =
+          settings.sourceLights * (building.buildingDamaged || building.health < conditionYellow ? light.damaged : 1);
+      }
       light.fadeStart = gate?.fadeStart(building, spec.activeAnim === true);
       light.colour = scale(light.colour);
       light.glow = light.glow ? scale(light.glow, gain * glowGain) : null;

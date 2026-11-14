@@ -212,11 +212,13 @@ export class Ra2NightDressing implements WorldDressing {
   update(frame: FrameAtmosphere): void {
     const context = this.context;
     if (!context) return;
-    const lamps = this.lampsEnabled(frame.settings.lamps);
+    const real = !!context.nodes?.realLight?.enabled.value;
+    const lamps = !real && this.lampsEnabled(frame.settings.lamps);
     // The map's own lamp posts get HD heads whenever HD lamps are not switched off, in every theater: they mark light
     // the map really places (the street-lamp policy only decides where HD lamps are invented).
-    const dummies = frame.settings.lamps !== 'off' && frame.settings.lights;
-    const { windows, lights } = frame.settings;
+    const dummies = !real && frame.settings.lamps !== 'off' && frame.settings.lights;
+    const lights = !real && frame.settings.lights;
+    const windows = !real && frame.settings.windows;
     const built = this.built;
     if (
       !built ||

@@ -45,8 +45,10 @@ import type { VoxelLightingFile } from '../../../ra2-assets/src/vpl';
 import {
   DEFAULT_ATMOSPHERE_NODES,
   localLightHeadroom,
+  localSurfaceLight,
   moonlit,
   objectLight,
+  physicalSurfaceLight,
   type AtmosphereNodes,
 } from '../atmosphere';
 import type { ShaderNode } from '../tsl';
@@ -546,15 +548,29 @@ function createGraph(
   // light: it fades with the model's height above the ground (meshLocalLight) and, like sprite and terrain art, only
   // fills the display headroom left above the scene-lit colour (B2 #18: a burning Kirov over explosions went white).
   const paint: ShaderNode = step(15.5, pindex).mul(step(pindex, 31.5));
-  const local: ShaderNode = objectLight(positionWorld.xz, nodes)
+  const legacyLocal: ShaderNode = objectLight(positionWorld.xz, nodes)
     .mul(1 / Math.PI)
     .mul(float(0.55).add(max(n.y, 0).mul(0.45)))
     .mul(meshLocalLight);
+  const local: ShaderNode = nodes.realLight
+    ? mix(
+        legacyLocal,
+        physicalSurfaceLight(nodes, positionWorld.xz, positionWorld.y, normalWorld).mul(1 / Math.PI),
+        nodes.realLight.enabled,
+      )
+    : legacyLocal;
   const sceneShade: ShaderNode = sceneLitColour(
     mix(moonlit(lit, nodes), lit, paint).mul(voxelFill),
     nodes.sceneObjectMul,
   );
-  let shaded: ShaderNode = sceneShade.add(localLightHeadroom(sceneShade, lit.mul(local), nodes.localLightCap)).mul(ao);
+  const added = nodes.realLight
+    ? mix(
+        localLightHeadroom(sceneShade, lit.mul(legacyLocal), nodes.localLightCap),
+        raw.mul(local),
+        nodes.realLight.enabled,
+      )
+    : localLightHeadroom(sceneShade, lit.mul(local), nodes.localLightCap);
+  let shaded: ShaderNode = sceneShade.add(added).mul(ao);
   let uncovered: ShaderNode = float(1);
   if (projection) {
     const projected = projectedVoxelColour(
@@ -574,7 +590,14 @@ function createGraph(
       nodes.sceneObjectMul,
     );
     const projectedShade: ShaderNode = projectedScene.add(
-      localLightHeadroom(projectedScene, colour.mul(local), nodes.localLightCap),
+      localSurfaceLight(
+        localLightHeadroom(projectedScene, colour.mul(legacyLocal), nodes.localLightCap),
+        projected.colour,
+        nodes,
+        positionWorld.xz,
+        positionWorld.y,
+        n,
+      ),
     );
     // The redraw already contains AO and directional shading. Only uncovered engine art receives mesh AO/sheen.
     shaded = mix(shaded, projectedShade, projected.coverage);

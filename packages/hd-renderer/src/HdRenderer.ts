@@ -65,6 +65,7 @@ import { FRONT_DISTANCE } from './ra2/fireEngulf';
 import { EmitterLayer, type Emitter } from './emitters';
 import { EmissiveOverlay, emissiveMrtSupported } from './emissiveOverlay';
 import { LightField, type DynamicLight } from './lightField';
+import { RealLightField } from './realLight';
 import { Lighting, clearLightAt, noonFlatLuminance } from './lighting';
 import { applyMaterialFallbacks, failedPipelineMaterials, type PipelineHost } from './materialFallback';
 import { installAsyncPipelines, type AsyncPipelines } from './asyncPipelines';
@@ -862,6 +863,12 @@ export class HdRenderer {
   readonly emissiveOverlay: EmissiveOverlay;
   /** Every local light as irradiance on the ground; created in init() once the map size is known. */
   lightField!: LightField;
+  realLightField?: RealLightField;
+  private forceLocalLights = false;
+  /** A same-frame A/B switch must refresh even on a tier that normally draws the field every other frame. */
+  refreshLocalLights(): void {
+    this.forceLocalLights = true;
+  }
   private readonly mist: Mist;
   /** Existing public layers retain their shader nodes if init() adopts a world loaded later. */
   private readonly layerNodes: AtmosphereNodes;
@@ -1077,6 +1084,15 @@ export class HdRenderer {
       halfFloat: LightField.supportsHalfFloat(this.renderer),
       nodes: this.nodes,
     });
+    if (this.nodes.realLight)
+      this.realLightField = new RealLightField(
+        this.bounds.width,
+        this.bounds.height,
+        this.nodes.realLight,
+        emissiveMrtSupported(this.renderer) && LightField.supportsHalfFloat(this.renderer),
+        LightField.supportsHalfFloat(this.renderer),
+      );
+    this.effects.physicalLights = this.realLightField;
     this.effects.attachLightField(this.lightField);
     if (world?.surfaceTexture) {
       this.nodes.surfaceTexture.value = world.surfaceTexture;
@@ -1800,8 +1816,10 @@ export class HdRenderer {
     if (this.layerNodes !== this.nodes) this.layerNodes.copyValuesFrom(this.nodes);
     // Tier 1 and up: the light field (explosion flashes, lamps) is drawn again every second frame; it lives in
     // world space, so the frame in between reads last frame's lights at the right places.
-    if (this.drawnTier < 1 || this.frames % 2 === 0)
+    if (this.forceLocalLights || this.drawnTier < 1 || this.frames % 2 === 0)
       this.lightField.update(now, this.renderer, this.staticGain, this.baseNightGain);
+    this.realLightField?.update(now, this.renderer, light.dressing);
+    this.forceLocalLights = false;
     this.mirrorDynamicEmitters(now);
     if (this.warmQueue) this.renderWarmFrame();
     else this.renderPipeline();
@@ -2161,7 +2179,7 @@ export class HdRenderer {
       e.push = source ? l.push : undefined;
       for (let c = 0; c < 3; c++) {
         e.glow[c] = source ? (l.glow?.[c] ?? 0) : fire ? 0 : l.colour[c]! * k * 0.12;
-        e.streak[c] = l.colour[c]! * k * (fire ? 0.45 : 0.35);
+        e.streak[c] = source && this.nodes?.realLight?.enabled.value ? 0 : l.colour[c]! * k * (fire ? 0.45 : 0.35);
       }
       out.push(e);
     }
@@ -2266,7 +2284,7 @@ export class HdRenderer {
   /** Whether per-pixel sprite materials can contribute, known before frame() updates the look uniforms. */
   materialsWanted(): boolean {
     const s = this.settings;
-    return s.relight > 0 || s.occlusion > 0 || s.specular > 0 || s.glass > 0;
+    return !!this.nodes?.realLight || s.relight > 0 || s.occlusion > 0 || s.specular > 0 || s.glass > 0;
   }
 
   /** Release this renderer's shader resources and GPU targets; call once the view stops presenting. */
@@ -2282,6 +2300,7 @@ export class HdRenderer {
       for (const node of parked.nodes) node.dispose();
     }
     this.parkedPipelines.clear();
+    this.realLightField?.dispose();
     this.lightField?.dispose();
     this.rain?.dispose();
     this.snow?.dispose();

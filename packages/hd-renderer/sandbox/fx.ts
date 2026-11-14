@@ -43,6 +43,7 @@
  *                             star twinkle on crystals (default 0 with glints, 1 without)
  *   &native=1                 pass the bridge fields (exact anim frame) instead of relying on the fallback timing
  *   &garnish=0                the original art alone, without HD light, sparks or smoke
+ *   &light=real               experimental physical local lights; live.setRealLight(false/true) for A/B
  *   &effects=enhanced         the enhanced effect style (LiveViewOptions.effects) instead of the faithful garnish
  *   &fxvol=ray|off            raymarched 3D blasts in enhanced style (default off)
  *   &fxhd=0                  keep native effect frames even in enhanced style (disable optional HD flipbooks)
@@ -134,6 +135,7 @@ const live = await LiveView.create(canvas, {
       ? { dayHour: Number(params.get('dayhour')) }
       : {}
     : { timeOfDay: Number(params.get('hours') ?? 12) }),
+  realLight: params.get('light') === 'real',
   effects: params.get('effects') === 'enhanced' ? 'enhanced' : 'faithful',
   effectsHd: params.get('fxhd') !== '0',
   volumetricEffects: params.get('fxvol') === 'ray' ? 'ray' : 'off',

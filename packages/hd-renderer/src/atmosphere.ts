@@ -26,6 +26,7 @@ import type { EmitterLayer } from './emitters';
 import type { LightField } from './lightField';
 import { SceneLightingUniforms } from './lighting';
 import type { ShaderNode } from './tsl';
+import { RealLightNodes, sampleRealLight } from './realLight';
 
 /** Shader inputs owned by one renderer/world. Legacy exports below remain for standalone material callers. */
 export class AtmosphereNodes extends SceneLightingUniforms {
@@ -63,8 +64,11 @@ export class AtmosphereNodes extends SceneLightingUniforms {
   /** 1 while the terrain draws the clear water look: shadows on open water are softened and lightened. */
   readonly clearWater = uniform(0);
 
-  constructor() {
+  readonly realLight?: RealLightNodes;
+
+  constructor(options: { realLight?: boolean } = {}) {
     super();
+    if (options.realLight) this.realLight = new RealLightNodes();
     this.black.needsUpdate = true;
     this.noSurface.needsUpdate = true;
   }
@@ -102,6 +106,7 @@ export class AtmosphereNodes extends SceneLightingUniforms {
     this.disposed = true;
     for (const resource of this.resources) resource.dispose();
     this.resources.clear();
+    this.realLight?.dispose();
     this.black.dispose();
     this.noSurface.dispose();
   }
@@ -159,18 +164,54 @@ export function moonlit(colour: ShaderNode, nodes = DEFAULT_ATMOSPHERE_NODES): S
 }
 
 /** Local light irradiance at a ground point (world xz), linear RGB. */
-export function sampleLightField(xz: ShaderNode, nodes = DEFAULT_ATMOSPHERE_NODES): ShaderNode {
-  return texture(nodes.lightFieldTexture, xz.div(nodes.lightFieldSize)).rgb.mul(nodes.lightFieldScale);
+export function sampleLightField(xz: ShaderNode, nodes = DEFAULT_ATMOSPHERE_NODES, height?: ShaderNode): ShaderNode {
+  const legacy = texture(nodes.lightFieldTexture, xz.div(nodes.lightFieldSize)).rgb.mul(nodes.lightFieldScale);
+  return nodes.realLight
+    ? mix(
+        legacy,
+        sampleRealLight(nodes.realLight, xz, height ?? float(0)).mul(nodes.referenceLevel),
+        nodes.realLight.enabled,
+      )
+    : legacy;
+}
+
+/** Opt-in receiver branch. Callers keep their exact legacy expression when the context has no physical field. */
+export function physicalSurfaceLight(
+  nodes: AtmosphereNodes,
+  xz: ShaderNode,
+  height: ShaderNode,
+  normal: ShaderNode,
+): ShaderNode {
+  if (!nodes.realLight) throw new Error('Physical light receiver requires an opted-in context');
+  return sampleRealLight(nodes.realLight, xz, height, normal).mul(nodes.referenceLevel);
+}
+
+/** Blend at the final added term so the experimental runtime toggle restores the legacy response. */
+export function localSurfaceLight(
+  legacy: ShaderNode,
+  albedo: ShaderNode,
+  nodes: AtmosphereNodes,
+  xz: ShaderNode,
+  height: ShaderNode,
+  normal: ShaderNode,
+  scalarShare?: ShaderNode,
+): ShaderNode {
+  if (!nodes.realLight) return legacy;
+  let physical = physicalSurfaceLight(nodes, xz, height, normal);
+  if (scalarShare)
+    physical = mix(physical, sampleRealLight(nodes.realLight, xz, height).mul(nodes.referenceLevel), scalarShare);
+  return mix(legacy, albedo.mul(physical).mul(1 / Math.PI), nodes.realLight.enabled);
 }
 
 /**
  * Local light as objects take it: the engine lights objects without the tint of light sources, so art keeps half of
  * the light's colour (OBJECT_TINT) and gets the rest as neutral brightness.
  */
-export function objectLight(xz: ShaderNode, nodes = DEFAULT_ATMOSPHERE_NODES): ShaderNode {
-  const lf: ShaderNode = sampleLightField(xz, nodes);
+export function objectLight(xz: ShaderNode, nodes = DEFAULT_ATMOSPHERE_NODES, height?: ShaderNode): ShaderNode {
+  const lf: ShaderNode = sampleLightField(xz, nodes, height);
   const l: ShaderNode = luminance(lf);
-  return mix(vec3(l, l, l), lf, float(OBJECT_TINT));
+  const legacy = mix(vec3(l, l, l), lf, float(OBJECT_TINT));
+  return nodes.realLight ? mix(legacy, lf, nodes.realLight.enabled) : legacy;
 }
 
 /**

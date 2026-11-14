@@ -59,6 +59,7 @@ import {
 } from 'three/tsl';
 import { DEFAULT_ATMOSPHERE_NODES, objectLight } from './atmosphere';
 import type { LightField } from './lightField';
+import type { RealLightField } from './realLight';
 import { DirtyAttribute } from './dirtyAttribute';
 import { waterTextures } from './proceduralTextures';
 import { isShadowPass } from './painterDepth';
@@ -862,6 +863,8 @@ export class EffectsLayer {
   private readonly column: ParticlePool;
   /** Where effect lights go; null until the renderer attaches its light field (effects then cast no light). */
   private lightField: LightField | null = null;
+  /** Independent physical pool, allocated only by opted-in hosts. */
+  physicalLights?: RealLightField;
   /** Next flame emission per persistent fire key. */
   private readonly fireEmit = new Map<string, number>();
   /** Tracked fire positions are stable objects; weak ownership releases the schedule when an anim disappears. */
@@ -980,7 +983,9 @@ export class EffectsLayer {
         // below at half the light's saturation (objectLight), so a blast next to water never paints it deep red.
         // Soot glows more from the fire under it (lit from below).
         const lit = this.nodes.sceneBrightness.add(
-          objectLight(positionWorld.xz, this.nodes).div(this.nodes.referenceLevel).mul(float(0.5).add(soot)),
+          objectLight(positionWorld.xz, this.nodes, positionWorld.y)
+            .div(this.nodes.referenceLevel)
+            .mul(float(0.5).add(soot)),
         );
         // Neutral greys like the original smoke art (anim.pal 68..137, R = G = B); soot is near black.
         const grey = mix(mix(color(0x3a3a3a), color(0x858585), seed), color(0x141210), soot);
@@ -1365,7 +1370,7 @@ export class EffectsLayer {
           .mul(shadow);
         const lit = this.nodes.sceneBrightness
           .mul(shade)
-          .add(objectLight(positionWorld.xz, this.nodes).div(this.nodes.referenceLevel).mul(0.45));
+          .add(objectLight(positionWorld.xz, this.nodes, positionWorld.y).div(this.nodes.referenceLevel).mul(0.45));
         // Young soot retains the fire's warmth; cold lobes age to neutral grey so sunlit tops stay distinct.
         const base = mix(color(0x1d1a17), color(0x86847f), clamp(t.mul(1.6).add(seed.mul(0.25)), 0, 1));
         // The fire's glow: underneath the young puff, and inside it for the first moments (black-orange smoke).
@@ -1664,7 +1669,7 @@ export class EffectsLayer {
               .mul(mix(e.underside, 1, smoothstep(...e.undersideRange, nrm.y)))
               .mul(shadow),
           )
-          .add(objectLight(positionWorld.xz, this.nodes).div(this.nodes.referenceLevel).mul(0.4));
+          .add(objectLight(positionWorld.xz, this.nodes, positionWorld.y).div(this.nodes.referenceLevel).mul(0.4));
         const base = mix(color(0x2a2622), color(0x8e8c87), clamp(t.mul(1.5).add(seed.mul(0.2)), 0, 1));
         const glow = vec3(1.0, 0.42, 0.12)
           .mul(heat)

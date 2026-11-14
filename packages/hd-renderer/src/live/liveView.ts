@@ -94,6 +94,16 @@ import { LiveEffectsDriver, smokeOnVehicle, type EffectStyle, type LiveAnim, typ
 import { LiveBeams } from './beams';
 import { CAPTURABLE_BUILDINGS, EXTRA_LIGHT, NORMALIZED_BUILDINGS, SMOKE_SYSTEMS } from './effectTable';
 import { BuildingLightGate, buildingLightOverlay, buildingLightSources } from './buildingLights';
+import {
+  buildingPhysicalLight,
+  engineLampLights,
+  isLampArt,
+  lampArtHead,
+  nearestLampHead,
+  type LampArtHead,
+  ra2LightOccluders,
+  type BuildingOccluder,
+} from '../ra2/realLights';
 import { BuildingVisualHistory } from './buildingVisualHistory';
 import { DEPLOY_TARGETS, cellArtPages, overlayTypePages } from './artAhead';
 import { HeldPicture } from './heldPicture';
@@ -284,6 +294,8 @@ function visibleObjectEffects(snapshot: LiveSnapshot): LiveEffects | null | unde
 }
 
 export interface LiveViewOptions extends VoxelUnitsOptions {
+  /** Opt-in physical lighting graphs and resources. */
+  realLight?: boolean;
   /** URL of the map's HD cache directory (manifest.json inside). */
   mapBase: string;
   /** URL of the type library root (holding <theater>/library.json and common/effects/), for players' art. */
@@ -1371,6 +1383,7 @@ export class LiveView {
     // Only trees are static: overlays and smudges change during a match and are drawn by the view (cellLayer).
     const [world, requiredLimits] = await Promise.all([
       loadRa2World(options.mapBase, {
+        realLight: options.realLight,
         includeObject: (object) => object.kind === 'tree',
         voxelLook: options.voxelLook,
         smoothVoxel: options.smoothVoxel,
@@ -1427,6 +1440,17 @@ export class LiveView {
       new URLSearchParams(globalThis.location?.search ?? '').get('hd-debug')?.split(',').includes('placeholders') ??
       false;
     return new LiveView(hd, world, cache, { ...options, debugPlaceholders: debug }, library, state);
+  }
+
+  /** Available only in a view created with realLight; keeps the presentation clock and geometry unchanged. */
+  setRealLight(enabled: boolean): boolean {
+    const nodes = this.hd.nodes.realLight;
+    if (!nodes) return false;
+    nodes.enabled.value = enabled ? 1 : 0;
+    this.hd.refreshLocalLights?.();
+    this.engineLightKey = this.lightKey = null;
+    if (this.current) this.updateNightSources(this.current.snapshot);
+    return true;
   }
 
   /** Change time, weather or the night dressing at runtime (no reload). */
@@ -1627,6 +1651,7 @@ export class LiveView {
     const vehicles = snapshot.objects.filter((o) => o.kind === 'vehicle' && !o.nativeHidden);
     this.effectDriver.vehicleAt = (x, y, z) => smokeOnVehicle(vehicles, x, y, z);
     this.effectDriver.sceneEvent = snapshot.lighting?.event ?? null;
+    this.effectDriver.nukeState = snapshot.lighting?.nukeState ?? 0;
     this.updateLightBase(snapshot);
     this.hd.setSceneLighting(this.scenePresentation(snapshot.lighting));
     if (effects || hadEffects)
@@ -1758,6 +1783,77 @@ export class LiveView {
     }
   }
 
+  private physicalLampKey = '';
+  private physicalOccluderKey = '';
+  /** Live on/off engine list wins over sidecar placement; cached per source/height/base, never per presentation pixel. */
+  private updatePhysicalLamps(snapshot: LiveSnapshot | undefined): void {
+    const field = this.hd.realLightField;
+    if (!field) return;
+    const profile = this.state.map.atmosphere;
+    const hour = this.state.environment.timeOfDay;
+    const night = profile?.kind === 'night' || hour < 6 || hour > 19;
+    const active = !!this.hd.nodes?.realLight?.enabled.value && night;
+    this.world.mapLight?.setPhysicalSources(active);
+    const engine = snapshot?.lighting?.sources;
+    const sources = engine
+      ? engine.map((s) => ({
+          position: [s.x, s.y, s.z] as [number, number, number],
+          radius: s.radius,
+          intensity: s.intensity,
+          tint: s.tint,
+        }))
+      : (this.cache.lights?.lights ?? []);
+    const lighting = this.world.mapLight?.base ?? this.state.map.lighting;
+    const artHeads: LampArtHead[] = [];
+    for (const o of snapshot?.objects ?? []) {
+      const type = this.library?.type(o.type);
+      if (o.nativeHidden || type?.invisible || !isLampArt(o.type)) continue;
+      const sprite =
+        type?.sprite && (this.library?.library.sprites[type.sprite] ?? this.cache.manifest.sprites[type.sprite]);
+      const frame = sprite && (sprite.frames[o.buildingFrame ?? 0] ?? sprite.frames[0]);
+      if (frame) artHeads.push({ x: o.x / 256, z: o.y / 256, height: lampArtHead(frame.offset[1]) });
+    }
+    // Terrain lamp art can be separate from the engine's invisible light-source building.
+    for (const o of this.cache.manifest.objects) {
+      if (o.kind === 'building' && snapshot) continue;
+      if (!isLampArt(o.type) || this.cache.lights?.types[o.type]?.invisible) continue;
+      const frame = o.sprite && this.cache.manifest.sprites[o.sprite]?.frames[o.frame ?? 0];
+      if (frame) artHeads.push({ x: o.x + 0.5, z: o.y + 0.5, height: lampArtHead(frame.offset[1]) });
+    }
+    const occluders: BuildingOccluder[] = [];
+    for (const b of snapshot?.objects ?? []) {
+      if (b.kind !== 'building' || b.nativeHidden || this.shroud.isLocationShrouded(b.x, b.y, b.z)) continue;
+      const type = this.library?.type(b.type);
+      const sprite = type?.sprite && this.library?.library.sprites[type.sprite];
+      const frame = sprite && (sprite.frames[b.buildingFrame ?? 0] ?? sprite.frames[0]);
+      if (!frame || !type?.foundation || type.invisible) continue;
+      const top = Math.max(
+        0,
+        (15 - frame.offset[1] - type.drawOffset[1]) / (Math.cos(Math.PI / 6) * PIXELS_PER_CELL_EDGE),
+      );
+      occluders.push({
+        x: Math.floor(b.x / 256),
+        z: Math.floor(b.y / 256),
+        width: type.foundation[0],
+        depth: type.foundation[1],
+        top: (b.z / 104) * LEVEL_HEIGHT + top,
+      });
+    }
+    const occluderKey = JSON.stringify(occluders);
+    if (occluderKey !== this.physicalOccluderKey) {
+      this.physicalOccluderKey = occluderKey;
+      field.setOccluders(ra2LightOccluders(this.world.width, this.world.height, this.cache.height, occluders));
+    }
+    const heads = sources.map((s) => nearestLampHead(s, artHeads));
+    const key = JSON.stringify([sources, lighting, heads, this.hd.atmosphere.lights]);
+    if (key !== this.physicalLampKey) {
+      this.physicalLampKey = key;
+      field.setStatic(
+        this.hd.atmosphere.lights ? sources.flatMap((s, i) => engineLampLights(s, lighting, heads[i])) : [],
+      );
+    }
+  }
+
   private sourceLightsActive = false;
   private readonly buildingLightGate = new BuildingLightGate();
   private readonly activeSourceKeys = new Set<string>();
@@ -1769,6 +1865,10 @@ export class LiveView {
     const nativeDetail = this.options?.nativeDetail ?? 'ignore';
     if (snapshot) this.buildingLightGate.update(snapshot.objects, snapshot.frame, now, nativeDetail);
     if (!(this.hd.settings.sourceLights > 0)) {
+      if (this.hd.realLightField) {
+        this.activeSourceKeys.clear();
+        this.hd.realLightField.retain('source', this.activeSourceKeys);
+      }
       if (this.sourceLightsActive) {
         this.hd.lightField.clearSources();
         this.hd.emissiveOverlay.setDiscs([]);
@@ -1779,7 +1879,12 @@ export class LiveView {
     }
     const lights = buildingLightSources(
       snapshot?.objects ?? [],
-      { sourceLights: this.hd.settings.sourceLights, night: this.hd.emitters.lampGain.value, nativeDetail },
+      {
+        sourceLights: this.hd.settings.sourceLights,
+        night: this.hd.emitters.lampGain.value,
+        nativeDetail,
+        realLight: !!this.hd.realLightField,
+      },
       (type) => this.library?.type(type)?.foundation,
       (building) => this.shroud.isLocationShrouded(building.x, building.y, building.z),
       this.library?.conditionYellow,
@@ -1787,12 +1892,26 @@ export class LiveView {
     );
     this.activeSourceKeys.clear();
     for (const light of lights) {
+      if (this.hd.nodes?.realLight?.enabled.value && light.type === 'TESLA') {
+        light.glow = null;
+        light.glowSize = 0;
+      }
       this.hd.lightField.source(light.key, now, light);
       this.activeSourceKeys.add(light.key);
       light.fade = this.hd.lightField.sourceFade(light.key, now);
     }
     this.hd.lightField.retainSources(this.activeSourceKeys);
-    const overlay = buildingLightOverlay(lights, snapshot?.frame ?? 0, now, {
+    const physicalKeys = new Set<string>();
+    if (this.hd.realLightField)
+      for (const light of lights) {
+        const physical = buildingPhysicalLight(light.type ?? '', light);
+        if (!physical) continue;
+        this.hd.realLightField.put('source', light.key, now, physical, 0, 0, 0.6);
+        physicalKeys.add(light.key);
+      }
+    this.hd.realLightField?.retain('source', physicalKeys);
+    const visibleLights = this.hd.nodes?.realLight?.enabled.value ? lights.filter((l) => l.type !== 'TESLA') : lights;
+    const overlay = buildingLightOverlay(visibleLights, snapshot?.frame ?? 0, now, {
       right: this.hd.emissiveOverlay.cameraRight.value,
       up: this.hd.emissiveOverlay.cameraUp.value,
       toCamera: this.hd.emissiveOverlay.toCamera.value,
@@ -1918,6 +2037,7 @@ export class LiveView {
     }
     // A view shown while it still warms draws the rest in full warm frames: a slice frame has only some objects in it.
     if (!this.hiddenFromSight && this.hd.warming) this.hd.finishWarm();
+    if (this.hd.realLightField) this.updatePhysicalLamps(current?.snapshot);
     this.hd.frame(dt);
     // Loads settle between frames, never inside one: what is still on its way now was missing from this frame. A
     // warm frame (HdRenderer.warm) is not a frame of the match either: it draws what is hidden and builds shaders.

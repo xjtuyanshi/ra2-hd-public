@@ -9,6 +9,7 @@ export interface Ra2SceneLighting {
   tint: [number, number, number];
   override: [number, number, number] | null;
   event: 'storm' | 'nuke' | 'dominator' | 'timewarp' | null;
+  nukeState?: number;
   storm?: { active: boolean; pending: boolean; ending: boolean; cell: { x: number; y: number } };
   /**
    * The engine's active light sources (leptons; intensity and tint in fractional [Lighting] units), when the adapter

@@ -1,0 +1,440 @@
+import {
+  AddEquation,
+  CustomBlending,
+  Color,
+  DataTexture,
+  DataUtils,
+  DoubleSide,
+  FloatType,
+  HalfFloatType,
+  InstancedBufferAttribute,
+  InstancedMesh,
+  LinearFilter,
+  MeshBasicNodeMaterial,
+  OneFactor,
+  OrthographicCamera,
+  PlaneGeometry,
+  RedFormat,
+  RenderTarget,
+  RGBAFormat,
+  Scene,
+  Vector2,
+  UnsignedByteType,
+  type WebGPURenderer,
+} from 'three/webgpu';
+import {
+  atan,
+  clamp,
+  dot,
+  exp,
+  float,
+  instancedBufferAttribute,
+  length,
+  max,
+  mix,
+  mrt,
+  positionGeometry,
+  positionWorld,
+  texture,
+  uniform,
+  vec3,
+  vec4,
+} from 'three/tsl';
+import { flicker, heldPulseEnvelope } from './lightField';
+import type { ShaderNode } from './tsl';
+
+export type Rgb = readonly [number, number, number];
+export type Point = readonly [number, number, number];
+export const REAL_LIGHT_THRESHOLD = 0.006;
+export const REAL_LIGHT_UPPER = 1.25;
+const LUMA = [0.2126, 0.7152, 0.0722] as const;
+export const lightLuminance = (v: Rgb): number => v.reduce((s, c, i) => s + c * LUMA[i]!, 0);
+export interface PhysicalLight {
+  position: Point;
+  /** Absent for points; segments carry intensity per world-unit length. */
+  end?: Point;
+  radius: number;
+  intensity: Rgb;
+  /** Optional short hot-to-warm phase in linear radiance, independent of geometry. */
+  initialIntensity?: Rgb;
+  hotSeconds?: number;
+  groundOnly?: number;
+  occlude?: boolean;
+  /** Static/kept sources use zero; short events may retain a subtle daylight share. */
+  dayFactor: number;
+  flicker?: number;
+  seed?: number;
+}
+export const segmentLength = (l: PhysicalLight): number =>
+  l.end ? Math.hypot(...l.end.map((v, i) => v - l.position[i]!)) : 0;
+/** Conservative unwindowed scalar threshold; window reaches exactly zero at this derived distance. */
+export function lightReach(l: PhysicalLight): number {
+  return Math.sqrt(
+    Math.max(0, (lightLuminance(l.intensity) * (l.end ? segmentLength(l) : 1)) / REAL_LIGHT_THRESHOLD - l.radius ** 2),
+  );
+}
+export function lightWindow(t: number): number {
+  return Math.max(0, 1 - Math.min(1, Math.max(0, t)) ** 4) ** 2;
+}
+export interface LightMoment {
+  s: [number, number, number];
+  d: [number, number, number];
+  ground: number;
+}
+/** Representative-point direction; finite-line integral normalises energy, including short and split tubes. */
+export function lightMoment(l: PhysicalLight, p: Point, windowed = true): LightMoment {
+  const ab = l.end?.map((v, i) => v - l.position[i]!) ?? [0, 0, 0];
+  const len = segmentLength(l);
+  const along = len > 0 ? ab.reduce((s, v, i) => s + v * (p[i]! - l.position[i]!), 0) / len : 0;
+  const u = Math.max(0, Math.min(len, along));
+  const delta = l.position.map((v, i) => v + (len ? (ab[i]! * u) / len : 0) - p[i]!);
+  const d2 = delta.reduce((s, v) => s + v * v, 0);
+  const distance = Math.sqrt(d2);
+  let factor = 1 / Math.max(1e-8, d2 + l.radius ** 2);
+  if (l.end) {
+    // Integral of 1/(perpendicularDistance^2 + r_s^2 + t^2) over the actual finite segment.
+    const a = Math.sqrt(Math.max(1e-8, d2 - (along - u) ** 2 + l.radius ** 2));
+    factor = (Math.atan((len - along) / a) + Math.atan(along / a)) / a;
+  }
+  if (windowed) factor *= lightWindow(distance / Math.max(lightReach(l), 1e-8));
+  const s = l.intensity.map((c) => c * factor) as [number, number, number];
+  const lum = lightLuminance(s);
+  return {
+    s,
+    d: delta.map((v) => (lum * v) / Math.max(distance, 1e-8)) as [number, number, number],
+    ground: lum * (l.groundOnly ?? 0),
+  };
+}
+export function reconstructLight(s: Rgb, d: Point, normal: Point): [number, number, number] {
+  const lum = lightLuminance(s),
+    dominant = Math.min(lum, Math.hypot(...d));
+  const cosine = Math.max(0, d.reduce((v, c, i) => v + c * normal[i]!, 0) / Math.max(Math.hypot(...d), 1e-8));
+  const k = (dominant * cosine + 0.5 * Math.max(0, lum - dominant)) / Math.max(lum, 1e-8);
+  return s.map((c) => c * k) as [number, number, number];
+}
+export function irradianceKnee(e: Rgb, night: number): [number, number, number] {
+  const lum = lightLuminance(e),
+    cap = 1.2 + 1.3 * Math.min(1, Math.max(0, night));
+  const k = lum > 0 ? Math.min(1, (cap * -Math.expm1(-lum / cap)) / lum) : 1;
+  return e.map((c) => c * k) as [number, number, number];
+}
+/** Generic R16F contract. Row-major top heights, world y, 2 texels/cell; no object identity or game policy. */
+export interface LightOccluders {
+  width: number;
+  height: number;
+  texelsPerCell: 2;
+  heights: Float32Array;
+}
+
+/** Allocated only by an opted-in world, before it constructs materials. */
+export class RealLightNodes {
+  readonly enabled = uniform(1);
+  readonly directional = uniform(1);
+  readonly nightWeight = uniform(0);
+  readonly scale = uniform(1);
+  readonly size = uniform(new Vector2(1, 1));
+  private readonly black = new DataTexture(new Float32Array(4), 1, 1, RGBAFormat, FloatType);
+  readonly ground = texture(this.black);
+  readonly groundDirection = texture(this.black);
+  readonly upper = texture(this.black);
+  readonly upperDirection = texture(this.black);
+  constructor() {
+    this.black.needsUpdate = true;
+  }
+  dispose(): void {
+    this.black.dispose();
+  }
+}
+function kneeNode(e: ShaderNode, night: ShaderNode): ShaderNode {
+  const lum = dot(e, vec3(...LUMA));
+  const cap = mix(float(1.2), float(2.5), night);
+  return e.mul(
+    cap
+      .mul(float(1).sub(exp(lum.negate().div(cap))))
+      .div(max(lum, 1e-8))
+      .min(1),
+  );
+}
+/** S only for water/participating media; surfaces reconstruct the directional moments before the common knee. */
+export function sampleRealLight(
+  nodes: RealLightNodes,
+  xz: ShaderNode,
+  height: ShaderNode,
+  normal?: ShaderNode,
+): ShaderNode {
+  const uv = xz.div(nodes.size);
+  const t = clamp(height.div(REAL_LIGHT_UPPER), 0, 1).mul(nodes.directional);
+  const g = texture(nodes.ground, uv);
+  const s = mix(g.rgb, texture(nodes.upper, uv).rgb, t).mul(nodes.scale);
+  let e: ShaderNode = s;
+  if (normal) {
+    const d = mix(texture(nodes.groundDirection, uv).xyz, texture(nodes.upperDirection, uv).xyz, t).mul(nodes.scale);
+    const lum = dot(s, vec3(...LUMA));
+    const magnitude = length(d);
+    const dominant = magnitude.min(lum);
+    const cosine = max(dot(normal, d).div(max(magnitude, 1e-8)), 0);
+    const reconstructed = s.mul(dominant.mul(cosine).add(lum.sub(dominant).max(0).mul(0.5)).div(max(lum, 1e-8)));
+    e = mix(s, reconstructed, nodes.directional);
+    // Preserve the alpha contract: upright receivers take only the reduced ground-only share.
+    const groundShare = mix(g.a, texture(nodes.upper, uv).a, t).mul(nodes.scale).div(max(lum, 1e-8)).clamp(0, 1);
+    e = e.mul(float(1).sub(groundShare.mul(max(normal.y.negate().add(1), 0).min(1)).mul(0.7)));
+  }
+  return kneeNode(e.mul(exp(max(height.sub(REAL_LIGHT_UPPER), 0).mul(-0.45))), nodes.nightWeight);
+}
+
+interface TimedLight {
+  light: PhysicalLight;
+  born: number;
+  seen: number;
+  hold: number;
+  fade: number;
+  ttl?: number;
+}
+const CAPACITIES = { static: 896, explosion: 128, flash: 256, kept: 256, source: 256 } as const;
+export type RealLightPool = keyof typeof CAPACITIES;
+/** Independent pools preserve fire/source capacity during bursts. Legacy buffers are never repurposed. */
+export class RealLightField {
+  readonly targets: RenderTarget[];
+  readonly scenes: Scene[];
+  readonly camera: OrthographicCamera;
+  readonly pools = new Map<RealLightPool, Map<string, TimedLight>>();
+  private readonly attributes: InstancedBufferAttribute[][] = [];
+  private readonly meshes: InstancedMesh[] = [];
+  private readonly layers: number[];
+  private readonly cursors = new Map<RealLightPool, number>();
+  private dirty = true;
+  private lastNight = -1;
+  private lastDynamic = false;
+  private occluders: DataTexture | null = null;
+  private readonly clearColour = new Color();
+  renders = 0;
+  constructor(
+    readonly width: number,
+    readonly height: number,
+    readonly nodes: RealLightNodes,
+    directional = true,
+    halfFloat = true,
+  ) {
+    nodes.directional.value = directional ? 1 : 0;
+    nodes.scale.value = halfFloat ? 1 : 8;
+    nodes.size.value.set(width, height);
+    this.layers = directional ? [0, REAL_LIGHT_UPPER] : [0];
+    this.camera = new OrthographicCamera(0, width, 0, height, -10, 10);
+    this.camera.position.set(0, 0, 5);
+    this.camera.updateMatrixWorld();
+    const density = Math.max(1, Math.min(8, Math.floor(2048 / Math.max(width, height))));
+    this.targets = this.layers.map((_, i) => {
+      const target = new RenderTarget(
+        Math.max(1, Math.floor((width * density) / (i ? 2 : 1))),
+        Math.max(1, Math.floor((height * density) / (i ? 2 : 1))),
+        {
+          count: directional ? 2 : 1,
+          type: halfFloat ? HalfFloatType : UnsignedByteType,
+          depthBuffer: false,
+          minFilter: LinearFilter,
+          magFilter: LinearFilter,
+          generateMipmaps: false,
+        },
+      );
+      target.textures[0]!.name = 'output';
+      if (directional) target.textures[1]!.name = 'direction';
+      return target;
+    });
+    nodes.ground.value = this.targets[0]!.textures[0]!;
+    nodes.upper.value = (this.targets[1] ?? this.targets[0])!.textures[0]!;
+    if (directional) {
+      nodes.groundDirection.value = this.targets[0]!.textures[1]!;
+      nodes.upperDirection.value = this.targets[1]!.textures[1]!;
+    }
+    for (const pool of Object.keys(CAPACITIES) as RealLightPool[]) this.pools.set(pool, new Map());
+    this.scenes = this.layers.map((y) => this.build(y, directional));
+  }
+  private build(y: number, directional: boolean): Scene {
+    const capacity = Object.values(CAPACITIES).reduce((a, b) => a + b, 0);
+    const attrs = Array.from({ length: 4 }, () => new InstancedBufferAttribute(new Float32Array(capacity * 4), 4));
+    const [a, b, c, extra] = attrs.map((v) => instancedBufferAttribute(v, 'vec4') as ShaderNode) as [
+      ShaderNode,
+      ShaderNode,
+      ShaderNode,
+      ShaderNode,
+    ];
+    const m = new MeshBasicNodeMaterial();
+    m.transparent = true;
+    m.depthTest = false;
+    m.depthWrite = false;
+    m.side = DoubleSide;
+    m.blending = CustomBlending;
+    m.blendEquation = m.blendEquationAlpha = AddEquation;
+    m.blendSrc = m.blendSrcAlpha = OneFactor;
+    m.blendDst = m.blendDstAlpha = OneFactor;
+    const lo = a.xz.min(b.xz).sub(b.w),
+      hi = a.xz.max(b.xz).add(b.w);
+    m.positionNode = vec3(mix(lo, hi, positionGeometry.xy.add(0.5)), 0);
+    const p = vec3(positionWorld.x, y, positionWorld.y);
+    const ab = b.xyz.sub(a.xyz),
+      len = length(ab),
+      axis = ab.div(max(len, 1e-8));
+    const along = dot(p.sub(a.xyz), axis),
+      u = clamp(along, 0, len);
+    const delta = a.xyz.add(axis.mul(u)).sub(p),
+      distance = length(delta);
+    const d2 = dot(delta, delta).add(a.w.mul(a.w));
+    const perpendicular = max(d2.sub(along.sub(u).pow(2)), 1e-8).sqrt();
+    const integral = atan(len.sub(along).div(perpendicular))
+      .add(atan(along.div(perpendicular)))
+      .div(perpendicular);
+    const weight = float(1)
+      .sub(clamp(distance.div(max(b.w, 1e-8)), 0, 1).pow(4))
+      .pow(2);
+    const scalar = extra.z
+      .greaterThan(0.5)
+      .select(integral, float(1).div(max(d2, 1e-8)))
+      .mul(weight);
+    const s = c.rgb.mul(scalar),
+      lum = dot(s, vec3(...LUMA));
+    const output = vec4(directional ? s : s.mul(max(delta.y.div(max(distance, 1e-8)), 0)), lum.mul(extra.x));
+    m.colorNode = output;
+    if (directional) m.mrtNode = mrt({ output, direction: vec4(delta.div(max(distance, 1e-8)).mul(lum), 0) });
+    const mesh = new InstancedMesh(new PlaneGeometry(), m, capacity);
+    mesh.frustumCulled = false;
+    mesh.count = 0;
+    const scene = new Scene();
+    scene.add(mesh);
+    this.attributes.push(attrs);
+    this.meshes.push(mesh);
+    return scene;
+  }
+  /** Game module supplies top heights; march is reserved for round 2. Upload contract is already owned/disposed here. */
+  setOccluders(data: LightOccluders): void {
+    if (
+      data.heights.length !== data.width * data.height ||
+      data.width !== this.width * 2 ||
+      data.height !== this.height * 2
+    )
+      throw new Error('Invalid light occluder dimensions');
+    this.occluders?.dispose();
+    // HalfFloatType requires binary16 storage; avoid silently interpreting float32 bytes as half-floats.
+    this.occluders = new DataTexture(
+      Uint16Array.from(data.heights, (h) => DataUtils.toHalfFloat(h)),
+      data.width,
+      data.height,
+      RedFormat,
+      HalfFloatType,
+    );
+    this.occluders.needsUpdate = true;
+  }
+  setStatic(lights: readonly PhysicalLight[]): void {
+    this.pools.get('static')!.clear();
+    lights.slice(0, CAPACITIES.static).forEach((l, i) => this.put('static', String(i), 0, l));
+    this.dirty = true;
+  }
+  put(pool: RealLightPool, key: string, now: number, light: PhysicalLight, hold = 0, fade = 0.15, ttl?: number): void {
+    const entries = this.pools.get(pool)!;
+    const old = entries.get(key);
+    if (!old && entries.size >= CAPACITIES[pool]) {
+      if (pool === 'kept' || pool === 'source' || pool === 'static') return;
+      entries.delete(entries.keys().next().value!);
+    }
+    entries.set(key, { light, born: old?.born ?? now, seen: now, hold, fade, ttl });
+    this.dirty = true;
+  }
+  pulse(pool: 'flash' | 'explosion', now: number, light: PhysicalLight, hold: number, fade: number): void {
+    const id = this.cursors.get(pool) ?? 0;
+    this.cursors.set(pool, id + 1);
+    this.put(pool, String(id), now, light, hold, fade);
+  }
+  retain(pool: 'source' | 'kept', keys: ReadonlySet<string>): void {
+    for (const key of this.pools.get(pool)!.keys())
+      if (!keys.has(key)) {
+        this.pools.get(pool)!.delete(key);
+        this.dirty = true;
+      }
+  }
+  clearDynamic(): void {
+    for (const [name, pool] of this.pools) if (name !== 'static') pool.clear();
+    this.dirty = true;
+  }
+  clear(): void {
+    for (const p of this.pools.values()) p.clear();
+    this.dirty = true;
+  }
+  update(now: number, renderer: WebGPURenderer, night: number): boolean {
+    this.nodes.nightWeight.value = night;
+    if (!this.nodes.enabled.value) return false;
+    let count = 0,
+      dynamic = false;
+    for (const [pool, entries] of this.pools)
+      for (const [key, entry] of entries) {
+        const { light: l, born, seen, hold, fade, ttl } = entry;
+        const envelope =
+          pool === 'static'
+            ? 1
+            : ttl === undefined
+              ? heldPulseEnvelope(now - born, hold, fade)
+              : Math.min(1, Math.max(0, (ttl - now + seen) / Math.max(ttl * 0.5, 1e-8)));
+        if (now < born) continue;
+        if (envelope <= 0) {
+          entries.delete(key);
+          this.dirty = true;
+          continue;
+        }
+        const gain =
+          (envelope / this.nodes.scale.value) *
+          (l.dayFactor + (1 - l.dayFactor) * night) *
+          flicker(l.seed ?? 0, now, l.flicker);
+        dynamic ||= pool !== 'static' || !!l.flicker;
+        if (!(gain > 0)) continue;
+        for (const attrs of this.attributes) {
+          attrs[0]!.setXYZW(count, ...l.position, l.radius);
+          attrs[1]!.setXYZW(count, ...(l.end ?? l.position), lightReach(l));
+          const intensity = l.initialIntensity && now - born < (l.hotSeconds ?? 0) ? l.initialIntensity : l.intensity;
+          attrs[2]!.setXYZW(count, intensity[0] * gain, intensity[1] * gain, intensity[2] * gain, 0);
+          attrs[3]!.setXYZW(count, l.groundOnly ?? 0, l.occlude === false ? 0 : 1, l.end ? 1 : 0, 0);
+        }
+        count++;
+      }
+    if (!this.dirty && !dynamic && !this.lastDynamic && this.lastNight === night) return false;
+    this.dirty = false;
+    this.lastNight = night;
+    this.lastDynamic = dynamic;
+    const previous = renderer.getRenderTarget(),
+      previousMrt = renderer.getMRT(),
+      alpha = renderer.getClearAlpha();
+    renderer.getClearColor(this.clearColour);
+    const autoClear = renderer.autoClear;
+    renderer.setClearColor(0x000000, 0);
+    renderer.autoClear = true;
+    try {
+      for (let i = 0; i < this.scenes.length; i++) {
+        const mesh = this.meshes[i]!;
+        mesh.count = count;
+        for (const attr of this.attributes[i]!) {
+          attr.clearUpdateRanges();
+          attr.addUpdateRange(0, Math.max(1, count) * 4);
+          attr.needsUpdate = true;
+        }
+        renderer.setRenderTarget(this.targets[i]!);
+        renderer.setMRT(this.nodes.directional.value ? (mesh.material as MeshBasicNodeMaterial).mrtNode : null);
+        renderer.render(this.scenes[i]!, this.camera);
+      }
+    } finally {
+      renderer.setRenderTarget(previous);
+      renderer.setMRT(previousMrt);
+      renderer.autoClear = autoClear;
+      renderer.setClearColor(this.clearColour, alpha);
+    }
+    this.renders++;
+    return true;
+  }
+  dispose(): void {
+    for (const t of this.targets) t.dispose();
+    for (const m of this.meshes) {
+      m.geometry.dispose();
+      (m.material as MeshBasicNodeMaterial).dispose();
+      m.dispose();
+    }
+    for (const s of this.scenes) s.clear();
+    this.occluders?.dispose();
+    this.clear();
+  }
+}

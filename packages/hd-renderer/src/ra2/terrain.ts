@@ -60,6 +60,7 @@ import {
   DEFAULT_ATMOSPHERE_NODES,
   moonlit,
   localLightHeadroom,
+  localSurfaceLight,
   pavedAt,
   puddleNoise,
   sampleLightField,
@@ -887,7 +888,7 @@ function terrainArtSampler(cache: Ra2Cache) {
  * Painted art under the scene's light and nothing else: dry, matt, with the local lights (map light sources, lamps,
  * fires, explosions) from the light field as diffuse irradiance. Cliff walls, and the ground's last stand-in.
  */
-function plainArtMaterial(colour: ShaderNode, nodes: AtmosphereNodes): ArtMaterial {
+function plainArtMaterial(colour: ShaderNode, nodes: AtmosphereNodes, albedo = colour): ArtMaterial {
   const material = new ArtMaterial();
   material.sceneMultiplier = nodes.sceneTerrainMul;
   // The sun and sky see the night-desaturated albedo; local lights (emissive) the full colour.
@@ -895,16 +896,23 @@ function plainArtMaterial(colour: ShaderNode, nodes: AtmosphereNodes): ArtMateri
   material.gloss = float(0);
   material.roughnessNode = float(0.95);
   material.metalnessNode = float(0);
-  material.emissiveNode = localLightHeadroom(
-    sceneLitColour(
-      colour
-        .mul(nodes.sceneLevel)
-        .mul(nodes.referenceLevel)
-        .mul(1 / Math.PI),
-      nodes.sceneTerrainMul,
+  material.emissiveNode = localSurfaceLight(
+    localLightHeadroom(
+      sceneLitColour(
+        colour
+          .mul(nodes.sceneLevel)
+          .mul(nodes.referenceLevel)
+          .mul(1 / Math.PI),
+        nodes.sceneTerrainMul,
+      ),
+      colour.mul(sampleLightField(positionWorld.xz, nodes)).mul(1 / Math.PI),
+      nodes.localLightCap,
     ),
-    colour.mul(sampleLightField(positionWorld.xz, nodes)).mul(1 / Math.PI),
-    nodes.localLightCap,
+    albedo,
+    nodes,
+    positionWorld.xz,
+    positionWorld.y,
+    vec3(0, 1, 0),
   );
   return material;
 }
@@ -919,6 +927,7 @@ function createPlainGround(cache: Ra2Cache): MeshStandardNodeMaterial {
   return plainArtMaterial(
     srgbScale(raw.rgb, terrainGradeAt(cache.mapLight, positionWorld.xz)),
     cache.nodes ?? DEFAULT_ATMOSPHERE_NODES,
+    raw.rgb,
   );
 }
 
@@ -949,12 +958,11 @@ function createMaterials(
   const lower = sample('atlasUv2', 'atlasRect2').colour;
   const upperCover = smoothstep(0.2, 0.6, upper.a);
   const lowerCover = smoothstep(0.2, 0.6, lower.a);
+  const wallAlbedo = mix(mix(color(0x5a5248), lower.rgb, lowerCover), upper.rgb, upperCover);
   const wall = plainArtMaterial(
-    srgbScale(
-      mix(mix(color(0x5a5248), lower.rgb, lowerCover), upper.rgb, upperCover),
-      terrainGradeAt(cache.mapLight, positionWorld.xz),
-    ),
+    srgbScale(wallAlbedo, terrainGradeAt(cache.mapLight, positionWorld.xz)),
     nodes,
+    wallAlbedo,
   );
 
   const ground = new ArtMaterial();
@@ -1304,16 +1312,24 @@ function createMaterials(
   // stay additive: event darkness must not dim an explosion, lamp, or lightning strike's illumination.
   ground.emissiveNode = sceneLitColour(ground.emissiveNode as ShaderNode, nodes.sceneTerrainMul)
     .add(
-      localLightHeadroom(
-        sceneLitColour(
-          albedo
-            .mul(nodes.sceneLevel)
-            .mul(nodes.referenceLevel)
-            .mul(1 / Math.PI),
-          nodes.sceneTerrainMul,
+      localSurfaceLight(
+        localLightHeadroom(
+          sceneLitColour(
+            albedo
+              .mul(nodes.sceneLevel)
+              .mul(nodes.referenceLevel)
+              .mul(1 / Math.PI),
+            nodes.sceneTerrainMul,
+          ),
+          albedo.mul(localLight).mul(1 / Math.PI),
+          nodes.localLightCap,
         ),
-        albedo.mul(localLight).mul(1 / Math.PI),
-        nodes.localLightCap,
+        raw.rgb,
+        nodes,
+        positionWorld.xz,
+        positionWorld.y,
+        vec3(0, 1, 0),
+        float(1).sub(weatherLand),
       ),
     )
     .add(sheen);

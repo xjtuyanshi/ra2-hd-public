@@ -27,6 +27,16 @@ import { EFFECT_TABLE, SMOKE_SYSTEMS, type EffectTableRow, type SmokeSystemRow }
 import { heldPulseEnvelope } from '../lightField';
 import type { Ra2SceneLighting } from '../ra2/sceneLighting';
 
+import {
+  animLightPolicy,
+  animPhysicalLight,
+  animWorld,
+  auxiliaryBeamLights,
+  nativeBeamLight,
+  policyLight,
+  REAL_LIGHT_POLICIES,
+} from '../ra2/realLights';
+
 /**
  * Live effects: the engine's own effect list (src/games/yr/effectsReader.ts on the host side) drawn in two layers.
  *
@@ -418,6 +428,7 @@ export class LiveEffectsDriver {
 
   /** A new snapshot arrived (logic frame `frame`, renderer clock `now` in seconds). */
   push(effects: LiveEffects, frame: number, now: number, wind: Vector3): void {
+    this.pushPhysicalLights(effects, frame, now);
     const generation = ++this.generation;
     if (frame < this.logicFrame) {
       this.anims.clear();
@@ -521,6 +532,97 @@ export class LiveEffectsDriver {
     }
   }
 
+  private physicalEffects: LiveEffects | null = null;
+  private physicalFrame = -1;
+  nukeState = 0;
+  private previousNukeState = 0;
+  private lastNuke: LiveAnim | null = null;
+  private lastNukeTail = -Infinity;
+  private readonly physicalAnims = new Set<string>();
+
+  /** Uses the same capture publication as native art; independent of garnish, HD art and damage-fire card routing. */
+  private pushPhysicalLights(effects: LiveEffects, frame: number, now: number): void {
+    const field = this.effects.physicalLights;
+    if (!field) return;
+    if (frame < this.physicalFrame) {
+      field.clearDynamic();
+      this.physicalAnims.clear();
+      this.lastNuke = null;
+      this.lastNukeTail = -Infinity;
+      this.previousNukeState = 0;
+    }
+    this.physicalFrame = frame;
+    if (this.nukeState === 2 && this.previousNukeState === 1 && this.lastNuke && now - this.lastNukeTail > 2)
+      this.nukeTail(this.lastNuke, now);
+    this.previousNukeState = this.nukeState;
+    const seen = new Set<string>();
+    for (const anim of effects.anims) {
+      const key = `${anim.id}:${anim.uid}:${anim.type}`;
+      seen.add(key);
+      const policy = animLightPolicy(anim.type, undefined, this.logicFps);
+      if (!policy || policy.continuous || this.physicalAnims.has(key) || this.hidden(anim.x, anim.y, anim.z)) continue;
+      const light = animPhysicalLight(anim, policy);
+      if (anim.type === 'NUKETO') {
+        this.lastNuke = anim;
+        field.pulse('explosion', now, light, 0.15, 0.04);
+        this.nukeTail(anim, now + 0.15);
+        continue;
+      }
+      field.pulse(policy.ground > 1 ? 'explosion' : 'flash', now, light, policy.hold ?? 0.1, policy.fade ?? 0.15);
+    }
+    this.physicalAnims.clear();
+    for (const key of seen) this.physicalAnims.add(key);
+    this.physicalEffects = effects;
+    this.framePhysicalLights(now);
+  }
+
+  private nukeTail(anim: LiveAnim, now: number): void {
+    this.lastNukeTail = now;
+    this.effects.physicalLights?.pulse(
+      'explosion',
+      now,
+      animPhysicalLight(anim, { ...REAL_LIGHT_POLICIES.nuke, ground: 4, colour: REAL_LIGHT_POLICIES.fire.colour }),
+      0,
+      2,
+    );
+  }
+
+  private framePhysicalLights(now: number): void {
+    const field = this.effects.physicalLights,
+      effects = this.physicalEffects;
+    if (!field || !effects) return;
+    for (const anim of effects.anims) {
+      if (this.hidden(anim.x, anim.y, anim.z)) continue;
+      const policy = animLightPolicy(anim.type, undefined, this.logicFps);
+      if (policy?.continuous)
+        field.put('kept', `anim:${anim.id}:${anim.uid}`, now, animPhysicalLight(anim, policy), 0, 0, 0.3);
+    }
+    for (const system of effects.particleSystems) {
+      if (system.behaviour !== 'fire' || this.hidden(system.x, system.y, system.z)) continue;
+      const p = animWorld(system);
+      field.put(
+        'kept',
+        `system:${system.id}:${system.uid}`,
+        now,
+        policyLight(REAL_LIGHT_POLICIES.burning, [p[0], p[1] + 0.3, p[2]]),
+        0,
+        0,
+        0.3,
+      );
+    }
+    for (let i = 0; i < (effects.beams?.length ?? 0); i++) {
+      const beam = effects.beams![i]!;
+      if (this.hidden(beam.target.x, beam.target.y, beam.target.z)) continue;
+      field.put('flash', `beam:${i}`, now, nativeBeamLight(beam), 0, 0.08, 0.08);
+    }
+    for (const beam of auxiliaryBeamLights(effects)) {
+      // Match LiveBeams' native shroud gates, including its deliberately ungated auxiliary links.
+      const [x, y, z] = beam.light.position;
+      if (!beam.key.startsWith('link:') && this.hidden(x * 256, z * 256, (y / LEVEL_HEIGHT) * 104)) continue;
+      field.put('flash', beam.key, now, beam.light, 0, 0.08, 0.08);
+    }
+  }
+
   /** Bounded, non-accumulating sky flash: multiple strikes never wash the whole frame white. */
   skyFlash(now: number): number {
     return this.sceneEvent === 'storm' ? 0.12 * heldPulseEnvelope(now - this.lastStormStrike, 0.08, 0.25) : 0;
@@ -561,6 +663,7 @@ export class LiveEffectsDriver {
    * in enhanced style. Smoke systems are drawn as native particles (smokeCards).
    */
   frame(now: number, wind: Vector3): void {
+    this.framePhysicalLights(now);
     const enhancedBeams = this.garnishEnabled && this.style === 'enhanced';
     if (this.effects.enhancedBeams !== enhancedBeams) {
       this.effects.enhancedBeams = enhancedBeams;

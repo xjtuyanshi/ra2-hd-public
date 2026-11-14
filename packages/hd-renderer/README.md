@@ -381,6 +381,54 @@ default; `LiveViewOptions.oreGlints: false` / `crystalSparkle`, sandbox `glints=
 `hd-glints=off` / `hd-sparkle=0..1` change that. Water glints (kind 0 of the same pass) are not drawn: HD water has
 its own glitter.
 
+## Experimental physical local light (`hd-light=1`)
+
+Opt in through the development game bridge with `?hd=1&hd-light=1`, or the deterministic live/replay bench with
+`?fx=EXPLOLRG,FIRE02&light=real&hours=22.5`. The bench's existing `bolts=`, `bldgs=`, `objects=`, `hours=` and
+replay publications use the same path. `LiveView.create({ ..., realLight: true })` selects the graphs before any
+materials are built. Without the option, no physical field, extra receiver uniforms or physical instance buffers
+are allocated. Parent shader/buffer fingerprints are pinned in `tests/fixtures/realLightDefault.json` (three r186,
+parent 308aceb); only three's process-global `NodeBuffer` identifier is canonicalized in shader text.
+
+An opted-in view supports same-frame A/B without resetting its clock or replacing any effect geometry:
+
+```js
+window.__fx.live.setRealLight(false); // Existing local-light response.
+window.__fx.live.render();
+window.__fx.live.setRealLight(true); // Physical response on the same deterministic frame.
+window.__fx.live.render();
+```
+
+`setRealLight` returns false on a view created without `realLight`; enabling new graphs requires creating an
+opted-in view. `src/realLight.ts` owns generic point and finite-segment primitives, independent bounded pools,
+CPU twins, source-radius inverse-square falloff, and the smooth `(1-t^4)^2` window. Cutoff is conservatively derived
+from unwindowed scalar luminance 0.006 noon units, so it bounds every receiver normal; it is larger than the
+visible ground footprint. Segment intensity is per unit length, with an analytic finite-line integral and a
+closest-point direction. The field stores RGB S and luminance-weighted direction D in two RGBA16F attachments at
+ground height and at 1.25 cells (the upper layer has half the resolution). One-light reconstruction is exact
+Lambert; opposed lights retain half ambient. Without MRT blending support it draws scalar Lambert ground only;
+without half-float rendering it uses scaled RGBA8. These fallbacks still require GPU validation.
+
+Local illumination uses the art's own ungraded albedo, with an irradiance-only soft knee (1.2 by day, 2.5 by night),
+then the existing display transform. The physical branch bypasses object-light desaturation and per-pixel headroom
+clamps. Sprites use material-atlas normals, camera-facing fallback, ground projection and height interpolation;
+voxels use world normals/positions. Water and participating media take S. RA2 source colours, energies, heights and
+capture-to-light conversions live in `src/ra2/realLights.ts`, shared by main-thread and Worker-hosted views.
+
+Night engine lamps replace positive grade sources, while negative sources retain the engine formula. Their
+brightness is matched at one quarter LightVisibility after the knee, with a visible lamp-art head within one cell
+or a 1.25-cell fallback and a short post segment. Daytime grade remains unchanged. Physical static/kept sources
+contribute zero by day; transient events retain a small daytime share. Invented HD poles/window pools and the idle
+Tesla pool are absent while physical mode is active. Existing reactor emissive art and overlays remain; their ground
+emission uses physical source-sized falloff. Native anim/beam geometry, effect clocks and core colours are unchanged.
+
+This is experimental, not visual acceptance. Occlusion marching, self-lit-pixel cluster extraction, validated
+Tesla/Prism charge-frame policy, new core/bloom budgets and rendered M1–M10/cost acceptance remain unfinished.
+`LightOccluders` already defines row-major top heights at two texels/cell, uploaded as R16F with explicit ownership;
+terrain levels and visible library-building top heights fill it, but there is no occlusion march yet. Elevation-heavy maps, height-layer approximation, native beam endpoint alignment,
+unit texture/hue, same-frame toggle pixels and fallback GPUs remain **UNVERIFIED**. Asset-free CPU and shader
+construction tests do not establish GPU pixels or live-match performance.
+
 ## Night, weather and map light sources
 
 Maps are staged from their own `[Lighting]` (`RenderMap.atmosphere`: `sidecarAtmosphere` recomputes it from the raw

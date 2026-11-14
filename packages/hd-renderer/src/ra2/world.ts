@@ -100,6 +100,7 @@ function surfaceTexture(surface: Uint8Array, width: number, height: number): Dat
 export async function loadRa2World(
   base: string,
   options: {
+    realLight?: boolean;
     extraObjects?: (manifest: Ra2Cache['manifest']) => MapObject[];
     /** Immutable per-world voxel refinement; defaults are captured before asynchronous resource loading starts. */
     voxelShape?: Readonly<VoxelShape>;
@@ -118,7 +119,7 @@ export async function loadRa2World(
     extraHouses?: Record<string, Hsv>;
   } & Ra2CacheOptions = {},
 ): Promise<HdWorld> {
-  const nodes = options.nodes ?? new AtmosphereNodes();
+  const nodes = options.nodes ?? new AtmosphereNodes({ realLight: options.realLight });
   const voxelLook = options.voxelLook ?? 'engine';
   const smoothVoxel = smoothVoxelOptions(options.smoothVoxel);
   const projections = options.voxelProjection ? voxelProjectionLibrary(options.voxelProjection, nodes) : undefined;

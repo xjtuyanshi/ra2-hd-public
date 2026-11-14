@@ -65,7 +65,7 @@ export class Mist {
     // lamps' glow around them.
     const colour = this.tint
       .mul(this.nodes.sceneBrightness.mul(mix(float(0.45), float(0.26), this.nodes.night)))
-      .add(sampleLightField(world.xz, this.nodes).div(this.nodes.referenceLevel).mul(0.25));
+      .add(sampleLightField(world.xz, this.nodes, world.y).div(this.nodes.referenceLevel).mul(0.25));
     return vec4(mix(hdr.rgb, colour, density), hdr.a);
   }
 }

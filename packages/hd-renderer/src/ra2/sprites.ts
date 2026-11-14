@@ -61,6 +61,7 @@ import {
   moonlit,
   LOCAL_LIGHT_HEIGHT_FALLOFF,
   localLightHeadroom,
+  localSurfaceLight,
   objectLightAt,
   pavedAt,
   puddleNoise,
@@ -832,6 +833,19 @@ class SpriteGraph {
         const own: ShaderNode = aAnchor.xz
           .add(foundationOrigin)
           .add(clamp(projected.sub(foundationOrigin), inset, max(aOcclusion.xy.sub(inset), inset)));
+        const physicalNormal: ShaderNode | undefined = nodes.realLight
+          ? features.materials
+            ? select(
+                flat,
+                vec3(0, 1, 0),
+                mix(
+                  this.toCamera,
+                  sampleMaterial(materialPage, atlasUv).normal,
+                  sampleMaterial(materialPage, atlasUv).has,
+                ).normalize(),
+              )
+            : select(flat, vec3(0, 1, 0), this.toCamera)
+          : undefined;
         const local: ShaderNode = objectLightAt(ground, own, building, nodes)
           .div(referenceLevel)
           .mul(exp(height.mul(-LOCAL_LIGHT_HEIGHT_FALLOFF)));
@@ -844,7 +858,16 @@ class SpriteGraph {
           return select(
             isUnlit.greaterThan(0.5),
             c.mul(look.unlitBaseLight),
-            eventBase.add(localLightHeadroom(eventBase, lit.mul(local), nodes.localLightCap)),
+            eventBase.add(
+              localSurfaceLight(
+                localLightHeadroom(eventBase, lit.mul(local), nodes.localLightCap),
+                c,
+                nodes,
+                ground,
+                height.add(aAnchor.y),
+                physicalNormal ?? vec3(0, 1, 0),
+              ),
+            ),
           );
         };
         // Lit windows at night: warm amber panes (85 %) or a dimmer cool white (15 %) by the window's variant, each pane
@@ -859,6 +882,7 @@ class SpriteGraph {
           const upright = select(flat, float(0), float(1));
           glow = tint.mul(brightness).mul(mask.r).mul(step(mask.g, 0.85)).mul(windowGain).mul(upright);
         }
+        if (nodes.realLight) glow = glow.mul(float(1).sub(nodes.realLight.enabled));
         let art: ShaderNode;
         let lit: ShaderNode;
         let litAlpha: ShaderNode;

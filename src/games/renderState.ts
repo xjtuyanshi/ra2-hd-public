@@ -85,6 +85,8 @@ export interface GameRenderLighting {
   override: [number, number, number] | null;
   /** Event currently selecting the palette; recovery can retain changed ambient with no palette event. */
   event: 'storm' | 'nuke' | 'dominator' | 'timewarp' | null;
+  /** Validated native flash phase, when nonzero. */
+  nukeState?: number;
   storm?: {
     active: boolean;
     /** A positive countdown is pending, without implying active storm lighting. */

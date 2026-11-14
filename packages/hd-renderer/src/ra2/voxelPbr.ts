@@ -41,7 +41,13 @@ import {
   vec3,
   vec4,
 } from 'three/tsl';
-import { DEFAULT_ATMOSPHERE_NODES, moonlit, objectLight, type AtmosphereNodes } from '../atmosphere';
+import {
+  DEFAULT_ATMOSPHERE_NODES,
+  moonlit,
+  objectLight,
+  physicalSurfaceLight,
+  type AtmosphereNodes,
+} from '../atmosphere';
 import type { ShaderNode } from '../tsl';
 import { finishSceneLighting } from '../lighting';
 import { objectLevelAt, paletteGrade, paletteNodes, srgbScale, type MapLightGrade } from './mapLighting';
@@ -454,14 +460,32 @@ function createGraph(
   // daylight fill or second exposure factor belongs here. Metal energy conservation and GGX remain physical.
   material.colorNode = mix(moonlit(lit, nodes), lit, house);
   // Ground light fades with the model's height above the ground (vpl.ts meshLocalLight).
-  const local: ShaderNode = objectLight(positionWorld.xz, nodes)
+  const legacyLocal: ShaderNode = objectLight(positionWorld.xz, nodes)
     .mul(1 / Math.PI)
     .mul(float(0.55).add(normalWorld.y.max(0).mul(0.45)))
     .mul(meshLocalLight);
-  material.emissiveNode = lit
+  const local: ShaderNode = nodes.realLight
+    ? mix(
+        legacyLocal,
+        physicalSurfaceLight(nodes, positionWorld.xz, positionWorld.y, normalWorld).mul(1 / Math.PI),
+        nodes.realLight.enabled,
+      )
+    : legacyLocal;
+  const legacyEmission = lit
     .mul(local.add(params.a.mul(state.lightStrength)))
     .mul(ao)
     .mul(state.brightness);
+  material.emissiveNode = nodes.realLight
+    ? mix(
+        legacyEmission,
+        albedo
+          .mul(local)
+          .add(lit.mul(params.a.mul(state.lightStrength)))
+          .mul(ao)
+          .mul(state.brightness),
+        nodes.realLight.enabled,
+      )
+    : legacyEmission;
   const reflection: ShaderNode = positionViewDirection.negate().reflect(normalView);
   const direction: ShaderNode = mix(reflection, normalView, roughness.pow(4))
     .normalize()

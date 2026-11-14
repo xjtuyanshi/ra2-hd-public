@@ -197,6 +197,7 @@ export function decodeYrSceneLighting(
     tint: [tint[0] / 100, tint[1] / 100, tint[2] / 100],
     override: override && [override[0] / 100, override[1] / 100, override[2] / 100],
     event,
+    ...(state.nukeState ? { nukeState: state.nukeState } : {}),
     storm: {
       active,
       pending,
