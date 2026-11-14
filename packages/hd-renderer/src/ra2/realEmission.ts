@@ -7,9 +7,10 @@ import type { EmissivePrimitive } from '../realEmissive';
 import { animWorld, animLightPolicy } from './realLights';
 // LiveView.frame keeps zoom=1: 60/sqrt(2) engine pixels * device scale 2.5 = 106.07 device px/world unit.
 // DPR is already in bufferScale (a cell is 150x75 device px); do not multiply it twice.
-// 0.18 world = 19.1 px strand. The emissive core is 0.075*1.4*0.72*106.07 = 8.0 saturated px,
-// and its soft outer tail spans 0.075*2.5*106.07 = 19.9 px. Bolts keep their existing dimensions.
-export const REAL_LASER_STYLE = { strandWidth: 0.18, emissionWidth: 0.075, coreWidth: 1.4 } as const;
+// Live SOV07TMD night at 1:1, the original Prism tower beam is 16-18 px with its glow and 11-12 px of saturated core;
+// an 8 px calibration measured 8-11 px core and 11-16 px glow live. So: 0.22 world = 23.3 px strand, emissive core
+// 0.11*1.4*0.72*106.07 = 11.8 saturated px, soft outer tail 0.11*2.5*106.07 = 29.2 px. Bolts keep their dimensions.
+export const REAL_LASER_STYLE = { strandWidth: 0.22, emissionWidth: 0.11, coreWidth: 1.4 } as const;
 export const EMISSIVE_EVENTS = { seconds: 0.15, dayEV: 0.25, nightEV: 0.5, headDistance: 0.9, headRise: 1.5 } as const;
 export function eventExposureKick(age: number, night: number): number {
   if (age < 0 || age >= EMISSIVE_EVENTS.seconds) return 0;

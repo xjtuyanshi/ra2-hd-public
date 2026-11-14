@@ -147,12 +147,12 @@ describe('round 6 A: the ground footprint follows the camera ray, independently 
 });
 
 describe('round 6 B: faithful laser widths and colour', () => {
-  it('has an 8px saturated core and 16-20px soft outer footprint at the measured 2.5 device scale', () => {
+  it('has a 12px saturated core and a strand of at least the original 16-18px at the measured 2.5 device scale', () => {
     const pixels = PIXELS_PER_CELL_EDGE * 2.5;
     expect(REAL_LASER_STYLE.strandWidth * pixels).toBeGreaterThanOrEqual(16);
-    expect(REAL_LASER_STYLE.strandWidth * pixels).toBeLessThanOrEqual(20);
-    expect(REAL_LASER_STYLE.emissionWidth * EMISSIVE_BUDGET.outerWidth * pixels).toBeLessThanOrEqual(20);
-    expect(REAL_LASER_STYLE.emissionWidth * REAL_LASER_STYLE.coreWidth * 0.72 * pixels).toBeCloseTo(8, 0);
+    expect(REAL_LASER_STYLE.strandWidth * pixels).toBeLessThanOrEqual(25);
+    expect(REAL_LASER_STYLE.emissionWidth * EMISSIVE_BUDGET.outerWidth * pixels).toBeLessThanOrEqual(30);
+    expect(REAL_LASER_STYLE.emissionWidth * REAL_LASER_STYLE.coreWidth * 0.72 * pixels).toBeCloseTo(12, 0);
     const layer = new BeamLayer(uniform(new Vector3(1, 0, 0)), uniform(new Vector3(0, 1, 0)), uniform(0), true);
     layer.laserStyle = REAL_LASER_STYLE;
     layer.realEmissive = new RealEmissiveLayer();

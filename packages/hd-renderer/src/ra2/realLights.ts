@@ -106,12 +106,13 @@ export const REAL_LIGHT_POLICIES = {
     profile: 'gaussian',
   },
   // Chrono warps and the Chrono Legionnaire's erasure pulse repeatedly on one spot: a 6-cell pool lit a 5-cell
-  // patch of night grass for 20 s around one erased tank (live SOV07TMD, frames 450-1050). Now a small cool glow.
+  // patch of night grass for 20 s around one erased tank (live SOV07TMD, frames 450-1050). At 2 cells and 0.5 it still
+  // read as a flat white pool round the tank where the original shows none (round-6 review). Now a faint cool glow.
   chrono: {
-    reach: 2,
+    reach: 1.4,
     height: 0.5,
-    radius: 0.75,
-    ground: 0.5,
+    radius: 0.5,
+    ground: 0.18,
     colour: LIGHT_COLOURS.chrono,
     day: 0.15,
     profile: 'gaussian',
