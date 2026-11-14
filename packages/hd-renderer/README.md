@@ -1396,6 +1396,10 @@ documentation/naming of those generated assets, not shader restrictions. `ra2-as
   wall quads not, which showed the cells as dark facets on the rock). Every shore of a snow map is a hard one
   (`BEACHLESS_THEATERS` in `ra2/terrain.ts`): its shore tiles are ice, and the sand beach drew an orange line and a
   turquoise glow around every floe. The look on beaches of the other theatres, on open water and on the lake-bed path is unchanged.
+  The cliff-foot contact shading darkens water only (`contactWater` in `ra2/terrain.ts`, the water mask's own
+  coverage), on every map and look. On land in front of a cliff the original paints the cliff face itself, which the
+  mesh draws partly as ground triangles and partly as unshaded wall quads; shading the ground there drew translucent
+  dark polygons with straight isometric edges and light seams along the wall's foot over every inland cliff face.
   Optional `materials.json.waterDetail` supplies sRGB
   apparent water colour and alpha roughness/glitter weight over the composite's area (same aspect, any resolution).
   It shares the mask's top-down UVs and uses linear/mipmap filtering with clamped edges; load failures warn and leave it unused.

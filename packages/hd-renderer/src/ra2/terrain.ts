@@ -569,9 +569,13 @@ const BEACHLESS_THEATERS: ReadonlySet<string> = new Set(['snow']);
  * Contact shading at the feet of cliffs and raised ground (no sun shadow: original maps take none, see the mesh's
  * castShadow). For each ground vertex, every one of eight directions contributes its strongest rise within
  * CONTACT_REACH cells: full at CONTACT_RISE levels or more, fading with distance over CONTACT_FALLOFF cells. The mean,
- * times CONTACT_STRENGTH, darkens the ground (never below CONTACT_FLOOR), so water and shore at a cliff base read deeper
- * and the cliff stands on its base instead of floating over smeared shore art; open ground and plateau tops keep
- * exactly their art. A straight cliff darkens the ground at its foot by about a third, one cell out by a sixth.
+ * times CONTACT_STRENGTH, darkens the ground (never below CONTACT_FLOOR), so water at a cliff base reads deeper; open
+ * ground and plateau tops keep exactly their art. A straight cliff darkens the water at its foot by about a third, one
+ * cell out by a sixth. The darkening applies to water only (createMaterials, `contactWater`); `nearCliff` and
+ * `sheltered` read the attribute everywhere. On land the original paints the cliff face itself on the cells in front
+ * of the height step, which the mesh draws partly as ground triangles (shaded here) and partly as wall quads (never
+ * shaded): the darkened ground showed the cell staircase as translucent dark polygons with straight isometric edges
+ * and light seams along the wall's foot, over every inland cliff face (XMP27T8, Build 12 and 13).
  */
 const CONTACT_REACH = 2;
 const CONTACT_RISE = 1.5;
@@ -1037,6 +1041,10 @@ function createMaterials(
   let mirrorAtlas: MirrorAtlas | null = null;
   // Share of the cliff-foot contact shading dropped near painted water (art tone); null where no path sets it.
   let contactRelief: ShaderNode | null = null;
+  // Where the cliff-foot contact shading applies: water only (see contactShade). Land at a cliff foot is where the
+  // original paints the cliff face itself; darkening it there drew straight-edged dark polygons against the walls.
+  // The per-tile atlas fallback below sets it too; createPlainGround never shaded contact.
+  let contactWater: ShaderNode = float(0);
   const map = cache.terrainMap;
   if (map) {
     // Whole-map terrain: depth, foam and wet sand come from the signed shore distance, reflections from a mirrored
@@ -1077,6 +1085,7 @@ function createMaterials(
     const shore: ShaderNode = waterline ? waterline.shore : deepened;
     ground.cloudShadow = nodes.alive.shadowWith(mix(float(1), nodes.alive.waterBody, waterness));
     weatherLand = float(1).sub(waterness);
+    contactWater = waterness;
     let reflection: { colour: ShaderNode; coverage: ShaderNode } | undefined;
     if (lakeBed) {
       const levels = selectWaterMirrorLevels(waterLevels);
@@ -1323,6 +1332,7 @@ function createMaterials(
     const waterness: ShaderNode = texture(cache.waterMask, uv).r;
     ground.cloudShadow = nodes.alive.shadowWith(mix(float(1), nodes.alive.waterBody, waterness));
     weatherLand = float(1).sub(waterness);
+    contactWater = waterness;
     const body = albedo.mul(float(1).sub(surface.fresnel.mul(0.8)));
     albedo = mix(albedo, body, waterness);
     ground.emissiveNode = nodes.alive
@@ -1353,7 +1363,7 @@ function createMaterials(
     });
     return value;
   })();
-  albedo = albedo.mul(contactRelief ? mix(contact, float(1), contactRelief) : contact);
+  albedo = albedo.mul(mix(float(1), contactRelief ? mix(contact, float(1), contactRelief) : contact, contactWater));
   ground.colorNode = moonlit(albedo, nodes);
   // Dry original art has no sheen of its own; wet ground and puddles reflect the sun.
   ground.gloss = gloss;
