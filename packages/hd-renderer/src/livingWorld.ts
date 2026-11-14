@@ -1,6 +1,10 @@
+export type AlivePreset = 'soft' | 'deep';
+
 /** Opt-in presentation only; all distances are cells and all times are renderer seconds. */
 export interface AliveOptions {
   clouds: boolean;
+  /** Cloud field shape and core depth; `soft` is the reviewed default, `deep` the stronger opt-in variant. */
+  preset: AlivePreset;
   wind: boolean;
   cloud: number;
   sway: number;
@@ -12,6 +16,7 @@ export type AliveChange = boolean | Partial<AliveOptions>;
 
 export const ALIVE_DEFAULTS: Readonly<AliveOptions> = Object.freeze({
   clouds: false,
+  preset: 'soft',
   wind: false,
   cloud: 1,
   sway: 1,
@@ -38,14 +43,58 @@ export const ALIVE = Object.freeze({
   heightPower: 1.4,
 });
 
+/** The noise lattice, threshold and core depth that define a cloud look; shared by the CPU reference and shader. */
+export interface CloudShape {
+  scale: number;
+  largeScale: number;
+  edgeLow: number;
+  edgeHigh: number;
+  darkening: number;
+  fineWeight: number;
+  stretch: number;
+}
+
+/**
+ * `soft` keeps the reviewed field (13-cell patches, ~2.7-cell edge, 22% core). `deep` is for small/phone views
+ * (about ten cells across), where soft patches are larger than the frame and read as overall dimming: 6/14-cell
+ * lattices give patches of about seven cells with lit gaps inside one view, a 0.04..0.16 threshold tightens the edge
+ * to about one cell, and the core darkens by 33%. Drift, morph, tint and water weights are shared.
+ */
+export const ALIVE_CLOUD_SHAPES: Readonly<Record<AlivePreset, Readonly<CloudShape>>> = Object.freeze({
+  soft: Object.freeze({
+    scale: ALIVE.cloudScale,
+    largeScale: ALIVE.cloudLargeScale,
+    edgeLow: ALIVE.cloudEdgeLow,
+    edgeHigh: ALIVE.cloudEdgeHigh,
+    darkening: ALIVE.cloudDarkening,
+    fineWeight: ALIVE.cloudFineWeight,
+    stretch: ALIVE.cloudStretch,
+  }),
+  deep: Object.freeze({
+    scale: 6,
+    largeScale: 14,
+    edgeLow: 0.04,
+    edgeHigh: 0.16,
+    darkening: 0.33,
+    fineWeight: 0.75,
+    stretch: 1.35,
+  }),
+});
+
 const cloudTintLuma = 0.98 * 0.2126 + 0.99 * 0.7152 + 1.01 * 0.0722;
 /** Rec.709-normalized cool tint; neutral gaps and faded clouds must not inherit the full tint. */
 export const ALIVE_CLOUD_TINT = Object.freeze([0.98, 0.99, 1.01].map((v) => v / cloudTintLuma));
 
 /** CPU reference for the shader's palette-domain RGB multiplier (debug retains the untinted grey value). */
-export function cloudShadowColour(coverage: number, scale = 1, dayWeight = 1, weight = 1): number[] {
-  const grey = 1 - coverage * scale * dayWeight * ALIVE.cloudDarkening;
-  const tintWeight = Math.min(1, Math.max(0, (1 - grey) / ALIVE.cloudDarkening));
+export function cloudShadowColour(
+  coverage: number,
+  scale = 1,
+  dayWeight = 1,
+  weight = 1,
+  shape: Readonly<CloudShape> = ALIVE_CLOUD_SHAPES.soft,
+): number[] {
+  const grey = 1 - coverage * scale * dayWeight * shape.darkening;
+  const tintWeight = Math.min(1, Math.max(0, (1 - grey) / shape.darkening));
   return ALIVE_CLOUD_TINT.map((tint) => mix(1, grey * (1 + (tint - 1) * tintWeight), weight));
 }
 
@@ -55,8 +104,10 @@ const bounded = (value: number | undefined, fallback: number, max: number) =>
 export function resolveAlive(change: AliveChange, previous: Readonly<AliveOptions> = ALIVE_DEFAULTS): AliveOptions {
   if (typeof change === 'boolean')
     return { ...previous, clouds: change, wind: false, debugCloud: change && previous.debugCloud };
+  const preset = change.preset;
   return {
     clouds: change.clouds ?? previous.clouds,
+    preset: preset === 'soft' || preset === 'deep' ? preset : previous.preset,
     wind: change.wind ?? previous.wind,
     cloud: bounded(change.cloud, previous.cloud, 2),
     sway: bounded(change.sway, previous.sway, 3),
@@ -73,6 +124,7 @@ export function parseAliveParams(params: URLSearchParams, flag = 'alive'): Alive
   };
   return resolveAlive({
     clouds: params.get(flag) === '1',
+    preset: params.get('alive-preset')?.trim() as AlivePreset | undefined,
     wind: params.get(flag) === '1' && params.get('alive-wind') === '1',
     cloud: number('alive-cloud'),
     sway: number('alive-sway'),
@@ -129,19 +181,26 @@ export function aliveDrift(seconds: number, direction: number, speed = 1): [numb
 }
 
 /** Broad clear gaps and full patches, with a slow sub-cell evolution in addition to advection. */
-export function cloudCoverage(x: number, z: number, seconds: number, direction: number, speed = 1): number {
+export function cloudCoverage(
+  x: number,
+  z: number,
+  seconds: number,
+  direction: number,
+  speed = 1,
+  shape: Readonly<CloudShape> = ALIVE_CLOUD_SHAPES.soft,
+): number {
   const [dx, dz] = aliveDrift(seconds, direction, speed);
   const t = seconds * speed;
   // Stretch along the wind, then blend two lattices: irregular edges without a third noise evaluation.
-  const along = ((x - dx) * Math.cos(direction) + (z - dz) * Math.sin(direction)) / ALIVE.cloudStretch;
+  const along = ((x - dx) * Math.cos(direction) + (z - dz) * Math.sin(direction)) / shape.stretch;
   const across = -(x - dx) * Math.sin(direction) + (z - dz) * Math.cos(direction);
-  const mx = (Math.sin(t * 0.07) * ALIVE.cloudMorph) / ALIVE.cloudScale;
-  const mz = (Math.cos(t * 0.09) * ALIVE.cloudMorph) / ALIVE.cloudScale;
+  const mx = (Math.sin(t * 0.07) * ALIVE.cloudMorph) / shape.scale;
+  const mz = (Math.cos(t * 0.09) * ALIVE.cloudMorph) / shape.scale;
   const n =
-    aliveGradientNoise(along / ALIVE.cloudScale + mx, across / ALIVE.cloudScale + mz) * ALIVE.cloudFineWeight +
-    aliveGradientNoise(along / ALIVE.cloudLargeScale + 17.2 - mz, across / ALIVE.cloudLargeScale + 9.4 + mx) *
-      (1 - ALIVE.cloudFineWeight);
-  return smooth(Math.min(1, Math.max(0, (n - ALIVE.cloudEdgeLow) / (ALIVE.cloudEdgeHigh - ALIVE.cloudEdgeLow))));
+    aliveGradientNoise(along / shape.scale + mx, across / shape.scale + mz) * shape.fineWeight +
+    aliveGradientNoise(along / shape.largeScale + 17.2 - mz, across / shape.largeScale + 9.4 + mx) *
+      (1 - shape.fineWeight);
+  return smooth(Math.min(1, Math.max(0, (n - shape.edgeLow) / (shape.edgeHigh - shape.edgeLow))));
 }
 
 export function aliveDayWeight(night: number, overcast: number, airless = false): number {

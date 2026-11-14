@@ -3,6 +3,7 @@ import { AtmosphereNodes } from '../src/atmosphere';
 import {
   ALIVE,
   ALIVE_DEFAULTS,
+  ALIVE_CLOUD_SHAPES,
   ALIVE_CLOUD_TINT,
   aliveDayWeight,
   aliveDrift,
@@ -29,6 +30,7 @@ describe('living-world opt-in parameters', () => {
     const params = new URLSearchParams('hd-alive=1&alive-cloud=.3&alive-sway=1.5&alive-speed=.5');
     expect(parseAliveParams(params, 'hd-alive')).toEqual({
       clouds: true,
+      preset: 'soft',
       wind: false,
       debugCloud: false,
       cloud: 0.3,
@@ -51,6 +53,7 @@ describe('living-world opt-in parameters', () => {
   it('bounds tunables, preserves explicit zero and ignores empty/nonfinite values', () => {
     expect(parseAliveParams(new URLSearchParams('alive=1&alive-cloud=0&alive-sway=-1&alive-speed=0'))).toEqual({
       clouds: true,
+      preset: 'soft',
       wind: false,
       debugCloud: false,
       cloud: 0,
@@ -179,6 +182,104 @@ describe('deterministic cloud field', () => {
     expect(median(edges)).toBeLessThanOrEqual(3);
     expect(median(chords)).toBeGreaterThanOrEqual(8);
     expect(median(chords)).toBeLessThanOrEqual(12);
+  });
+
+  it('selects the deep preset only explicitly and keeps it across toggles', () => {
+    expect(ALIVE_DEFAULTS.preset).toBe('soft');
+    expect(parseAliveParams(new URLSearchParams('hd-alive=1&alive-preset=deep'), 'hd-alive')).toMatchObject({
+      clouds: true,
+      preset: 'deep',
+    });
+    expect(parseAliveParams(new URLSearchParams('alive-preset=deep'))).toMatchObject({ clouds: false, preset: 'deep' });
+    for (const value of ['', 'DEEP', 'hard', '1']) {
+      expect(parseAliveParams(new URLSearchParams(`alive=1&alive-preset=${value}`)).preset).toBe('soft');
+    }
+    const deep = resolveAlive({ clouds: true, preset: 'deep', cloud: 0.8 });
+    expect(resolveAlive(false, deep)).toMatchObject({ clouds: false, preset: 'deep', cloud: 0.8 });
+    expect(resolveAlive({ preset: 'bogus' as never }, deep).preset).toBe('deep');
+    expect(resolveAlive({ preset: 'soft' }, deep).preset).toBe('soft');
+  });
+
+  it('keeps the soft preset identical to the reviewed constants', () => {
+    const soft = ALIVE_CLOUD_SHAPES.soft;
+    expect([
+      soft.scale,
+      soft.largeScale,
+      soft.edgeLow,
+      soft.edgeHigh,
+      soft.darkening,
+      soft.fineWeight,
+      soft.stretch,
+    ]).toEqual([
+      ALIVE.cloudScale,
+      ALIVE.cloudLargeScale,
+      ALIVE.cloudEdgeLow,
+      ALIVE.cloudEdgeHigh,
+      ALIVE.cloudDarkening,
+      ALIVE.cloudFineWeight,
+      ALIVE.cloudStretch,
+    ]);
+    for (const [x, z, t] of [
+      [3, 7, 0],
+      [-40, 12, 5.5],
+      [91, -63, 13],
+    ] as const) {
+      expect(cloudCoverage(x, z, t, 0.6, 1, soft)).toBe(cloudCoverage(x, z, t, 0.6));
+    }
+    expect(cloudShadowColour(1, 1, 1, 1, soft)).toEqual(cloudShadowColour(1));
+  });
+
+  it('gives deep clouds a 0.67 core, ~1-cell edges and phone-sized patches with lit gaps', () => {
+    const deep = ALIVE_CLOUD_SHAPES.deep;
+    let covered = 0,
+      totalDarkening = 0,
+      core = 1;
+    for (let x = -200; x < 200; x++)
+      for (let z = -200; z < 200; z++) {
+        const factor = 1 - cloudCoverage(x, z, 4, 0.6, 1, deep) * deep.darkening;
+        if (factor < 0.97) covered++;
+        totalDarkening += 1 - factor;
+        core = Math.min(core, factor);
+      }
+    // Measured 35.2% covered, 9.2% mean darkening, core 0.67.
+    expect(covered / 160000).toBeGreaterThanOrEqual(0.3);
+    expect(covered / 160000).toBeLessThanOrEqual(0.4);
+    expect(totalDarkening / 160000).toBeLessThanOrEqual(0.1);
+    expect(core).toBeCloseTo(0.67, 12);
+    const luminance = (c: readonly number[]) => c[0]! * 0.2126 + c[1]! * 0.7152 + c[2]! * 0.0722;
+    expect(luminance(cloudShadowColour(1, 1, 1, 1, deep))).toBeCloseTo(0.67, 12);
+    expect(cloudShadowColour(0, 1, 1, 1, deep)).toEqual([1, 1, 1]);
+    const edges: number[] = [],
+      chords: number[] = [];
+    for (const axis of [0, 1])
+      for (let row = -80; row < 80; row += 2) {
+        const sample = (p: number) =>
+          axis ? cloudCoverage(row, p, 0, 0.6, 1, deep) : cloudCoverage(p, row, 0, 0.6, 1, deep);
+        let previous = sample(-100),
+          edgeStart: number | undefined,
+          chordStart: number | undefined;
+        for (let i = 1; i <= 2000; i++) {
+          const p = -100 + i * 0.1,
+            c = sample(p);
+          if ((previous <= 0.05 && c > 0.05) || (previous >= 0.95 && c < 0.95)) edgeStart = p;
+          if (edgeStart !== undefined && ((previous < 0.95 && c >= 0.95) || (previous > 0.05 && c <= 0.05))) {
+            edges.push(p - edgeStart);
+            edgeStart = undefined;
+          }
+          if (previous <= 0.5 && c > 0.5) chordStart = p;
+          if (chordStart !== undefined && previous > 0.5 && c <= 0.5) {
+            chords.push(p - chordStart);
+            chordStart = undefined;
+          }
+          previous = c;
+        }
+      }
+    const median = (values: number[]) => values.sort((a, b) => a - b)[Math.floor(values.length / 2)]!;
+    // Measured: 1.0-cell edge, 4.4-cell chord (soft: 2.7 and 8.1).
+    expect(median(edges)).toBeGreaterThanOrEqual(0.7);
+    expect(median(edges)).toBeLessThanOrEqual(1.4);
+    expect(median(chords)).toBeGreaterThanOrEqual(3.5);
+    expect(median(chords)).toBeLessThanOrEqual(6);
   });
 
   it('reduces water darkening and its tint together, keeping exact identity while off', () => {
@@ -312,6 +413,35 @@ describe('renderer-local living-world uniforms', () => {
       neutral();
     } finally {
       nodes.dispose();
+    }
+  });
+
+  it('switches the shader shape and core with the preset, and mirrors copy it', () => {
+    const nodes = new AtmosphereNodes();
+    const mirror = new AtmosphereNodes();
+    try {
+      const alive = nodes.alive;
+      alive.set({ clouds: true, preset: 'deep' });
+      alive.update(3, 0.6, 0, 0, false);
+      expect(alive.cloudStrength.value).toBeCloseTo(0.33, 12);
+      expect(alive.cloudDarkening.value).toBe(0.33);
+      expect(alive.cloudLattice.value.toArray()).toEqual([1 / 6, 1 / 14, 0.04, 0.16]);
+      expect(alive.cloudForm.value.toArray()).toEqual([0.75, 1 / 1.35]);
+      mirror.alive.copyValuesFrom(alive);
+      expect(mirror.alive.cloudLattice.value.toArray()).toEqual(alive.cloudLattice.value.toArray());
+      expect(mirror.alive.cloudDarkening.value).toBe(0.33);
+      alive.set({ preset: 'soft' });
+      alive.update(4, 0.6, 0, 0, false);
+      expect(alive.cloudStrength.value).toBeCloseTo(ALIVE.cloudDarkening, 12);
+      expect(alive.cloudLattice.value.toArray()).toEqual([
+        1 / ALIVE.cloudScale,
+        1 / ALIVE.cloudLargeScale,
+        ALIVE.cloudEdgeLow,
+        ALIVE.cloudEdgeHigh,
+      ]);
+    } finally {
+      nodes.dispose();
+      mirror.dispose();
     }
   });
 

@@ -1,4 +1,4 @@
-import { Vector2 } from 'three/webgpu';
+import { Vector2, Vector4 } from 'three/webgpu';
 import {
   Fn,
   If,
@@ -21,12 +21,14 @@ import {
 } from 'three/tsl';
 import {
   ALIVE,
+  ALIVE_CLOUD_SHAPES,
   ALIVE_CLOUD_TINT,
   ALIVE_DEFAULTS,
   aliveDayWeight,
   resolveAlive,
   type AliveChange,
   type AliveOptions,
+  type CloudShape,
 } from './livingWorld';
 import type { ShaderNode } from './tsl';
 
@@ -61,25 +63,25 @@ const noise = Fn(([p]: ShaderNode[]) => {
 // A real shader function owns its neutral initializer on EVERY invocation. An inline Fn shared between select/If
 // branches lets TSL cache its result variable in the first branch: unlit ore then reads the other branch's zero.
 // Pass all state explicitly so neither the result nor renderer-local uniforms can leak across branches/renderers.
-const cloudShadow = Fn(([xz, clock, direction, strength]: ShaderNode[]) => {
+// The shape arrives as uniforms (lattice inverses, threshold, fine weight, inverse stretch) so presets switch at run
+// time without a recompile; the soft preset evaluates the same expression as the former constants.
+const cloudShadow = Fn(([xz, clock, direction, strength, lattice, form]: ShaderNode[]) => {
   const result = float(1).toVar('aliveCloudNeutral');
   If(strength.greaterThan(0), () => {
     const drift = direction.mul(clock.mul(ALIVE.drift));
-    const morph = vec2(sin(clock.mul(0.07)), cos(clock.mul(0.09))).mul(ALIVE.cloudMorph / ALIVE.cloudScale);
+    const morph = vec2(sin(clock.mul(0.07)), cos(clock.mul(0.09))).mul(lattice.x.mul(ALIVE.cloudMorph));
     const advected = xz.sub(drift);
-    const stretched = vec2(
-      dot(advected, direction).div(ALIVE.cloudStretch),
-      dot(advected, vec2(direction.y.negate(), direction.x)),
-    );
-    const p = stretched.div(ALIVE.cloudScale);
+    const along: ShaderNode = dot(advected, direction);
+    const stretched = vec2(along.mul(form.y), dot(advected, vec2(direction.y.negate(), direction.x)));
+    const p = stretched.mul(lattice.x);
     const n = noise(p.add(morph))
-      .mul(ALIVE.cloudFineWeight)
+      .mul(form.x)
       .add(
-        noise(stretched.div(ALIVE.cloudLargeScale).add(vec2(17.2, 9.4)).add(vec2(morph.y.negate(), morph.x))).mul(
-          1 - ALIVE.cloudFineWeight,
+        noise(stretched.mul(lattice.y).add(vec2(17.2, 9.4)).add(vec2(morph.y.negate(), morph.x))).mul(
+          float(1).sub(form.x),
         ),
       );
-    result.assign(float(1).sub(smoothstep(ALIVE.cloudEdgeLow, ALIVE.cloudEdgeHigh, n).mul(strength)));
+    result.assign(float(1).sub(smoothstep(lattice.z, lattice.w, n).mul(strength)));
   });
   return result;
 }).setLayout({
@@ -90,13 +92,26 @@ const cloudShadow = Fn(([xz, clock, direction, strength]: ShaderNode[]) => {
     { name: 'clock', type: 'float' },
     { name: 'direction', type: 'vec2' },
     { name: 'strength', type: 'float' },
+    { name: 'lattice', type: 'vec4' },
+    { name: 'form', type: 'vec2' },
   ],
 });
 
-const cloudColour = Fn(([grey]: ShaderNode[]) => {
-  const cover = float(1).sub(grey).div(ALIVE.cloudDarkening).clamp();
+const cloudColour = Fn(([grey, darkening]: ShaderNode[]) => {
+  const cover = float(1).sub(grey).div(darkening).clamp();
   return mix(vec3(1), vec3(...ALIVE_CLOUD_TINT), cover).mul(grey);
-}).setLayout({ name: 'aliveCloudColour', type: 'vec3', inputs: [{ name: 'grey', type: 'float' }] });
+}).setLayout({
+  name: 'aliveCloudColour',
+  type: 'vec3',
+  inputs: [
+    { name: 'grey', type: 'float' },
+    { name: 'darkening', type: 'float' },
+  ],
+});
+
+const latticeOf = (shape: Readonly<CloudShape>, target = new Vector4()) =>
+  target.set(1 / shape.scale, 1 / shape.largeScale, shape.edgeLow, shape.edgeHigh);
+const formOf = (shape: Readonly<CloudShape>, target = new Vector2()) => target.set(shape.fineWeight, 1 / shape.stretch);
 
 /** Palette-domain attenuation: keeps the displayed shadow depth independent of the linear-light transfer curve. */
 export const shadeCloudColour = Fn(([source, factor]: ShaderNode[]) => {
@@ -122,11 +137,16 @@ export class LivingWorldNodes {
   readonly cloudStrength = uniform(0).setName('aliveCloudStrength');
   readonly windAmplitude = uniform(0).setName('aliveWindAmplitude');
   readonly debugCloud = uniform(0).setName('aliveDebugCloud');
+  readonly cloudLattice = uniform(latticeOf(ALIVE_CLOUD_SHAPES.soft)).setName('aliveCloudLattice');
+  readonly cloudForm = uniform(formOf(ALIVE_CLOUD_SHAPES.soft)).setName('aliveCloudForm');
+  readonly cloudDarkening = uniform(ALIVE_CLOUD_SHAPES.soft.darkening).setName('aliveCloudDarkening');
   readonly shadowAt = (xz: ShaderNode): ShaderNode =>
-    cloudShadow(xz, this.clock, this.windDirection, this.cloudStrength);
+    cloudShadow(xz, this.clock, this.windDirection, this.cloudStrength, this.cloudLattice, this.cloudForm);
   // One VarNode per material builder shares all optical terms. Branching consumers (sprites) append it at
   // their colour root, before sibling branches. Keep the neutral initializer in the named cloudShadow Fn.
-  readonly shadow: ShaderNode = cloudColour(this.shadowAt(positionWorld.xz)).toVar('aliveCloudFactor');
+  readonly shadow: ShaderNode = cloudColour(this.shadowAt(positionWorld.xz), this.cloudDarkening).toVar(
+    'aliveCloudFactor',
+  );
 
   set(change: AliveChange): Readonly<AliveOptions> {
     this.options = resolveAlive(change, this.options);
@@ -136,8 +156,12 @@ export class LivingWorldNodes {
   update(seconds: number, direction: number, night: number, overcast: number, airless: boolean): void {
     this.clock.value = seconds * this.options.speed;
     this.windDirection.value.set(Math.cos(direction), Math.sin(direction));
+    const shape = ALIVE_CLOUD_SHAPES[this.options.preset];
+    latticeOf(shape, this.cloudLattice.value);
+    formOf(shape, this.cloudForm.value);
+    this.cloudDarkening.value = shape.darkening;
     this.cloudStrength.value = this.options.clouds
-      ? this.options.cloud * ALIVE.cloudDarkening * aliveDayWeight(night, overcast, airless)
+      ? this.options.cloud * shape.darkening * aliveDayWeight(night, overcast, airless)
       : 0;
     this.debugCloud.value = this.options.debugCloud && this.options.clouds ? 1 : 0;
     this.windAmplitude.value = this.options.wind && !airless ? this.options.sway : 0;
@@ -147,6 +171,9 @@ export class LivingWorldNodes {
     this.clock.value = source.clock.value;
     this.windDirection.value.copy(source.windDirection.value);
     this.cloudStrength.value = source.cloudStrength.value;
+    this.cloudLattice.value.copy(source.cloudLattice.value);
+    this.cloudForm.value.copy(source.cloudForm.value);
+    this.cloudDarkening.value = source.cloudDarkening.value;
     this.windAmplitude.value = source.windAmplitude.value;
     this.debugCloud.value = source.debugCloud.value;
   }

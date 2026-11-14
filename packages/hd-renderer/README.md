@@ -311,7 +311,8 @@ Opt in to **clouds only** with `hd-alive=1` on the live game URL, or `alive=1` i
 Tree sway and grass ripple require the additional `alive-wind=1`; that flag alone enables nothing.
 Defaults and launcher presets stay unchanged. Like `hd-water`, these are URL options, without INI settings.
 Tunables in both entries: `alive-cloud=1` (shadow strength scale, 0..2; 0 disables clouds),
-`alive-sway=1` (explicit wind amplitude, 0..3), `alive-speed=1` (renderer clock speed, 0..4).
+`alive-sway=1` (explicit wind amplitude, 0..3), `alive-speed=1` (renderer clock speed, 0..4),
+`alive-preset=soft|deep` (cloud shape and core depth; default `soft`, unknown values keep the current preset).
 Tunables alone do not enable animation. `alive-debug=cloud` shows the raw **land** factor as encoded grey
 (0.78 patch core, exactly 1.0 gap at clear noon), bypassing exposure, grading and art colours in the existing
 display pass; shrouded ground stays black. Use it with the alive flag. It creates no render target or pass.
@@ -320,7 +321,8 @@ In the live bench, `window.__fx.live.setAlive(true)` enables clouds and disables
 `setAlive({wind: true})` explicitly enables wind, preserving the other settings and tuning;
 `setAlive({clouds: true, wind: true})` enables both. `setAlive(false)` disables clouds, wind and debug.
 `LiveViewOptions.alive` and `HdRenderer.setAlive` accept the same boolean or partial options
-(`clouds`, `wind`, `cloud`, `sway`, `speed`, `debugCloud`). The game bridge and both sandboxes share the parser.
+(`clouds`, `preset`, `wind`, `cloud`, `sway`, `speed`, `debugCloud`). The game bridge and both sandboxes share the
+parser; in the game, `window.__hdBridge.live.setAlive({ clouds: true, preset: 'deep' })` switches at run time.
 
 `src/livingWorldNodes.ts` shares one world-XZ cloud field across terrain/cliffs/shore, decals, sprites, voxel
 materials and every water look. Two non-repeating gradient-noise octaves use 13/26-cell lattices, weights 0.8/0.2,
@@ -331,6 +333,15 @@ and the core is **0.78**. Tests scan both map axes at 0.1-cell spacing to bound 
 to 2..3 cells (measured 2.7) and median half-coverage chord to 8..12 cells (measured 8.1; a patch-size proxy,
 not a fixed circular diameter).
 Small camera crops have variable coverage; these area statistics do not establish frame-average luma.
+
+The `deep` preset (`ALIVE_CLOUD_SHAPES.deep`) is for small views such as a phone, where a default view spans about
+ten cells and soft patches (8-cell chord, 2.7-cell edge) cover most of the frame, so they read as overall dimming.
+Deep uses 6/14-cell lattices, weights 0.75/0.25, stretch 1.35 and a 0.04..0.16 threshold: on the same CPU sample,
+about **35%** of samples have factor < 0.97, mean darkening is about **9.2%**, the core is **0.67** (33%), the
+median 5..95% edge is **1.0** cell and the half-coverage chord **4.4** cells, so whole patches with lit gaps fit
+one view. Drift, morph, tint and the water weights are shared (water body core 0.934, sky 0.85 under deep).
+The shape is a set of renderer-local uniforms (`aliveCloudLattice`, `aliveCloudForm`, `aliveCloudDarkening`), so
+switching presets does not rebuild a material; the soft values reproduce the former constant expression.
 Drift is **1.5 cells/second** along `environment.windDirection`; the slow coordinate morph is only **0.35 cells**
 (0.07/0.09 radians/second), small relative to the edge width. Clouds fade with night and overcast/precipitation;
 airless maps disable animation. All motion uses the renderer clock, including frozen-clock `__fx.advance(ms)`.

@@ -169,12 +169,12 @@ function assertNeutralCloudFunction(shader: string) {
   expect(body).toMatch(/if \( \( strength > 0\.0 \) \)/);
   expect(body.trimEnd()).toMatch(/return aliveCloudNeutral;$/);
   expect(body.match(/aliveCloudNeutral = /g)).toHaveLength(2);
-  const calls = shader.match(/aliveCloudShadow\( [^\n]+aliveCloudStrength \)/g) ?? [];
+  const calls = shader.match(/aliveCloudShadow\( [^\n]+aliveCloudStrength, [^\n]*aliveCloudForm \)/g) ?? [];
   expect(calls, 'each material must evaluate the field once, shared by every optical term').toHaveLength(1);
   const colour = shader.match(/(?:fn|vec3) aliveCloudColour\s*\([^)]*\)[^{]*\{([^}]+)\}/)?.[1];
   if (colour) {
     // grey=1 -> cover=0 -> mix(1,tint,0)*1, so disabled clouds never tint a surface.
-    expect(colour).toMatch(/clamp\( \( \( 1\.0 - grey \) \/ 0\.22 \)/);
+    expect(colour).toMatch(/clamp\( \( \( 1\.0 - grey \) \/ darkening \)/);
     expect(colour).toMatch(/return \( mix\( vec3(?:<f32>)?\( 1\.0(?:, 1\.0, 1\.0)? \)/);
     expect(colour).toMatch(/\* (?:vec3(?:<f32>)?\( )?grey/);
   }
@@ -270,7 +270,7 @@ describe('r186 vertex and uniform binding budget', () => {
                 assertNeutralCloudFunction(shader);
                 // One explicit base-stack VarNode serves every branch; a real function still owns identity.
                 // Sharing must not move initialization into a sibling branch (the black-ore regression).
-                const calls = shader.match(/aliveCloudShadow\( [^\n]+aliveCloudStrength \)/g) ?? [];
+                const calls = shader.match(/aliveCloudShadow\( [^\n]+aliveCloudStrength, [^\n]*aliveCloudForm \)/g) ?? [];
                 expect(calls).toHaveLength(1);
                 const main = shader.slice(shader.search(/(?:fn|void) main\(/));
                 const assignment = main.indexOf('aliveCloudFactor = aliveCloudColour(');
