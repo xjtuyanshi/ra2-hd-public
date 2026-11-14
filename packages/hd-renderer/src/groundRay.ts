@@ -207,8 +207,26 @@ export function groundRayHit(
     if (below(mid)) lo = mid;
     else hi = mid;
   }
-  return hi;
+  return onWall(heightAt, point, ray, lo, step) ? anchor : hi;
 }
+
+/**
+ * Whether the crossing just above `lo` is a vertical wall (a cliff face between cells), not a continuous surface: just
+ * behind it the surface stands well above the ray. Ground art meeting a wall keeps its anchor's plane, so a shadow does
+ * not climb a cliff face (the engine hides it there; ramps it does follow). CPU twin of the shader's test.
+ */
+function onWall(
+  heightAt: (x: number, z: number) => number,
+  point: readonly [number, number, number],
+  ray: readonly [number, number, number],
+  lo: number,
+  step: number,
+): boolean {
+  const t = (lo - point[1]) / ray[1];
+  return heightAt(point[0] + ray[0] * t, point[2] + ray[2] * t) > lo + step * WALL_STEPS;
+}
+/** A surface standing this many search steps above the ray just behind the crossing is a wall (see onWall). */
+const WALL_STEPS = 0.25;
 
 /**
  * Shader version of groundRayHit. `grid` is a texture node of the square grid (RGBA32F, read with loads), `gridInfo`
@@ -293,7 +311,10 @@ export function groundRayHitNode(
           hi.assign(mid);
         });
       });
-      result.assign(hi);
+      // A wall (cliff face) keeps the anchor's plane, as onWall.
+      const t1: ShaderNode = lo.sub(point.y).div(ray.y);
+      const behind: ShaderNode = heightAt(point.xz.add(ray.xz.mul(t1)));
+      result.assign(select(behind.greaterThan(lo.add(step * WALL_STEPS)), anchor, hi));
     });
   });
   return result;

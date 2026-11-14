@@ -152,10 +152,11 @@ describe('ground under a ground-lying pixel', () => {
           const hit = groundRayHit(at, [x, top, 0.5], GAME_RAY, anchor, SHADOW_GROUND_SEARCH);
           expect(Math.abs(hit - top) * Math.sin(Math.PI / 6)).toBeLessThan(shadowGroundPull(0) / 4);
         }
-      // A pixel on the cliff wall (the ray crosses the rim below the top): the wall, where the ray crosses x = 2.
+      // A pixel on the cliff wall (the ray meets the face below the top): a shadow does not climb the face; it keeps
+      // its anchor's plane (the engine hides a foot object's shadow there, and drapes a top object's shadow over it).
       const wallPoint: [number, number, number] = [2, top / 2, 0.5];
-      const wall = groundRayHit(at, wallPoint, GAME_RAY, 0, SHADOW_GROUND_SEARCH);
-      expect(Math.abs(wall - top / 2) * Math.sin(Math.PI / 6)).toBeLessThan(shadowGroundPull(0) / 4);
+      expect(groundRayHit(at, wallPoint, GAME_RAY, 0, SHADOW_GROUND_SEARCH)).toBe(0);
+      expect(groundRayHit(at, wallPoint, GAME_RAY, top, SHADOW_GROUND_SEARCH)).toBe(top);
     } finally {
       dispose();
     }
