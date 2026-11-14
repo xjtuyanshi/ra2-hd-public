@@ -253,6 +253,9 @@ The selective replacement and fallback contract is specified in [HD battlefield 
 
 Native pictures can separately carry an optional `VmFrame.overlayJournal`, negotiated through the native Picture
 protocol. Native draw capture is an explicit `native-draw-journal=1` development-page option, off by default.
+`native-capture-budget-us=N` (1000..12000, development measurements only) replaces the negotiated per-capture time
+budget, so a capture that misses on a fraction of logic frames, as on a busy computer, can be produced on purpose to
+check the HD fallback and its return live.
 Its match/draw generations, complete clean RGB565 plane and ordered rectangle/convex-polygon commands
 belong to the same picture; asynchronous `GameRenderState` observations cannot supply this authority. The original
 `VmFrame.rgb565` remains an independent full fallback. `VmFrameRenderer` uses the clean plane only in its keyed

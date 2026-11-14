@@ -83,6 +83,8 @@ export interface NativeCoreOptions extends NativeConnectionOptions {
   /** Development opt-in until native clean-plane coverage is complete. */
   drawJournal?: boolean;
   sessionStatusUrl?: string;
+  /** Development measurements: capture budget in microseconds instead of the negotiated default (see runtime.ts). */
+  captureBudgetUs?: number;
 }
 export type NativeGamePolicyFactory = (
   memory: NativeMirrorMemory,
@@ -995,7 +997,7 @@ export class NativeCore {
           ranges: next,
           rules,
           maxPages: this.hello.limits.pages,
-          budgetUs: Math.min(12000, this.hello.limits.maxBudgetUs ?? 4000),
+          budgetUs: Math.min(this.options.captureBudgetUs ?? 12000, this.hello.limits.maxBudgetUs ?? 4000),
           sampleCount: 0,
           pageRemovals: revisionSupported,
           mirrorWindow: (this.mirrorWindow = revisionSupported && this.hello.limits.mirrorWindow === 2 ? 2 : 1),
