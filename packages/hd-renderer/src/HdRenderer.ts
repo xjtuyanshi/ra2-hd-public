@@ -1089,13 +1089,9 @@ export class HdRenderer {
       this.nodes.surfaceTexture.value = world.surfaceTexture;
       this.nodes.surfaceSize.value.set(world.width, world.height);
     }
-    {
-      // The terrain's height grid, for ground art that finds the drawn surface under its pixels (ra2/sprites.ts).
-      const grid = this.terrain.heightTexture;
-      const { width: columns, height: rows } = grid.image as { width: number; height: number };
-      this.nodes.groundHeightGrid.value = grid;
-      this.nodes.groundHeightInfo.value.set(columns, rows, (columns - 1) / Math.max(1, this.bounds.width));
-    }
+    // The drawn terrain surface, for ground art that finds the ground under its pixels (ra2/sprites.ts). Without one
+    // no ground is known and such art keeps its anchor's plane.
+    this.nodes.setGroundSurface(this.terrain.surfaceSquares ?? null);
     if (this.layerNodes !== this.nodes) this.layerNodes.copyValuesFrom(this.nodes);
     // Unprofiled clear noon is the display reference, before a map's daylight exposure/tint is applied.
     this.lighting.update(12, 0);
@@ -2304,6 +2300,7 @@ export class HdRenderer {
     this.beforeDepthCapture = undefined;
     this.terrainDepth.dispose();
     this.terrain?.disposeWaterLooks?.();
+    this.terrain?.surfaceSquares?.texture.dispose();
     if (this.nodes !== DEFAULT_ATMOSPHERE_NODES) this.nodes.dispose();
     if (this.layerNodes !== this.nodes && this.layerNodes !== DEFAULT_ATMOSPHERE_NODES) this.layerNodes.dispose();
     this.renderer.dispose();

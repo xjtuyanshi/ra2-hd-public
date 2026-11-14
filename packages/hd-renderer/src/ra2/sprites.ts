@@ -317,9 +317,9 @@ export const SHADOW_PULL_LEVELS = 32;
 export const SHADOW_EXCLUSIVE_PULL = (GROUND_PULL.shadow[1] - GROUND_PULL.shadow[0]) / SHADOW_PULL_LEVELS / 2;
 
 /**
- * Search of the ground under an SHP shadow's pixel (groundRay.ts) in the enhanced look's 'over' pass: from four and a
- * half levels above the object's anchor down to two below it in half-level steps, refined to 1/128 level (well inside
- * the smallest pull). Ramps rise one level per cell, so this covers a tree shadow's reach of three to four cells up or
+ * Search of the ground under an SHP shadow's pixel (groundRay.ts, on the terrain's own surface squares, so a cliff top
+ * keeps its level up to the rim) in the enhanced look's 'over' pass: from four and a half levels above the object's
+ * anchor down to two below it in half-level steps, refined to 1/128 level (well inside the smallest pull). Ramps rise one level per cell, so this covers a tree shadow's reach of three to four cells up or
  * down a slope. Ground further below (under a bridge deck, at the foot of a cliff) keeps the anchor's plane. Overlapping
  * shadows over one pixel are ordered on the ground found here, so they compare by coverage alone.
  */

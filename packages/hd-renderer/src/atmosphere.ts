@@ -5,6 +5,7 @@ import {
   RGBAFormat,
   RGFormat,
   type Scene,
+  type Texture,
   UnsignedByteType,
   Vector2,
   Vector3,
@@ -65,11 +66,24 @@ export class AtmosphereNodes extends SceneLightingUniforms {
   readonly clearWater = uniform(0);
   private readonly noHeights = emptyHeightGrid();
   /**
-   * The world's terrain height grid (TerrainBuild.heightTexture, read with loads; see groundRay.ts) and its (columns,
-   * rows, nodes per world unit). Ground-lying sprite art finds the drawn surface under its pixels with it.
+   * The world's drawn terrain surface as a square grid (TerrainBuild.surfaceSquares, read with loads; see groundRay.ts)
+   * and its (columns, rows, squares per world unit). Ground-lying sprite art finds the drawn surface under its pixels
+   * with it. Set through setGroundSurface; the empty grid means no ground anywhere.
    */
   readonly groundHeightGrid = texture(this.noHeights);
   readonly groundHeightInfo = uniform(new Vector3(1, 1, 1));
+
+  /** Bind a world's surface square grid (TerrainBuild.surfaceSquares), or none (null). */
+  setGroundSurface(surface: { texture: Texture; sub: number } | null): void {
+    if (!surface) {
+      this.groundHeightGrid.value = this.noHeights;
+      this.groundHeightInfo.value.set(1, 1, 1);
+      return;
+    }
+    const { width, height } = surface.texture.image as { width: number; height: number };
+    this.groundHeightGrid.value = surface.texture;
+    this.groundHeightInfo.value.set(width, height, surface.sub);
+  }
 
   constructor() {
     super();

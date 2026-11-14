@@ -1339,7 +1339,9 @@ documentation/naming of those generated assets, not shader restrictions. `ra2-as
   Layers sharing a renderOrder draw all their decal passes, then all pre-passes, then all shadow passes, so
   overlapping shadows darken a pixel once, by the densest one, across atlas pages too. SHP shadows take their ground
   depth from the drawn terrain under the pixel (`SHADOW_GROUND_SEARCH`, `groundRay.ts`: the view ray against the
-  terrain's height grid, `AtmosphereNodes.groundHeightGrid`), not from their anchor's plane, so shadows of objects on
+  terrain's surface squares, `TerrainBuild.surfaceSquares` bound as `AtmosphereNodes.groundHeightGrid`; every square
+  keeps its own cell's corner heights, so a cliff top keeps its level up to the rim as the mesh draws it, where the
+  shared vertex grid `heightTexture` ramps down over the last half cell), not from their anchor's plane, so shadows of objects on
   different levels compare by coverage alone; on anchor planes the faint fringe of a higher tree's shadow used to block
   a lower tree's dense one (light gaps with straight edges on slopes). The same ground lets a shadow reach up a slope
   as the engine draws it (on the anchor's plane the rising terrain hid it along its cell edges); terrain beyond the

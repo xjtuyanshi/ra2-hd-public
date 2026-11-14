@@ -1,49 +1,77 @@
-import { DataTexture, FloatType, RedFormat } from 'three/webgpu';
-import { If, float, floor, ivec2, max, min, select, textureLoad, vec2 } from 'three/tsl';
+import { DataTexture, FloatType, NearestFilter, RGBAFormat } from 'three/webgpu';
+import { If, float, floor, ivec2, max, min, mix, select, step as stepNode, textureLoad, vec2, vec4 } from 'three/tsl';
 import type { ShaderNode } from './tsl';
 
 /**
- * Where a view ray meets a terrain height grid (TerrainBuild.heightTexture: world heights on a regular vertex grid,
- * `sub` nodes per world unit), for ground-lying art that is drawn at fixed screen pixels over sloped ground.
+ * Where a view ray meets a terrain surface, for ground-lying art that is drawn at fixed screen pixels over sloped
+ * ground.
  *
- * The grid is read with texel loads and interpolated over the two triangles every terrain mesh of this renderer cuts a
- * grid square into (a-c-b and b-c-d: the diagonal runs from the square's (1, 0) corner to its (0, 1) corner), so the
- * height matches the drawn surface rather than a bilinear one (up to a sixteenth of a square's twist away). Grid nodes
- * at or above GRID_NO_GROUND (no ground there) count as far below every ray.
+ * The surface is a grid of squares (`sub` per world unit), each holding the world heights of its own four corners
+ * (RGBA: (0, 0), (1, 0), (0, 1), (1, 1)), interpolated over the two triangles every terrain mesh of this renderer cuts a
+ * square into (a-c-b and b-c-d: the diagonal runs from the square's (1, 0) corner to its (0, 1) corner), so the height
+ * matches the drawn surface rather than a bilinear one. Squares do not share corners: a terrain whose cells meet at a
+ * cliff (flat top, vertical wall, flat foot) keeps each side's own level up to the shared edge, as its mesh draws it.
+ * A grid of shared vertex nodes cannot: one node on the edge takes either side's level, so the surface there would
+ * ramp over the last square (RA2: half a cell along every camera-facing cliff rim). One load per evaluation.
+ * Corners at or above GRID_NO_GROUND (no ground there) count as far below every ray.
  */
 export const GRID_NO_GROUND = 49;
 const NO_GROUND_HEIGHT = -1e4;
 
-/** An empty 1x1 grid (no ground anywhere), bound until a world supplies its height grid. */
+/** An empty 1x1 square grid (no ground anywhere), bound until a world supplies its surface. */
 export function emptyHeightGrid(): DataTexture {
-  const grid = new DataTexture(new Float32Array([NO_GROUND_HEIGHT]), 1, 1, RedFormat, FloatType);
-  grid.needsUpdate = true;
-  return grid;
+  return surfaceSquaresTexture(new Float32Array([1e4, 1e4, 1e4, 1e4]), 1, 1);
 }
 
-/** Height of the triangulated grid surface at world x/z: CPU twin of the shader's (see groundRayHitNode). */
+/** A square grid (4 floats per square, see above) as the texture groundRayHitNode reads with loads. */
+export function surfaceSquaresTexture(squares: Float32Array, columns: number, rows: number): DataTexture {
+  const texture = new DataTexture(squares, columns, rows, RGBAFormat, FloatType);
+  texture.minFilter = NearestFilter;
+  texture.magFilter = NearestFilter;
+  texture.needsUpdate = true;
+  return texture;
+}
+
+/**
+ * The square grid of a continuous mesh on a shared vertex grid (`nodeColumns` x `nodeRows` world heights): every
+ * square takes its four corner nodes.
+ */
+export function squaresFromNodeGrid(nodes: ArrayLike<number>, nodeColumns: number, nodeRows: number): Float32Array {
+  const columns = Math.max(1, nodeColumns - 1);
+  const rows = Math.max(1, nodeRows - 1);
+  const node = (c: number, r: number): number =>
+    nodes[Math.min(r, nodeRows - 1) * nodeColumns + Math.min(c, nodeColumns - 1)]!;
+  const squares = new Float32Array(columns * rows * 4);
+  for (let r = 0; r < rows; r++)
+    for (let c = 0; c < columns; c++)
+      squares.set([node(c, r), node(c + 1, r), node(c, r + 1), node(c + 1, r + 1)], (r * columns + c) * 4);
+  return squares;
+}
+
+/** Height of the square grid's surface at world x/z: CPU twin of the shader's (see groundRayHitNode). */
 export function gridSurfaceHeight(
-  grid: ArrayLike<number>,
+  squares: ArrayLike<number>,
   columns: number,
   rows: number,
   sub: number,
   x: number,
   z: number,
 ): number {
-  const gx = Math.min(Math.max(x * sub, 0), columns - 1);
-  const gz = Math.min(Math.max(z * sub, 0), rows - 1);
-  const i = Math.min(Math.floor(gx), Math.max(columns - 2, 0));
-  const j = Math.min(Math.floor(gz), Math.max(rows - 2, 0));
+  const gx = Math.min(Math.max(x * sub, 0), columns);
+  const gz = Math.min(Math.max(z * sub, 0), rows);
+  const i = Math.min(Math.floor(gx), columns - 1);
+  const j = Math.min(Math.floor(gz), rows - 1);
   const fx = gx - i;
   const fz = gz - j;
-  const at = (c: number, r: number): number => {
-    const v = grid[Math.min(r, rows - 1) * columns + Math.min(c, columns - 1)]!;
+  const o = (j * columns + i) * 4;
+  const at = (k: number): number => {
+    const v = squares[o + k]!;
     return v >= GRID_NO_GROUND ? NO_GROUND_HEIGHT : v;
   };
-  const a = at(i, j);
-  const b = at(i + 1, j);
-  const c = at(i, j + 1);
-  const d = at(i + 1, j + 1);
+  const a = at(0);
+  const b = at(1);
+  const c = at(2);
+  const d = at(3);
   return fx + fz <= 1 ? a + (b - a) * fx + (c - a) * fz : d + (c - d) * (1 - fx) + (b - d) * (1 - fz);
 }
 
@@ -100,7 +128,7 @@ export function groundRayHit(
 }
 
 /**
- * Shader version of groundRayHit. `grid` is a texture node of the height grid (R32F, read with loads), `gridInfo`
+ * Shader version of groundRayHit. `grid` is a texture node of the square grid (RGBA32F, read with loads), `gridInfo`
  * (columns, rows, sub), `point` a world point on the pixel's view ray and `ray` the world direction towards the camera.
  */
 export function groundRayHitNode(
@@ -114,21 +142,17 @@ export function groundRayHitNode(
   const columns: ShaderNode = gridInfo.x;
   const rows: ShaderNode = gridInfo.y;
   const sub: ShaderNode = gridInfo.z;
-  const load = (c: ShaderNode, r: ShaderNode): ShaderNode => {
-    const v: ShaderNode = textureLoad(
-      grid as never,
-      ivec2(vec2(min(c, columns.sub(1)), min(r, rows.sub(1))) as ShaderNode),
-    ).r;
-    return select(v.greaterThanEqual(GRID_NO_GROUND), float(NO_GROUND_HEIGHT), v);
-  };
   const heightAt = (xz: ShaderNode): ShaderNode => {
-    const g: ShaderNode = min(max(xz.mul(sub), vec2(0, 0)), vec2(columns.sub(1), rows.sub(1)));
-    const k: ShaderNode = min(floor(g), max(vec2(columns.sub(2), rows.sub(2)), vec2(0, 0)));
+    const g: ShaderNode = min(max(xz.mul(sub), vec2(0, 0)), vec2(columns, rows));
+    const k: ShaderNode = min(floor(g), vec2(columns.sub(1), rows.sub(1)));
     const f: ShaderNode = g.sub(k);
-    const a = load(k.x, k.y);
-    const b = load(k.x.add(1), k.y);
-    const c = load(k.x, k.y.add(1));
-    const d = load(k.x.add(1), k.y.add(1));
+    const raw: ShaderNode = textureLoad(grid as never, ivec2(k as ShaderNode));
+    // Missing ground (corner >= GRID_NO_GROUND) becomes far below every ray; mix by a 0/1 step is exact.
+    const corners: ShaderNode = mix(raw, vec4(NO_GROUND_HEIGHT), stepNode(vec4(GRID_NO_GROUND), raw));
+    const a: ShaderNode = corners.x;
+    const b: ShaderNode = corners.y;
+    const c: ShaderNode = corners.z;
+    const d: ShaderNode = corners.w;
     return select(
       f.x.add(f.y).lessThanEqual(1),
       a.add(b.sub(a).mul(f.x)).add(c.sub(a).mul(f.y)),

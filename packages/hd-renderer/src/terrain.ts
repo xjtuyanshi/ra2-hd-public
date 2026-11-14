@@ -27,6 +27,7 @@ import type { RenderMap, TerrainClass } from './contract';
 import { LEVEL_HEIGHT } from './world';
 import type { ShaderNode } from './tsl';
 import { SceneLitMaterial } from './lighting';
+import { squaresFromNodeGrid, surfaceSquaresTexture } from './groundRay';
 
 /** Vertices per cell edge; 4 keeps shorelines smooth without a per-pixel heightmap. */
 const SUBDIVISIONS = 4;
@@ -42,6 +43,11 @@ export interface TerrainBuild {
   mesh: Mesh;
   /** World-space height (y) sampled on the vertex grid; shared with water and weather. */
   heightTexture: DataTexture;
+  /**
+   * The drawn surface as a grid of squares that keep their own corner heights (groundRay.ts), where cells of the mesh
+   * do not share vertices (cliffs). Absent = the mesh is continuous over heightTexture's nodes.
+   */
+  surfaceSquares?: { texture: DataTexture; sub: number };
   heightAt(x: number, z: number): number;
   /**
    * Height of the drawn surface at an arbitrary point (heightAt answers with the nearest grid node, which on a slope
@@ -151,7 +157,12 @@ export function buildTerrain(map: RenderMap, nodes = DEFAULT_ATMOSPHERE_NODES): 
     x >= 0 && z >= 0 && x < map.width && z < map.height && heightAt(x, z) < map.waterLevel * LEVEL_HEIGHT
       ? map.waterLevel * LEVEL_HEIGHT
       : undefined;
-  return { mesh, heightTexture, heightAt, waterHeightAt, wetness };
+  // The mesh is continuous over the node grid (same diagonal as groundRay.ts), so every square takes its four nodes.
+  const surfaceSquares = {
+    texture: surfaceSquaresTexture(squaresFromNodeGrid(heights, cols, rows), cols - 1, rows - 1),
+    sub: SUBDIVISIONS,
+  };
+  return { mesh, heightTexture, surfaceSquares, heightAt, waterHeightAt, wetness };
 }
 
 function createTerrainMaterial(
