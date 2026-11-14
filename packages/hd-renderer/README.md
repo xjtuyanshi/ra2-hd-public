@@ -455,9 +455,11 @@ now apply that same grade to house paint too. Intentionally self-lit palette col
 
 `src/nightArt.ts` holds the generic linear-light defaults in `NIGHT_ART_DEFAULTS`. Only ambient/scene radiance enters
 the highlight shoulder and rim mix; physical lamps, fires and weapon irradiance are added afterwards. The smooth
-shoulder begins at art luminance 0.24 and preserves hue. Synthetic calibration at luminance 0.48 removes about
-9 L* at full night; a synthetic body with 94% midtone paint and 6% highlights loses less than 2 L* in mean luminance.
-These are transfer-function checks, **not measurements of the installed HD pages**.
+shoulder begins at art luminance 0.38 and preserves hue. Projected redraw colour carries the page exposure and gain,
+so its luminance is first scaled by `projectedArtScale` (0.21) into the sprite art scale. These values come from a
+sandbox calibration on SOV07TMD at night at the owner's resolution: the first defaults (base 0.24, no projected
+scale) took 17 L* off the 95th percentile of GIs and 34 L* off projected Grizzlies and flattened their texture; the
+result is about 7-10 L* off the 95th percentile with the body mean within about 2 L*.
 
 Four alpha neighbours at one page texel detect sprite and projected-redraw rims. Their RGB moves toward the pixel's
 own grey albedo under moonlit ambient light, with a per-channel upper bound at the unwrapped colour. Alpha and

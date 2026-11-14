@@ -26,7 +26,7 @@ import {
   type EffectPass,
 } from './effectSprites';
 import { EFFECT_TABLE, SMOKE_SYSTEMS, type EffectTableRow, type SmokeSystemRow } from './effectTable';
-import { flicker, heldPulseEnvelope } from '../lightField';
+import { heldPulseEnvelope } from '../lightField';
 import type { Ra2SceneLighting } from '../ra2/sceneLighting';
 
 import {
@@ -620,18 +620,7 @@ export class LiveEffectsDriver {
     for (const system of effects.particleSystems) {
       if (system.behaviour !== 'fire' || this.hidden(system.x, system.y, system.z)) continue;
       const p = animWorld(system);
-      const at = new Vector3(...p);
-      emission.push({
-        source: `system:${system.id}:${system.uid}`,
-        from: at,
-        to: at,
-        width: 0.2,
-        disc: true,
-        colour: [1, 0.3, 0.055],
-        hot: [1, 0.65, 0.25],
-        gain: 0.65 * flicker(0, now, REAL_LIGHT_POLICIES.burning.flicker),
-        push: 0.1,
-      });
+      // No added core for fire systems either (see animEmission): only their physical light.
       field.put(
         'kept',
         `system:${system.id}:${system.uid}`,

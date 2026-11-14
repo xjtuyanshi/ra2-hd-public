@@ -2,10 +2,17 @@ import { Fn, If, float, luminance, max, mix, vec3 } from 'three/tsl';
 import type { ShaderNode } from './tsl';
 import type { RealLightNodes, Rgb } from './realLight';
 
-/** Night integration defaults, in linear art space. Live uniforms may override these without rebuilding materials. */
+/**
+ * Night integration defaults, in linear art space. Live uniforms may override these without rebuilding materials.
+ * Sandbox calibration (SOV07TMD night, owner resolution, 2026-11-14): with base 0.24 the shoulder took 17 L* off the
+ * GIs' 95th percentile and 34 L* off the projected Grizzlies (whose redraw colour carries the page exposure and
+ * gain, about five times the sprite scale), flattening their texture. Base 0.38 on sprite art and a 0.21 luminance
+ * scale on projected redraws bring both to about -7..-10 L* at p95 with the body mean within about 2 L*.
+ */
 export const NIGHT_ART_DEFAULTS = {
   rolloff: 0.8,
-  base: 0.24,
+  base: 0.38,
+  projectedScale: 0.21,
   shoulder: 0.12,
   wrap: 0.35,
   ao: 0.4,
@@ -58,13 +65,14 @@ export function nightArtNode(
   rim: ShaderNode,
   nodes: RealLightNodes,
   night: ShaderNode,
+  artScale?: ShaderNode,
 ): ShaderNode {
   return Fn(() => {
     const result = scene.toVar();
     const weight = nightArtWeight(nodes, night);
     // Exact identity at night=0, including day highlights: no roundoff from a redundant grade or colour mix.
     If(weight.greaterThan(0), () => {
-      const y = luminance(art);
+      const y = artScale ? luminance(art).mul(artScale) : luminance(art);
       const excess = max(y.sub(nodes.artBase.max(0)), 0);
       const scale = float(1).sub(
         nodes.artRolloff

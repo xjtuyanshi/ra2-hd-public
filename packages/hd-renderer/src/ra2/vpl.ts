@@ -608,6 +608,7 @@ function createGraph(
         projected.rim,
         nodes.realLight,
         nodes.realLight.nightWeight,
+        nodes.realLight.projectedArtScale,
       );
     const projectedShade: ShaderNode = projectedScene.add(
       localSurfaceLight(

@@ -53,18 +53,18 @@ const shader = (colour: ReturnType<typeof vec3>) => {
 
 describe('night art scene-only transfer', () => {
   it('has an exact day identity, a smooth hue-preserving shoulder and no change below the base', () => {
-    for (const y of [0, 0.01, 0.1, 0.239, 0.24]) expect(nightHighlightScale(y)).toBe(1);
-    expect(nightHighlightScale(0.240001)).toBeCloseTo(1, 8);
+    for (const y of [0, 0.01, 0.1, 0.24, 0.379, 0.38]) expect(nightHighlightScale(y)).toBe(1);
+    expect(nightHighlightScale(0.380001)).toBeCloseTo(1, 8);
     const scene = [0.6, 0.3, 0.15] as const;
     expect(nightArtColour(scene, [1, 1, 1], [0, 0, 0], 1, 0)).toBe(scene);
-    const graded = nightArtColour(scene, rgb(0.48), rgb(0), 0, 1);
+    const graded = nightArtColour(scene, rgb(0.65), rgb(0), 0, 1);
     expect(graded[0] / graded[1]).toBe(2);
     expect(graded[1] / graded[2]).toBe(2);
-    const shoulderDrop = lstar(0.48) - lstar(0.48 * nightHighlightScale(0.48));
+    const shoulderDrop = lstar(0.65) - lstar(0.65 * nightHighlightScale(0.65));
     expect(shoulderDrop).toBeGreaterThan(8);
-    expect(shoulderDrop).toBeLessThan(10);
+    expect(shoulderDrop).toBeLessThan(11);
     // Synthetic body: 94% midtone paint, 6% noon highlights. This is a transfer calibration, not asset QA.
-    const body = [...Array(94).fill(0.18), ...Array(6).fill(0.48)] as number[];
+    const body = [...Array(94).fill(0.18), ...Array(6).fill(0.65)] as number[];
     const mean = (values: number[]) => values.reduce((a, b) => a + b) / values.length;
     expect(lstar(mean(body)) - lstar(mean(body.map((y) => y * nightHighlightScale(y))))).toBeLessThan(2);
     const local = [0.9, 0.4, 0.1];

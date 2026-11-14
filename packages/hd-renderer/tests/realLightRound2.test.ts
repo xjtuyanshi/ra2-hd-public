@@ -154,16 +154,15 @@ describe('emissive budgets and finite graph', () => {
   });
 });
 describe('RA2 source lifetime and shape preservation', () => {
-  it('adds short table-radius blast/muzzle cores and warm flickering fire bases', () => {
+  it('adds short table-radius blast/muzzle cores and no added fire cores', () => {
     const anim = { id: 1, uid: 2, type: 'EXPLOLRG', x: 256, y: 512, z: 104 };
     expect(animEmission(anim, 0, 0)!.width).toBe(2 * EFFECT_TABLE.EXPLOLRG!.light![3]);
     expect(animEmission(anim, 0.15, 0.15)).toBeNull();
     expect(animEmission({ ...anim, type: 'GUNFIRE' }, 0, 0)).not.toBeNull();
     expect(animEmission({ ...anim, type: 'GUNFIRE' }, 0.1, 0.1)).toBeNull();
     const fire = { ...anim, type: 'FIRE02' };
-    expect(animEmission(fire, 5, 5)!.width).toBe(0.32);
-    expect(animEmission(fire, 5, 5)!.gain).not.toBe(animEmission(fire, 5, 5.1)!.gain);
-    expect(animEmission({ ...fire, attachedTo: { id: 1, uid: 1, kind: 'vehicle' } }, 5, 5)!.width).toBe(0.2);
+    expect(animEmission(fire, 5, 5)).toBeNull();
+    expect(animEmission({ ...fire, attachedTo: { id: 1, uid: 1, kind: 'vehicle' } }, 5, 5)).toBeNull();
     expect(animEmission({ ...anim, type: 'UNKNOWN' }, 0, 0)).toBeNull();
     expect(animEmission(fire, -1, 0)).toBeNull();
   });
@@ -299,7 +298,7 @@ describe('RA2 source lifetime and shape preservation', () => {
     lit.dispose();
     aux.dispose();
   });
-  it('removes transient/continuous cores on publication removal and preserves captured anim objects', () => {
+  it('removes transient cores on publication removal and preserves captured anim objects', () => {
     const nodes = new AtmosphereNodes({ realLight: true }),
       field = new RealLightField(2, 2, nodes.realLight!),
       fx = new EffectsLayer(nodes),
@@ -319,12 +318,14 @@ describe('RA2 source lifetime and shape preservation', () => {
     const before = JSON.stringify(effects);
     driver.push(effects, 1, 0, new Vector3());
     emission.update(0, true);
-    expect(emission.mesh.count).toBe(2);
+    // NUKETO's transient core only: fires add no core (animEmission), but keep their physical light.
+    expect(emission.mesh.count).toBe(1);
+    expect(field.pools.get('kept')?.size).toBe(1);
     expect(driver.skyFlash(0, 1)).toBeCloseTo(Math.SQRT2 - 1);
     expect(driver.skyFlash(0.15, 1)).toBe(0);
     driver.frame(0.2, new Vector3());
     emission.update(0.2, true);
-    expect(emission.mesh.count).toBe(1);
+    expect(emission.mesh.count).toBe(0);
     driver.push({ anims: [], bullets: [], particleSystems: [] }, 2, 0.2, new Vector3());
     emission.update(0.2, true);
     expect(emission.mesh.count).toBe(0);

@@ -177,6 +177,8 @@ export class RealLightNodes {
   readonly artRolloff = uniform(NIGHT_ART_DEFAULTS.rolloff as number);
   readonly artBase = uniform(NIGHT_ART_DEFAULTS.base as number);
   readonly artWrap = uniform(NIGHT_ART_DEFAULTS.wrap as number);
+  /** Luminance scale of projected redraw colour (page exposure and gain) into the sprite art scale. */
+  readonly projectedArtScale = uniform(NIGHT_ART_DEFAULTS.projectedScale as number);
   readonly ambientOcclusion = uniform(NIGHT_ART_DEFAULTS.ao as number);
   contactField?: AmbientContactField;
   private readonly contacts = new Map<object, readonly AmbientContact[]>();

@@ -4,8 +4,7 @@ import { Vector3 } from 'three/webgpu';
 import { EFFECT_TABLE } from '../live/effectTable';
 import type { LiveAnim } from '../live/effects';
 import type { EmissivePrimitive } from '../realEmissive';
-import { flicker } from '../lightField';
-import { animWorld, animLightPolicy, REAL_LIGHT_POLICIES } from './realLights';
+import { animWorld, animLightPolicy } from './realLights';
 export const EMISSIVE_EVENTS = { seconds: 0.15, dayEV: 0.25, nightEV: 0.5, headDistance: 0.9, headRise: 1.5 } as const;
 export function eventExposureKick(age: number, night: number): number {
   if (age < 0 || age >= EMISSIVE_EVENTS.seconds) return 0;
@@ -35,32 +34,27 @@ export function firingHead(head: Vector3, sources: readonly Vector3[]): boolean 
       Math.abs(head.y - p.y) <= EMISSIVE_EVENTS.headRise,
   );
 }
-export function animEmission(anim: LiveAnim, age: number, now: number, fps = 62.5): EmissivePrimitive | null {
+export function animEmission(anim: LiveAnim, age: number, _now: number, fps = 62.5): EmissivePrimitive | null {
   const row = EFFECT_TABLE[anim.type];
   const fire = row?.c === 'fire' || /^(FIRE0[123]|INITFIRE)$/.test(anim.type);
   const muzzle = row?.c === 'muzzle';
   const blast = row?.c === 'explosion' || row?.c === 'collapse' || largeLightEvent(anim.type);
-  if (!fire && !muzzle && !blast) return null;
+  // Fires get no added core: the flame art is drawn above the anim's coordinate, so a disc there read as a detached
+  // glowing dot under the flame at 1:1 (sandbox SOV07/XMP29 night, 2026-11-14). Their physical light stays.
+  if (fire || (!muzzle && !blast)) return null;
   const seconds = muzzle ? Math.min(0.15, 2 / fps + 0.03) : EMISSIVE_EVENTS.seconds;
-  if (age < 0 || (!fire && age >= seconds)) return null;
+  if (age < 0 || age >= seconds) return null;
   const at = new Vector3(...animWorld(anim));
-  const radius = fire
-    ? anim.attachedTo
-      ? 0.1
-      : 0.16
-    : muzzle
-      ? 0.1
-      : Math.max(0.2, row?.light?.[3] ?? row?.s ?? animLightPolicy(anim.type)?.radius ?? 0.3);
-  const policy = anim.attachedTo ? REAL_LIGHT_POLICIES.burning : REAL_LIGHT_POLICIES.fire;
+  const radius = muzzle ? 0.1 : Math.max(0.2, row?.light?.[3] ?? row?.s ?? animLightPolicy(anim.type)?.radius ?? 0.3);
   return {
     source: `anim:${anim.id}:${anim.uid}:${anim.type}`,
     from: at,
     to: at,
     width: radius * 2,
     disc: true,
-    colour: fire ? [1, 0.3, 0.055] : [1, 0.5, 0.12],
-    hot: fire ? [1, 0.65, 0.25] : [1, 0.95, 0.8],
-    gain: fire ? 0.65 * flicker(anim.uid / 65536, now, policy.flicker) : 1 - age / seconds,
+    colour: [1, 0.5, 0.12],
+    hot: [1, 0.95, 0.8],
+    gain: 1 - age / seconds,
     // Pull along the view direction only, preserving the native on-screen centre.
     push: Math.max(0, radius * 0.5),
   };
