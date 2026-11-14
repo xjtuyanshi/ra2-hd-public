@@ -76,6 +76,7 @@ import { SILHOUETTE_LEVELS, SILHOUETTE_SEARCH, silhouetteOf, silhouetteSmooth } 
 import { cinematicGrade, faithfulToneMap, hasCinematicGrade, neutralGrade, type CinematicGradeParams } from './post';
 import { buildTerrain, type TerrainBuild } from './terrain';
 import type { ShaderNode } from './tsl';
+import { FinalTone, type FinalToneParams } from './tone';
 import { updateUnlitDisplay } from './unlit';
 import { buildWater, type WaterUniforms } from './water';
 import { buildRain, buildSnow, type RainSystem } from './weather';
@@ -128,6 +129,8 @@ export interface HdSettings extends CinematicGradeParams {
   /** Load-time voxel geometry selection. Changing it requires rebuilding the world's voxel units. */
   voxelLook: 'engine' | 'remaster';
   toneMapper: ToneMapper;
+  /** Optional final colour stage; null preserves the original graph and key. */
+  tone: FinalToneParams | null;
   exposure: number;
   bloom: number;
   vignette: number;
@@ -771,6 +774,7 @@ export class HdRenderer {
   readonly settings: HdSettings = {
     voxelLook: 'engine',
     toneMapper: 'faithful',
+    tone: null,
     exposure: 1,
     bloom: 0.55,
     vignette: 0.25,
@@ -820,6 +824,7 @@ export class HdRenderer {
   /** Nodes of the current pipeline that own render targets (pass targets, bloom, FXAA and sharpen), freed on rebuild. */
   private pipelineNodes: { dispose(): void }[] = [];
   private readonly bloomStrength = uniform(0.55);
+  private readonly finalTone = new FinalTone();
   private readonly clarityAmount = uniform(0);
   private readonly claritySampleScale = uniform(1);
   /** Bloom threshold on the unexposed scene (see frame()). */
@@ -1212,6 +1217,7 @@ export class HdRenderer {
     if (this.world && debugView === 'none') key.push('unlit');
     if (this.topEffectsPass) key.push('top-effects');
     if (this.mistWanted()) key.push('mist');
+    if (this.settings.tone) key.push('tone', this.settings.tone.grain > 0);
     return JSON.stringify(key);
   }
 
@@ -1364,7 +1370,22 @@ export class HdRenderer {
       return emission ? linear.add(emission) : linear;
     };
     let output: ShaderNode;
-    if (hasCinematicGrade(this.settings)) {
+    let toneLook: ShaderNode | null = null;
+    const toneCode: ShaderNode | null =
+      this.settings.tone && this.painterDepthEnabled ? scenePass.getTextureNode('physicalDepth').yz.toVar() : null;
+    if (this.settings.tone) {
+      const linear: ShaderNode =
+        toneMapper === 'faithful' ? mixed : toneMapping(TONE_MAPPERS[toneMapper], float(1), vec4(composite, 1)).rgb;
+      const graded: ShaderNode = hasCinematicGrade(this.settings)
+        ? mix(linear, cinematicGrade(linear, this.gradeUniforms), this.gradeShare)
+        : linear;
+      toneLook = graded;
+      const share: ShaderNode = hasCinematicGrade(this.settings) ? this.gradeShare : float(0);
+      output = renderOutput(
+        vec4(addEmission(this.finalTone.node(linear, graded, share, this.nightDisplay, toneCode)), 1),
+        NoToneMapping,
+      );
+    } else if (hasCinematicGrade(this.settings)) {
       // Grade display-linear colour after the tone map, before renderOutput encodes sRGB and the night toe lift.
       const linear: ShaderNode =
         toneMapper === 'faithful' ? mixed : toneMapping(TONE_MAPPERS[toneMapper], float(1), vec4(composite, 1)).rgb;
@@ -1395,12 +1416,20 @@ export class HdRenderer {
         .max(0),
       1,
     );
+    const grainCut = this.settings.tone && this.settings.tone.grain > 0 && toneCode && debugView === 'none';
+    // Clarity and grain share one display copy. Its scratch alpha carries the pre-tone foliage/ground mask,
+    // so the grain pass never re-evaluates lighting, bloom or grading just to classify foliage.
+    const picture: ShaderNode | null =
+      (this.settings.clarity > 0 || grainCut) && debugView === 'none'
+        ? convertToTexture(grainCut ? vec4(display.rgb, this.finalTone.grainMask(toneLook!, toneCode)) : display)
+        : null;
+    if (this.settings.tone && picture) nodes.push(picture);
+    if (grainCut) display = this.finalTone.grainCut(picture, this.nightDisplay);
     if (this.settings.clarity > 0 && debugView === 'none') {
       // Band-pass (difference of two half-resolution blurs): faces, crevices and canopy masses a few CSS px and up gain
       // contrast while pixel-scale texture (brick, asphalt grain) is left as it is; the plain unsharp mask doubled it.
       this.claritySampleScale.value = this.viewPixelScale() / CLARITY_KERNEL_SCALE;
       // Both blurs read one copy of the picture: handed the expression, each drew a full-size copy of its own.
-      const picture: ShaderNode = convertToTexture(display);
       // Keep kernel weights and materials stable. Scaling the sample offsets preserves the blur's scene radius;
       // encoding the scale in sigma instead rebuilt four shaders on every sufficiently large window-size change.
       const fine: ShaderNode = gaussianBlur(
@@ -1474,6 +1503,7 @@ export class HdRenderer {
   /** An airless scene retains the authored illuminant instead of acquiring a cinematic sky/shadow colour. */
   private updateGrade(airless: boolean): void {
     this.gradeAirless = airless;
+    if (this.settings.tone) this.finalTone.set(this.settings.tone, airless);
     if (airless) {
       this.gradeUniforms.gradeBalance.value.setScalar(1);
       this.gradeUniforms.gradeShadowTint.value.setScalar(1);

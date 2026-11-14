@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { neutralGrade } from '../../packages/hd-renderer/src/post';
 import type { VmShell } from '../../src/adapter/vmShell';
 import type { GameRenderState, GameRenderPreparation } from '../../src/games/renderState';
 import {
@@ -1025,6 +1026,42 @@ describe('HD bridge look parameters', () => {
     );
     expect(view.hd.applySettings.mock.invocationCallOrder[0]).toBeLessThan(view.push.mock.invocationCallOrder[0]!);
     expect(view.hd.applySettings.mock.invocationCallOrder[0]).toBeLessThan(view.render.mock.invocationCallOrder[0]!);
+    harness.stop();
+  });
+
+  it('applies hd-tone without hd-look before the first snapshot and render', async () => {
+    const harness = setup('?hd=1&hd-tone=moist2');
+    const view = fakeLookView();
+    Object.assign(view.hd.settings, neutralGrade());
+    await goLive(harness, view);
+    expect(view.hd.settings).toMatchObject({ tone: { density: 0.12, grade: null, grain: 0.12 } });
+    expect(hdRenderer.applyLookPreset).not.toHaveBeenCalled();
+    expect(view.hd.applySettings).toHaveBeenCalledTimes(1);
+    expect(view.hd.applySettings.mock.invocationCallOrder[0]).toBeLessThan(view.push.mock.invocationCallOrder[0]!);
+    expect(view.hd.applySettings.mock.invocationCallOrder[0]).toBeLessThan(view.render.mock.invocationCallOrder[0]!);
+    harness.stop();
+  });
+
+  it('derives tone from the applied look and the live theatre', async () => {
+    const harness = setup('?hd=1&hd-look=cinematic&hd-tone=moist1');
+    const view = fakeLookView();
+    Object.assign(view.hd.settings, neutralGrade());
+    view.theater = 'snow';
+    hdRenderer.applyLookPreset.mockImplementationOnce((settings) => Object.assign(settings, { gradeContrast: 0.2 }));
+    await goLive(harness, view);
+    expect(view.hd.settings).toMatchObject({
+      tone: { density: 0, contrast: expect.closeTo(0.072, 12), grade: { gradeContrast: 0.2 } },
+    });
+    expect(view.hd.applySettings).toHaveBeenCalledTimes(1);
+    harness.stop();
+  });
+
+  it.each(['off', 'unknown'])('keeps explicit hd-tone=%s disabled', async (style) => {
+    const harness = setup(`?hd=1&hd-tone=${style}`);
+    const view = fakeLookView();
+    await goLive(harness, view);
+    expect(view.hd.settings).toMatchObject({ tone: null });
+    expect(view.hd.applySettings).toHaveBeenCalledTimes(1);
     harness.stop();
   });
 

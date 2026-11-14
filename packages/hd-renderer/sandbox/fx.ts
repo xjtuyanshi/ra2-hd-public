@@ -100,6 +100,9 @@ import { depleteOre, growthGrid, mapOverlayGrid, polylinePosition, type CellPoin
 import type { Weather } from '../src/contract';
 import { parseWeatherParams, weatherSettings } from '../src/weatherParams';
 import { parseSceneLighting } from './sceneLighting';
+import { parseWaterStyle } from '../src/ra2/waterStyles';
+import { applyMoistTone, parseToneStyle } from '../src/ra2/moistTone';
+import { applyToneOverrides } from './tone';
 
 const params = new URLSearchParams(location.search);
 const canvas = document.querySelector<HTMLCanvasElement>('#view')!;
@@ -138,7 +141,7 @@ const live = await LiveView.create(canvas, {
   effectsHd: params.get('fxhd') !== '0',
   volumetricEffects: params.get('fxvol') === 'ray' ? 'ray' : 'off',
   effectsHdBase: params.get('fxhdbase') ?? undefined,
-  water: params.get('water') === 'enhanced' ? 'enhanced' : 'classic',
+  water: parseWaterStyle(params.get('water')),
   ...(params.get('glints') === 'off' ? { oreGlints: false } : {}),
   ...(params.has('sparkle') ? { crystalSparkle: Number(params.get('sparkle')) } : {}),
 });
@@ -182,6 +185,12 @@ if (overrides.length) {
       throw new Error(`Invalid setting override: ${item}; expected numericKey:value or key:r/g/b`);
     settings[key] = value;
   }
+  live.hd.applySettings();
+}
+// Tone follows all look overrides, so its theatre grade starts from the actual look.
+if (params.has('tone')) {
+  applyMoistTone(live.hd.settings, live.theater, parseToneStyle(params.get('tone')));
+  applyToneOverrides(live.hd.settings.tone, params.get('toneset'));
   live.hd.applySettings();
 }
 // &lightspec=TYPE.orb.key:value,TYPE.arc.key:value,...: building-light tuning reviews without code edits (development

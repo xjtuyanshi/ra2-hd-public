@@ -1392,8 +1392,9 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
     void Promise.all([
       import('../../../../packages/hd-renderer/src/live/liveView'),
       preset ? import('../../../../packages/hd-renderer/src/HdRenderer') : null,
+      params.has('hd-tone') ? import('../../../../packages/hd-renderer/src/ra2/moistTone') : null,
     ])
-      .then(async ([{ LiveView }, renderer]) => {
+      .then(async ([{ LiveView }, renderer, tone]) => {
         // A stopped bridge must not create a GPU device for its detached canvas.
         if (stopped) return null;
         const timeOfDay = params.has('hd-time') ? Number(params.get('hd-time')) : undefined;
@@ -1425,8 +1426,9 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
         });
         if (preset && renderer) {
           renderer.applyLookPreset(view.hd.settings, preset);
-          view.hd.applySettings();
         }
+        if (tone) tone.applyMoistTone(view.hd.settings, view.theater, tone.parseToneStyle(params.get('hd-tone')));
+        if (preset || tone) view.hd.applySettings();
         if (topEffects) view.hd.enableTopEffects();
         // A watched view never waits for a pipeline compiler: what is new appears a few frames later instead of the
         // whole picture standing still (?hd-pipelines=sync keeps three's own behaviour).

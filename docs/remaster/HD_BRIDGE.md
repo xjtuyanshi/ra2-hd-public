@@ -793,6 +793,13 @@ vehicles take their own exposure, top gain and grade balance share, see "Vehicle
 retain their existing dusk/night art tone; see the capture workflow in `scripts/remaster/qa/WATER.md` and water notes
 in `packages/hd-renderer/README.md`); `hd-glints=off` leaves out the engine's ore/gem glints and `hd-sparkle=0..1`
 sets the HD star twinkle on crystals (0 by default while the glints are drawn);
+`hd-tone=off|moist1|moist2|moist3` selects the optional theatre-aware final colour stage after the look
+(default/unknown: off, also works without `hd-look`). Stage order: scene lighting (real lights / normals, scene pass)
+-> bloom -> tone map -> cinematic grade -> moist tone (last colour stage) -> emission/unlit add
+-> output encode + night toe -> grain cut -> clarity -> RCAS -> outline AA. Emission/unlit bypass the colour stage;
+water keeps the look colour, objects take most of the colour and all of the depth (foliage all of it), and night
+reduces the colour share.
+See "Moist final tone" in `packages/hd-renderer/README.md` for controls and unverified visual/performance scope.
 `hd-vlook=remaster` selects the remaster voxel look; `hd-vproj=<dir>` selects vehicle redraw projection atlases under
 the HD cache (e.g. `vehicles-hd`); `hd-rect=x,y,w,h`
 overrides the tactical rectangle (default: the frame minus YR's 168 px sidebar and 32 px command bar).

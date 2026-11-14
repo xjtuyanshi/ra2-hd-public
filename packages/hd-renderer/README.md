@@ -917,7 +917,7 @@ empty.
   profile and the sphere, not their sum: overlapping engulf profiles must not extend the lead's reach twice.
   A lone blast has only the bounded sphere profile and keeps its original merge size.
 - Post (`src/HdRenderer.ts`, `src/post.ts`): per-channel exposure, mist and shroud visibility, bloom of the scene
-  `output` only, the display transform and cinematic grade, then the unbloomed emissive overlay in display-linear
+  `output` only, the display transform, cinematic grade and optional moist final tone (`src/tone.ts`), then the unbloomed emissive overlay in display-linear
   colour **before** `renderOutput` encodes sRGB. The same composite applies at night and with neutral grading;
   emission is multiplied by pixel shroud visibility. Night toe lift, anti-aliasing and sharpening follow as before.
   With positive `sourceLights`, debug view `none` and supported MRT blending, the scene adds an `emissive` attachment
@@ -939,6 +939,7 @@ Units and buildings are placeholders (`src/objects.ts`) until real assets exist;
 | Setting      | Default      | Meaning                                                                                                                                                                                                                                                                                                                                                                    |
 | ------------ | ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `toneMapper` | `'faithful'` | Display transform. `'faithful'` is the identity up to linear 0.8 and a hue-preserving shoulder above (`src/post.ts`), so original palette colours reach the screen unchanged by day; on original maps it blends into PBR Neutral with the night weight (the night presentation's calibration). `'neutral'`, `'agx'` and `'aces'` are three's filmic curves for comparison. |
+| `tone`       | `null`       | Optional final colour stage (`FinalToneParams`); null keeps the original graph/key. RA2 theatre presets are in `src/ra2/moistTone.ts`.                                                                                                                                                                                                                                     |
 | `exposure`   | `1`          | Multiplier on the scene exposure. For original maps the day exposure is pi / (flat-ground irradiance at clear noon) per channel, so lit art shows its own colour at noon (blending into the night's pi / reference with the night weight).                                                                                                                                 |
 | `bloom`      | `0.55`       | Bloom strength. By day only exposed luminance above 1 (effect cores, glints) blooms; the night keeps its 0.85 threshold on the unexposed scene.                                                                                                                                                                                                                            |
 | `vignette`   | `0.25`       | Screen-edge darkening (the live view sets 0, like the original).                                                                                                                                                                                                                                                                                                           |
@@ -961,6 +962,51 @@ estimates, not measured full-match memory or performance. Every mid-pass copy of
 backdrop-sampling effect material) ends and restarts the scene pass; under `'msaa4'` that stores, resolves and reloads
 the multisampled target, about 0.5 ms per copy at 2400x1500 on an Apple M-series GPU against about 0.1 ms
 single-sampled, so layers should copy at most once per frame and only while they draw.
+
+## Moist final tone (opt-in)
+
+`hd-tone=off|moist1|moist2|moist3` selects a theatre-aware final colour stage in the game bridge;
+unknown or missing values mean `off`. All look presets leave `tone` alone and default settings use `null`.
+The FX sandbox uses `&tone=moist1|moist2|moist3` after `look` and all `set=` overrides. Sandbox-only
+`&toneset=density:0.16,grain:0.45,chroma:1.3/1.2/1.07` overrides top-level numeric tone values and the chroma triple.
+
+Stage order: scene lighting (real lights / normals from other pilots, scene pass) -> bloom -> tone map ->
+cinematic grade -> moist tone (last colour stage) -> emission/unlit add -> output encode + night toe ->
+grain cut -> clarity -> RCAS -> outline AA. Diagnostic views bypass the final tone.
+
+The generic transform (`src/tone.ts`) works in encoded Rec.709 luma and opponent chroma (r - g, (r + g) / 2 - b).
+Density deepens encoded luma like an exposure, `(1 - density) y + density y^6`: linear-light ratios between
+mid-tones, and so grass blades, clumps and light/dark patches, keep their contrast while the field deepens, and the
+`y^6` shoulder pins white. Rejected alternatives: a cubic high-key compression flattened sunlit grass (mid-scale L*
+contrast -25%); a gamma crushed dark scenes (jungle median L* 42 -> 27); fading the change out on dark pixels flattened
+the patches of darker maps (jungle patch contrast -28%). `contrast` then adds a sun/shade S-curve around `pivot`.
+Three luma bands set chroma gain (a gain below 1 in highlights tames bleached flecks) and at most two hue windows
+rotate colour without changing geometry. Hue windows may carry `maxLuma`, so snow whites (tone hue ~203,
+luma > 0.85) are told from water of the same hue.
+On object pixels (silhouette code != 0) `objectShare` of the colour change and `objectDensity` of the luma change
+apply. Units must deepen with the ground: with a low `objectDensity` they stayed bright while the grass around them
+darkened, and the unit/ground L* gap fell from 22 to 8 (tanks sank into the grass). Green foliage takes all of it.
+Protection and foliage use the look's colour before the tone; emission and unlit radiance join afterwards.
+A replacement grade changes only the theatre's balance and split tints, preserving the look's contrast/lift/saturation;
+faithful ignores replacement grading. Airless scenes neutralize its balance/tints, and night fades colour to 35%.
+
+RA2 data (`src/ra2/moistTone.ts`): direction from the owner's choice on 2026-11-14 of reference A of the moist
+diagnosis boards (warm sunlit light, strong sun/shade contrast, deep saturated greens in shade, golden highlights),
+over B's uniformly deep green; only colour and tone, never A's redrawn ground or shapes. moist1 is 0.6 of the theatre
+data, moist2 1, moist3 1.4 (tints saturate at 1). Snow keeps the same spirit cold and crisp: no darkening, blue
+shadows, whites back to the original's cyan ice (Lab hue about 217), never violet or warm. Review limits per level:
+units at least 16 L* from the ground around them on day maps, mid-scale contrast not below the current look, clear
+water unchanged; moist1 within about 7 L* of the current look.
+
+The display grain cut removes only the finest luminance residual with an edge guard. It shares clarity's single
+picture copy, using scratch alpha for the pre-tone ground/foliage mask so classification does not resample the scene.
+It adds five picture taps (centre plus four bilinear half-device-pixel offsets); colour/mask classification shares one
+physical-depth sample. Without painter physical depth, colour treats pixels as ground and grain cut is omitted.
+Clarity uses the same pre-cut picture for its mid-scale band. Changing tone values updates uniforms; only enabling
+tone or toggling positive grain changes its pipeline key. Cost: in the FX sandbox at 3456x2234 (XMP27T8 base,
+cinematic look, Apple M-series, other GPU work running), 15 alternating 30-frame blocks gave a median 40.2 ms with tone
+off and 38.7 ms with moist2 on: no difference above the +-4 ms noise of that machine, so the <0.4 ms budget is not
+proven by this measurement. Rendered appearance is checked on sandbox boards, not yet live.
 
 ## Enhanced look (opt-in, `src/ra2/spriteLook.ts`)
 
