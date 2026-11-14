@@ -94,8 +94,37 @@ export function lightReach(l: PhysicalLight): number {
     ),
   );
 }
+/**
+ * Merge co-located continuous lights (several fire anims and fire particle systems on one burning vehicle) into one:
+ * the brightest keeps its position, reach and colour; the others add only `share` of their intensity, and the sum is
+ * capped at `cap` times the brightest. Summing them in full made a flat, hard-rimmed pool around each burning tank
+ * (live SOV07TMD night, 28 kept lights for four tanks).
+ */
+export function mergeNearbyLights<K>(
+  entries: readonly { key: K; light: PhysicalLight }[],
+  radius = 1,
+  share = 0.3,
+  cap = 1.6,
+): { key: K; light: PhysicalLight }[] {
+  const sorted = [...entries].sort((a, b) => lightLuminance(b.light.intensity) - lightLuminance(a.light.intensity));
+  const out: { key: K; light: PhysicalLight; base: number; sum: [number, number, number] }[] = [];
+  for (const e of sorted) {
+    const p = e.light.position;
+    const host = e.light.end
+      ? undefined
+      : out.find((o) => !o.light.end && Math.hypot(o.light.position[0] - p[0], o.light.position[2] - p[2]) <= radius);
+    if (!host) {
+      out.push({ ...e, base: lightLuminance(e.light.intensity), sum: [...e.light.intensity] });
+      continue;
+    }
+    for (let i = 0; i < 3; i++) host.sum[i]! += e.light.intensity[i]! * share;
+    const k = Math.min(1, (cap * host.base) / Math.max(lightLuminance(host.sum), 1e-8));
+    host.light = { ...host.light, intensity: host.sum.map((c) => c * k) as [number, number, number] };
+  }
+  return out.map(({ key, light }) => ({ key, light }));
+}
 export function lightWindow(t: number): number {
-  return Math.max(0, 1 - Math.min(1, Math.max(0, t)) ** 4) ** 2;
+  return Math.max(0, 1 - Math.min(1, Math.max(0, t)) ** 2) ** 2;
 }
 export interface LightMoment {
   s: [number, number, number];
@@ -142,8 +171,14 @@ export function cappedIrradiance(e: Rgb, cap: number): [number, number, number] 
   const k = cap > 0 && lum > 0 ? Math.min(1, (cap * -Math.expm1(-lum / cap)) / lum) : 0;
   return e.map((c) => c * k) as [number, number, number];
 }
+/** CPU twin of softKneeNode (ground). */
+export function softCappedIrradiance(e: Rgb, cap: number): [number, number, number] {
+  const lum = lightLuminance(e);
+  const k = cap > 0 && lum > 0 ? Math.min(1, (cap * Math.log1p(lum / cap)) / lum) : 0;
+  return e.map((c) => c * k) as [number, number, number];
+}
 export function irradianceKnee(e: Rgb, night: number, capScale = 1, ambientLum = 0.4): [number, number, number] {
-  return cappedIrradiance(e, (1.2 + (3 * ambientLum - 1.2) * Math.min(1, Math.max(0, night))) * capScale);
+  return softCappedIrradiance(e, (1.2 + (3 * ambientLum - 1.2) * Math.min(1, Math.max(0, night))) * capScale);
 }
 export function objectIrradianceKnee(e: Rgb, sceneLum: number, noon = 1): [number, number, number] {
   return cappedIrradiance(e, Math.max(0, 0.8 * noon - sceneLum));
@@ -274,6 +309,15 @@ export function kneeNode(e: ShaderNode, cap: ShaderNode): ShaderNode {
       .min(1),
   );
 }
+/**
+ * Ground knee: logarithmic, so brightness keeps rising towards the source. The exponential ceiling flattened a burning
+ * tank's light at SOV07TMD night (ambient about 0.1 noon) into a uniform yellow disc with a hard rim (live, 7a9107c).
+ */
+export function softKneeNode(e: ShaderNode, cap: ShaderNode): ShaderNode {
+  const lum = dot(e, vec3(...LUMA));
+  const c = cap.max(1e-8);
+  return e.mul(c.mul(lum.div(c).add(1).log()).div(max(lum, 1e-8)).min(1));
+}
 /** S only for water/participating media; surfaces reconstruct the directional moments before the common knee. */
 export function sampleRealLight(
   nodes: RealLightNodes,
@@ -334,7 +378,8 @@ export function sampleRealLight(
     capScale === OBJECT_KNEE
       ? float(OBJECT_KNEE).sub(ambientLum).max(0)
       : mix(float(1.2), ambientLum.mul(3), nodes.nightWeight);
-  return kneeNode(e.mul(exp(max(height.sub(REAL_LIGHT_UPPER), 0).mul(-0.45))), cap);
+  const attenuated = e.mul(exp(max(height.sub(REAL_LIGHT_UPPER), 0).mul(-0.45)));
+  return capScale === OBJECT_KNEE ? kneeNode(attenuated, cap) : softKneeNode(attenuated, cap);
 }
 
 interface TimedLight {
@@ -516,7 +561,7 @@ export class RealLightField {
       .div(perpendicular);
     const windowDistance = extra.w.greaterThan(0.5).select(length(delta.xz), distance);
     const weight = float(1)
-      .sub(clamp(windowDistance.div(max(b.w, 1e-8)), 0, 1).pow(4))
+      .sub(clamp(windowDistance.div(max(b.w, 1e-8)), 0, 1).pow(2))
       .pow(2);
     const transmission = Fn(() => {
       const value = float(1).toVar();

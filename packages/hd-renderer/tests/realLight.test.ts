@@ -114,11 +114,14 @@ describe('physical light CPU twins', () => {
   });
   it('applies the knee to irradiance, preserving albedo ratios and illumination hue', () => {
     const e = irradianceKnee([12, 8, 5], 1);
-    expect(lightLuminance(e)).toBeLessThanOrEqual(2.5);
+    // Logarithmic ground knee: 3 * ambient * ln(1 + E / (3 * ambient)), still far below the raw irradiance.
+    expect(lightLuminance(e)).toBeLessThanOrEqual(1.2 * Math.log1p(lightLuminance([12, 8, 5]) / 1.2) + 1e-9);
     expect(e[0] / e[1]).toBeCloseTo(1.5);
     const lit = (albedo: number) => (albedo * (0.3 + e[0])) / Math.PI;
     expect(lit(0.4) / lit(0.1)).toBeCloseTo(4, 14);
-    expect(lightLuminance(irradianceKnee([12, 8, 5], 0))).toBeLessThanOrEqual(1.2);
+    expect(lightLuminance(irradianceKnee([12, 8, 5], 0))).toBeLessThanOrEqual(
+      1.2 * Math.log1p(lightLuminance([12, 8, 5]) / 1.2) + 1e-9,
+    );
   });
   it('calibrates a night fire, retains convex physical falloff and caps source colours', () => {
     const light = policyLight(REAL_LIGHT_POLICIES.fire, [0, 0.4, 0]);

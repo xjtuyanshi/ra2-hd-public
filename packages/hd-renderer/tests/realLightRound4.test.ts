@@ -191,8 +191,14 @@ describe('round 4 source fidelity and receiver bounds', () => {
   );
   it('uses the actual scene-relative ground knee and remaining object headroom', () => {
     for (const ambient of [0.1, 0.3, 0.4, 0.5]) {
-      expect(lightLuminance(irradianceKnee([100, 100, 100], 1, 1, ambient))).toBeCloseTo(3 * ambient);
-      expect(lightLuminance(irradianceKnee([100, 100, 100], 0, 1, ambient))).toBeCloseTo(1.2);
+      // Ground: logarithmic knee scaled by 3x the scene ambient at night (1.2 by day); it keeps rising, never a plateau.
+      expect(lightLuminance(irradianceKnee([100, 100, 100], 1, 1, ambient))).toBeCloseTo(
+        3 * ambient * Math.log1p(100 / (3 * ambient)),
+      );
+      expect(lightLuminance(irradianceKnee([100, 100, 100], 0, 1, ambient))).toBeCloseTo(1.2 * Math.log1p(100 / 1.2));
+      expect(lightLuminance(irradianceKnee([2, 2, 2], 1, 1, ambient))).toBeGreaterThan(
+        lightLuminance(irradianceKnee([1, 1, 1], 1, 1, ambient)),
+      );
       expect(lightLuminance(objectIrradianceKnee([100, 100, 100], ambient)) + ambient).toBeLessThanOrEqual(0.8000001);
     }
     expect(objectIrradianceKnee([3, 2, 1], 0.8)).toEqual([0, 0, 0]);
@@ -433,5 +439,20 @@ describe('round 4 cost and capture tooling', () => {
     view.push({ frame: 4 });
     expect(publish).toHaveBeenCalledTimes(3);
     nodes.dispose();
+  });
+});
+
+describe('round 4 live calibration', () => {
+  it('merges co-located continuous lights so a burning vehicle does not sum into a flat pool', async () => {
+    const { mergeNearbyLights, lightLuminance } = await import('../src/realLight');
+    const fire = (x: number) => ({
+      position: [x, 0.4, 0] as [number, number, number],
+      radius: 0.25,
+      intensity: [1, 0.7, 0.5] as [number, number, number],
+    });
+    const merged = mergeNearbyLights([0, 0.2, 0.4, 0.6, 0.8, 5].map((x, i) => ({ key: i, light: fire(x) })));
+    expect(merged).toHaveLength(2);
+    expect(lightLuminance(merged[0]!.light.intensity)).toBeLessThanOrEqual(1.6 * lightLuminance([1, 0.7, 0.5]) + 1e-9);
+    expect(merged[1]!.light.position[0]).toBe(5);
   });
 });

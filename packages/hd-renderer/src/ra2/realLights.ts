@@ -17,7 +17,8 @@ import {
 import { LEVEL_HEIGHT } from '../world';
 
 export const LIGHT_COLOURS = {
-  fire: [1, 0.62, 0.36],
+  // Saturation 0.5 (was 0.64): at night under blue moonlight the warmer value turned lit grass straw-yellow.
+  fire: [1, 0.72, 0.5],
   explosion: [1, 0.74, 0.52],
   hot: [1, 0.95, 0.9],
   muzzle: [1, 0.88, 0.72],

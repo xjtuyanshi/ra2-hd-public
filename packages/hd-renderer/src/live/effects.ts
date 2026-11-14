@@ -27,6 +27,7 @@ import {
 } from './effectSprites';
 import { EFFECT_TABLE, SMOKE_SYSTEMS, type EffectTableRow, type SmokeSystemRow } from './effectTable';
 import { heldPulseEnvelope } from '../lightField';
+import { mergeNearbyLights, type PhysicalLight } from '../realLight';
 import type { Ra2SceneLighting } from '../ra2/sceneLighting';
 
 import {
@@ -608,6 +609,7 @@ export class LiveEffectsDriver {
       effects = this.physicalEffects;
     if (!field || !effects) return;
     const emission: EmissivePrimitive[] = [];
+    const kept: { key: string; light: PhysicalLight }[] = [];
     for (const anim of effects.anims) {
       if (this.hidden(anim.x, anim.y, anim.z)) continue;
       const core = animEmission(
@@ -618,23 +620,18 @@ export class LiveEffectsDriver {
       );
       if (core) emission.push(core);
       const policy = animLightPolicy(anim.type, undefined, this.logicFps);
-      if (policy?.continuous)
-        field.put('kept', `anim:${anim.id}:${anim.uid}`, now, animPhysicalLight(anim, policy), 0, 0, 0.3);
+      if (policy?.continuous) kept.push({ key: `anim:${anim.id}:${anim.uid}`, light: animPhysicalLight(anim, policy) });
     }
     for (const system of effects.particleSystems) {
       if (system.behaviour !== 'fire' || this.hidden(system.x, system.y, system.z)) continue;
       const p = animWorld(system);
       // No added core for fire systems either (see animEmission): only their physical light.
-      field.put(
-        'kept',
-        `system:${system.id}:${system.uid}`,
-        now,
-        policyLight(REAL_LIGHT_POLICIES.burning, [p[0], p[1] + 0.3, p[2]]),
-        0,
-        0,
-        0.3,
-      );
+      kept.push({
+        key: `system:${system.id}:${system.uid}`,
+        light: policyLight(REAL_LIGHT_POLICIES.burning, [p[0], p[1] + 0.3, p[2]]),
+      });
     }
+    for (const { key, light } of mergeNearbyLights(kept)) field.put('kept', key, now, light, 0, 0, 0.3);
     this.effects.realEmissive?.set('events', emission);
     for (let i = 0; i < (effects.beams?.length ?? 0); i++) {
       const beam = effects.beams![i]!;
