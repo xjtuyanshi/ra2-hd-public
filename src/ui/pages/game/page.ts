@@ -200,9 +200,14 @@ export async function startVmPage(canvas: HTMLCanvasElement, resumedSource?: Gam
   let nativeCursor: Awaited<ReturnType<(typeof import('./nativeCursor'))['createNativeCursor']>> = null;
   let nativeMarkArt: Awaited<ReturnType<(typeof import('./nativeMarkArt'))['loadNativeMarkArt']>> = null;
   /** Console handle for A/B checks: `__nativeMarkArt.enable(false)` shows the game's own marks again. */
-  const markGlobals = window as unknown as { __nativeMarkArt?: { enable(on: boolean): boolean } };
+  const markGlobals = window as unknown as {
+    __nativeMarkArt?: { enable(on: boolean): boolean };
+    __nativeMarkSmooth?: { enable(on: boolean): boolean };
+  };
   const releaseNativeMarkArt = () => {
     frameRenderer.setMarkArt(null);
+    frameRenderer.setMarkSmoothing(false);
+    delete markGlobals.__nativeMarkSmooth;
     nativeMarkArt?.dispose();
     nativeMarkArt = null;
     delete markGlobals.__nativeMarkArt;
@@ -798,13 +803,21 @@ export async function startVmPage(canvas: HTMLCanvasElement, resumedSource?: Gam
       return;
     }
   }
-  // Sharp farm art for fixed native marks such as rank chevrons; only the keyed HD view uses it.
-  if (
-    import.meta.env.DEV &&
-    hdBridgeEnabled &&
-    (new URLSearchParams(window.location.search).get('backend') === 'native' || gameSource?.game.id === 'yr') &&
-    new URLSearchParams(window.location.search).get('native-mark-art') !== '0'
-  ) {
+  // Sharp native marks; only the keyed HD view uses them. Step smoothing needs no art (thin diagonal lines, brackets,
+  // pixel-font strokes); farm art replaces exactly matched fixed marks such as rank chevrons.
+  const markOptions = new URLSearchParams(window.location.search);
+  const nativeMarks =
+    import.meta.env.DEV && hdBridgeEnabled && (markOptions.get('backend') === 'native' || gameSource?.game.id === 'yr');
+  if (nativeMarks && markOptions.get('native-mark-smooth') !== '0') {
+    frameRenderer.setMarkSmoothing(true);
+    markGlobals.__nativeMarkSmooth = {
+      enable: (on) => {
+        frameRenderer.setMarkSmoothing(on);
+        return true;
+      },
+    };
+  }
+  if (nativeMarks && markOptions.get('native-mark-art') !== '0') {
     try {
       const { loadNativeMarkArt } = await import('./nativeMarkArt');
       const art = await loadNativeMarkArt(undefined, menuAbort.signal);

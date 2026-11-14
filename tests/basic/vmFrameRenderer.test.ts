@@ -175,6 +175,7 @@ class FakeWebGl {
   uniform1i(location: { name: string }, value: number): void {
     this.calls.push(`uniform:${location.name}:${value}`);
   }
+  uniform4i(): void {}
   uniform2f(location: { name: string }, x: number, y: number): void {
     this.calls.push(`uniform:${location.name}:${x},${y}`);
   }
@@ -401,6 +402,28 @@ describe('sharp native mark art', () => {
     renderer.setMarkArt(null);
     renderer.draw(picture(), 10, 10);
     expect(canvas.dataset.markArt).toBeUndefined();
+    renderer.destroy();
+  });
+
+  it('switches step smoothing of the keyed 16-bit picture on and off and keeps it across backend changes', () => {
+    const gl = new FakeWebGl();
+    const canvas = { getContext: () => gl, dataset: {} as Record<string, string> };
+    const renderer = createVmFrameRenderer(canvas as unknown as HTMLCanvasElement);
+    renderer.setTransparentKey({ rect: { x: 0, y: 0, width: 4, height: 4 }, rgb565: KEY });
+    const smoothing = () => gl.calls.filter((call) => call.startsWith('uniform:stepSmooth:')).at(-1);
+    renderer.draw(picture(), 10, 10);
+    expect(smoothing()).toBe('uniform:stepSmooth:0');
+    renderer.setMarkSmoothing(true);
+    expect(canvas.dataset.markSmooth).toBe('1');
+    renderer.draw(picture(), 10, 10);
+    expect(smoothing()).toBe('uniform:stepSmooth:1');
+    renderer.setUpscaleMode('bicubic');
+    renderer.draw(picture(), 10, 10);
+    expect(smoothing()).toBe('uniform:stepSmooth:1');
+    renderer.setMarkSmoothing(false);
+    expect(canvas.dataset.markSmooth).toBeUndefined();
+    renderer.draw(picture(), 10, 10);
+    expect(smoothing()).toBe('uniform:stepSmooth:0');
     renderer.destroy();
   });
 

@@ -331,6 +331,8 @@ export class FrameMarkPass {
     const previousActive = gl.getParameter(gl.ACTIVE_TEXTURE) as number;
     gl.activeTexture(gl.TEXTURE4);
     const previousTexture = gl.getParameter(gl.TEXTURE_BINDING_2D) as WebGLTexture | null;
+    // Drain errors left by earlier unrelated calls (bounded), so the allocation check below sees only its own.
+    for (let i = 0; i < 8 && gl.getError() !== gl.NO_ERROR; i++);
     try {
       this.program = gl.createProgram();
       this.buffer = gl.createBuffer();
@@ -380,7 +382,7 @@ export class FrameMarkPass {
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-      this.requireDevice();
+      if (gl.isContextLost() || gl.getError() !== gl.NO_ERROR) throw new Error('Mark device unavailable');
     } catch (error) {
       this.destroy();
       throw error;
@@ -416,7 +418,9 @@ export class FrameMarkPass {
       gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
       gl.drawArrays(gl.TRIANGLES, 0, vertices.length / 4);
       gl.disable(gl.BLEND);
-      this.requireDevice();
+      // Only context loss is checked per draw: gl.getError() synchronises with the GPU process and would also report
+      // errors of unrelated earlier calls. The allocation was validated once in the constructor.
+      if (gl.isContextLost()) throw new Error('Mark device lost');
     } finally {
       gl.bindTexture(gl.TEXTURE_2D, previousTexture);
       gl.activeTexture(previousActive);
@@ -424,10 +428,6 @@ export class FrameMarkPass {
       gl.bindBuffer(gl.ARRAY_BUFFER, previousBuffer);
       gl.useProgram(previousProgram);
     }
-  }
-
-  private requireDevice(): void {
-    if (this.gl.isContextLost() || this.gl.getError() !== this.gl.NO_ERROR) throw new Error('Mark device unavailable');
   }
 
   destroy(): void {

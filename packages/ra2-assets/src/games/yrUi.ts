@@ -17,8 +17,9 @@ export const YR_UI = Object.freeze({
   sidebarPalette: 'sidebar.pal',
   /**
    * Battlefield marks drawn from one shape with one palette. Rank: 0x70A990 draws [0xAC147C] (loaded from the pips
-   * shape at 0x5F770A) frame 14 for veteran and 15 for elite at the bracket corner (0x70AA4F). The palette is
-   * confirmed by exact live pixel matches, not by the address alone.
+   * shape at 0x5F770A) frame 14 for veteran and 15 for elite at the bracket corner (0x70AA4F); frame 19, a 2x2
+   * square for negative veterancy (0x74FFF0), has no diagonal and needs no art. The palette is confirmed by exact live
+   * pixel matches, not by the address alone.
    */
   markShape: 'pips.shp',
   markPalette: 'palette.pal',
