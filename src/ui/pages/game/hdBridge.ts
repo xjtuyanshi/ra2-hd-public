@@ -607,7 +607,7 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
   let fadeStartedAt: number | null = null;
   let fadeFinished = false;
   /** Presentation only: the logical hole is closed while the last HD picture waits for and fades to the original. */
-  let fadeOut: { rect: FrameRect; requestedAt: number; startedAt: number | null } | null = null;
+  let fadeOut: { rect: FrameRect; keyed: boolean; requestedAt: number; startedAt: number | null } | null = null;
   let nativeBattleSurface = false;
   let nativeMenuSurface = false;
   let nativeDialogSurface = false;
@@ -1003,7 +1003,9 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
     if (keyed) keyRect = hole;
     const trailing = !hole && !fadeOut && !!keyRect && now < keyUntil;
     if (!keyed && !trailing) keyRect = null;
-    host.frameRenderer.setTransparentKey(keyRect ? { rect: keyRect, rgb565: RENDER_PASSTHROUGH_KEY_RGB565 } : null);
+    const ghostKey = fadeOut && fadeOut.startedAt === null && fadeOut.keyed ? fadeOut.rect : null;
+    const shownKey = keyRect ?? ghostKey;
+    host.frameRenderer.setTransparentKey(shownKey ? { rect: shownKey, rgb565: RENDER_PASSTHROUGH_KEY_RGB565 } : null);
     // Fade the current original frame, never a screenshot. At its end an ordinary transparent rectangle keeps
     // HD visible until the first keyed native frame supplies the game's independent overlays.
     const opacity = fadeStartedAt === null ? 0 : Math.max(0, 1 - (now - fadeStartedAt) / CROSS_FADE_MS);
@@ -1015,7 +1017,11 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
           : null,
     );
     host.frameRenderer.setTransparentRect(
-      fadeOut && fadeOut.startedAt === null ? fadeOut.rect : hole && !keyRect && opacity <= 0 ? hole : null,
+      fadeOut && fadeOut.startedAt === null && !fadeOut.keyed
+        ? fadeOut.rect
+        : hole && !keyRect && opacity <= 0
+          ? hole
+          : null,
     );
     canvas.style.display = (hole || keyRect || fadeOut) && live ? 'block' : 'none';
     host.invalidate();
@@ -1079,10 +1085,12 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
     recoveryText = notice;
     capacityUnconfirmed = false;
     if (native && nativeBattleSurface && !nativeDialogSurface && revealed && hole && live) {
-      fadeOut = { rect: { ...hole }, requestedAt: performance.now(), startedAt: null };
+      // Until the first unkeyed frame, queued keyed frames keep their key: the game's own overlays (a "game over"
+      // banner, health bars, selection boxes) stay on the ghost instead of blinking out (seen live on XMP27T8,
+      // 2026-11-13, when the whole rectangle was made transparent). Without a keyed picture the rectangle is.
+      fadeOut = { rect: { ...hole }, keyed: !!keyRect, requestedAt: performance.now(), startedAt: null };
       timeline.fadeOutStartedAt = fadeOut.requestedAt;
       timeline.fadeOutFinishedAt = null;
-      // Hide the entire queued keyed picture until the first unkeyed frame, rather than exposing its key pixels.
       keyRect = null;
       keyUntil = 0;
     }

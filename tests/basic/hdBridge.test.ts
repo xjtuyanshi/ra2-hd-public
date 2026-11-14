@@ -2822,14 +2822,15 @@ describe('live original to HD transition', () => {
     const rect = { x: 0, y: 0, width: 1112, height: 688 };
     expect(harness.bridge()!.presentation).toMatchObject({ mode: 'original', fadingOut: true });
     expect(harness.hdCanvas.style.display).toBe('block');
-    expect(harness.renderer.setTransparentKey).toHaveBeenLastCalledWith(null);
-    expect(harness.renderer.setTransparentRect).toHaveBeenLastCalledWith(rect);
+    // Queued keyed frames keep their key over the ghost, so the game's own overlays do not blink out.
+    expect(harness.renderer.setTransparentKey).toHaveBeenLastCalledWith({ rect, rgb565: 0xf81f });
+    expect(harness.renderer.setTransparentRect).toHaveBeenLastCalledWith(null);
     expect(harness.renderer.setOpacityRegion).toHaveBeenLastCalledWith(null);
     const draws = view.render.mock.calls.length;
     const resizes = view.resizePixels.mock.calls.length;
     harness.nativeFrame(true);
     await advance(50);
-    expect(harness.renderer.setTransparentRect).toHaveBeenLastCalledWith(rect);
+    expect(harness.renderer.setTransparentKey).toHaveBeenLastCalledWith({ rect, rgb565: 0xf81f });
     expect(view.render).toHaveBeenCalledTimes(draws);
     expect(view.resizePixels).toHaveBeenCalledTimes(resizes);
     expect(harness.vm.setTacticalPassthrough).toHaveBeenLastCalledWith(0);
@@ -2838,6 +2839,7 @@ describe('live original to HD transition', () => {
     harness.nativeFrame(false);
     expect(harness.renderer.setOpacityRegion).toHaveBeenLastCalledWith({ rect, opacity: 0 });
     expect(harness.renderer.setTransparentRect).toHaveBeenLastCalledWith(null);
+    expect(harness.renderer.setTransparentKey).toHaveBeenLastCalledWith(null);
     await advance(150);
     expect(harness.renderer.setOpacityRegion).toHaveBeenLastCalledWith({ rect, opacity: 0.5 });
     harness.nativeFrame(false);

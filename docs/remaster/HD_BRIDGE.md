@@ -64,7 +64,8 @@ reachable (and checks what it imports); only a build shows that the bridge itsel
    HD sidebar hidden. A presentation-only ghost retains the last HD canvas picture over the former hole rectangle;
    it neither renders nor resizes, early map-hint preparation cannot replace its canvas, and `outOfSight` is deferred
    until the ghost ends. Until the first unkeyed native
-   frame arrives, that entire rectangle stays transparent so queued key pixels cannot show through. That frame
+   frame arrives, queued keyed frames keep their transparent key over the ghost, so the game's own overlays (a "game
+   over" banner, health bars) stay instead of blinking out; without a keyed picture the whole rectangle is transparent. That frame
    starts a 300 ms native opacity ramp from 0 to 1 over the ghost. Completion hides the canvas and clears all
    regions. If no unkeyed frame arrives within the 500 ms passthrough trail deadline measured from fallback,
    recovery uses the previous immediate cut. Dialog surfaces, menu video mode, a new match, toggle-off and stop
