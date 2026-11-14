@@ -58,7 +58,7 @@ import {
   vec4,
   viewportSharedTexture,
 } from 'three/tsl';
-import { DEFAULT_ATMOSPHERE_NODES, objectLight, physicalGroundDecalLight } from './atmosphere';
+import { DEFAULT_ATMOSPHERE_NODES, smokeLight, physicalGroundDecalLight } from './atmosphere';
 import type { LightField } from './lightField';
 import type { RealLightField } from './realLight';
 import { DirtyAttribute } from './dirtyAttribute';
@@ -998,10 +998,10 @@ export class EffectsLayer {
         const n = mx_noise_float(vec3(p.mul(1.8), seed.mul(20).add(t.mul(1.5)))).mul(0.3);
         const mask = smoothstep(1.0, 0.2, length(p).add(n));
         // Unlit smoke follows the scene's light level (1 at clear noon) and glows near fires and explosions, lit from
-        // below at half the light's saturation (objectLight), so a blast next to water never paints it deep red.
+        // below. Physical smoke takes only a weak, nearly neutral directional fill (smokeLight).
         // Soot glows more from the fire under it (lit from below).
         const lit = this.nodes.sceneBrightness.add(
-          objectLight(positionWorld.xz, this.nodes, positionWorld.y)
+          smokeLight(positionWorld.xz, this.nodes, positionWorld.y, vec3(0, -1, 0))
             .div(this.nodes.referenceLevel)
             .mul(float(0.5).add(soot)),
         );
@@ -1296,7 +1296,7 @@ export class EffectsLayer {
       })();
     });
 
-    this.beams = new BeamLayer(this.cameraRight, this.cameraUp, this.now);
+    this.beams = new BeamLayer(this.cameraRight, this.cameraUp, this.now, !!this.nodes.realLight);
 
     const noise = waterTextures().noise;
     // Enhanced glow halo: a soft Gaussian of fire light around the blast, white-yellow at the centre, orange outside,
@@ -1388,9 +1388,16 @@ export class EffectsLayer {
           .add(rim)
           .mul(mix(e.underside, 1, smoothstep(...e.undersideRange, nrm.y)))
           .mul(shadow);
-        const lit = this.nodes.sceneBrightness
-          .mul(shade)
-          .add(objectLight(positionWorld.xz, this.nodes, positionWorld.y).div(this.nodes.referenceLevel).mul(0.45));
+        const lit = this.nodes.sceneBrightness.mul(shade).add(
+          smokeLight(
+            positionWorld.xz,
+            this.nodes,
+            positionWorld.y,
+            this.cameraRight.mul(nrm.x).add(this.cameraUp.mul(nrm.y)).add(this.toCamera.mul(nrm.z)),
+          )
+            .div(this.nodes.referenceLevel)
+            .mul(0.45),
+        );
         // Young soot retains the fire's warmth; cold lobes age to neutral grey so sunlit tops stay distinct.
         const base = mix(color(0x1d1a17), color(0x86847f), clamp(t.mul(1.6).add(seed.mul(0.25)), 0, 1));
         // The fire's glow: underneath the young puff, and inside it for the first moments (black-orange smoke).
@@ -1689,7 +1696,16 @@ export class EffectsLayer {
               .mul(mix(e.underside, 1, smoothstep(...e.undersideRange, nrm.y)))
               .mul(shadow),
           )
-          .add(objectLight(positionWorld.xz, this.nodes, positionWorld.y).div(this.nodes.referenceLevel).mul(0.4));
+          .add(
+            smokeLight(
+              positionWorld.xz,
+              this.nodes,
+              positionWorld.y,
+              this.cameraRight.mul(nrm.x).add(this.cameraUp.mul(nrm.y)).add(this.toCamera.mul(nrm.z)),
+            )
+              .div(this.nodes.referenceLevel)
+              .mul(0.4),
+          );
         const base = mix(color(0x2a2622), color(0x8e8c87), clamp(t.mul(1.5).add(seed.mul(0.2)), 0, 1));
         const glow = vec3(1.0, 0.42, 0.12)
           .mul(heat)
@@ -2202,6 +2218,10 @@ export class EffectsLayer {
       this.smokePuff(now, at.clone().setY(at.y + 1.1 * scale), scale, wind, { soot: true });
   }
 
+  setPhysicalLaserStyle(style: PhysicalLaserStyle): void {
+    this.beams.laserStyle = style;
+  }
+
   /**
    * The energy beams the engine draws this logic frame (lasers, electric and psychic bolts), replacing the previous
    * set; an empty list clears them. They stay until the next call, so the caller sets them once per logic frame and
@@ -2456,6 +2476,11 @@ export const BEAM_LIGHTS = 256;
 /** Glow width of a beam segment (world units, about 2.5 engine pixels) and its white-hot core, as a fraction. */
 const BEAM_WIDTH = 0.06;
 const BEAM_CORE = 0.42;
+export interface PhysicalLaserStyle {
+  strandWidth: number;
+  emissionWidth: number;
+  coreWidth: number;
+}
 
 /**
  * Beam segments as camera-facing quads stretched between their endpoints with round, soft ends: a thin core in the
@@ -2469,8 +2494,15 @@ export class BeamLayer {
   realEmissive?: RealEmissiveLayer;
   /** Real light is on: lasers draw their strand in their own colour (see laserCoreColour). */
   laserColour = false;
+  /** Injected by the game adapter; defaults retain the generic renderer's existing dimensions. */
+  laserStyle: PhysicalLaserStyle = {
+    strandWidth: BEAM_WIDTH,
+    emissionWidth: BEAM_WIDTH,
+    coreWidth: EMISSIVE_BUDGET.coreWidth,
+  };
+  private readonly laserWidth = uniform(BEAM_WIDTH);
 
-  constructor(cameraRight: ShaderNode, cameraUp: ShaderNode, now: ShaderNode = uniform(0)) {
+  constructor(cameraRight: ShaderNode, cameraUp: ShaderNode, now: ShaderNode = uniform(0), physical = false) {
     const material = additive();
     // The quad's winding depends on the segment's direction on screen (the side vector is a cross product), so half of
     // all segments would face away from the camera: draw both sides.
@@ -2480,18 +2512,20 @@ export class BeamLayer {
     const tint: ShaderNode = instancedBufferAttribute(this.buffer.colour, 'vec3');
     const enhanced: ShaderNode = instancedBufferAttribute(this.buffer.enhanced, 'float');
     const width = float(BEAM_WIDTH);
+    const selectedWidth = physical ? enhanced.lessThan(0).select(this.laserWidth, width) : width;
+
     const span: ShaderNode = length(b.sub(a)).max(1e-5);
     material.positionNode = Fn(() => {
       const axis: ShaderNode = b.sub(a).div(span);
       // Across the segment and across the view: perpendicular to both the axis and the direction to the camera.
       const across: ShaderNode = cross(axis, cross(cameraRight, cameraUp));
       const side: ShaderNode = length(across).greaterThan(1e-4).select(normalize(across), cameraRight);
-      const along: ShaderNode = positionGeometry.x.add(0.5).mul(span.add(width)).sub(width.mul(0.5));
-      return a.add(axis.mul(along)).add(side.mul(positionGeometry.y.mul(width)));
+      const along: ShaderNode = positionGeometry.x.add(0.5).mul(span.add(selectedWidth)).sub(selectedWidth.mul(0.5));
+      return a.add(axis.mul(along)).add(side.mul(positionGeometry.y.mul(selectedWidth)));
     })();
     material.colorNode = Fn(() => {
-      const along: ShaderNode = uv().x.mul(span.add(width)).sub(width.mul(0.5));
-      const cap: ShaderNode = max(along.negate(), along.sub(span)).max(0).div(width.mul(0.5));
+      const along: ShaderNode = uv().x.mul(span.add(selectedWidth)).sub(selectedWidth.mul(0.5));
+      const cap: ShaderNode = max(along.negate(), along.sub(span)).max(0).div(selectedWidth.mul(0.5));
       const r: ShaderNode = length(vec2(cap, uv().y.sub(0.5).abs().mul(2)));
       const glow: ShaderNode = smoothstep(1.0, 0.0, r);
       const core: ShaderNode = smoothstep(BEAM_CORE, BEAM_CORE * 0.3, r);
@@ -2507,7 +2541,7 @@ export class BeamLayer {
         mx_noise_float(position.mul(e.noiseScale).add(vec3(now.mul(e.flickerRate), 0, 0))).mul(e.flicker),
       );
       const electric = vec3(hotCore).add(tint.mul(inner)).add(outer).mul(flicker);
-      return vec4(mix(original, electric, enhanced), 1);
+      return vec4(mix(original, electric, physical ? enhanced.max(0) : enhanced), 1);
     })();
     this.mesh = new InstancedMesh(new PlaneGeometry(1, 1), material, BEAM_SEGMENTS);
     this.mesh.frustumCulled = false;
@@ -2538,6 +2572,7 @@ export class BeamLayer {
 
   /** Stream only the fixed-capacity visible prefix; long/many bolts never allocate discarded geometry. */
   setBeams(beams: readonly BeamSpec[], enhanced = false): void {
+    this.laserWidth.value = this.laserStyle.strandWidth;
     const emission: EmissivePrimitive[] = [];
     this.buffer.onBeam = this.realEmissive
       ? (beam, start, end) => {
@@ -2549,7 +2584,9 @@ export class BeamLayer {
               source: `native:${start}`,
               from,
               to,
-              width: BEAM_WIDTH,
+              width: beam.bolt ? BEAM_WIDTH : this.laserStyle.emissionWidth,
+              coreWidth: beam.bolt ? undefined : this.laserStyle.coreWidth,
+              preserveHue: !beam.bolt,
               colour: beam.colour.toArray() as [number, number, number],
               hot: beam.bolt
                 ? emissiveCoreTint(beam.colour.toArray() as [number, number, number])
@@ -2588,7 +2625,7 @@ export class BeamSegmentBuffer {
   readonly from = new DirtyAttribute(new Float32Array(BEAM_SEGMENTS * 3), 3);
   readonly to = new DirtyAttribute(new Float32Array(BEAM_SEGMENTS * 3), 3);
   readonly colour = new DirtyAttribute(new Float32Array(BEAM_SEGMENTS * 3), 3);
-  /** Zero for faithful bolts and all lasers; one selects the layered electric shader. */
+  /** Zero = faithful, one = electric shader, minus one = physical laser width (no extra vertex attribute). */
   readonly enhanced = new DirtyAttribute(new Float32Array(BEAM_SEGMENTS), 1);
   count = 0;
   onBeam?: (beam: BeamSpec, start: number, end: number) => void;
@@ -2611,7 +2648,7 @@ export class BeamSegmentBuffer {
       if (!bolt) {
         this.from.setXYZ(n, from.x, from.y, from.z);
         this.to.setXYZ(n, to.x, to.y, to.z);
-        this.enhanced.setX(n, 0);
+        this.enhanced.setX(n, laserColour ? -1 : 0);
         // Preserve the existing straight beam's white strand (its target light carries the beam colour). With real
         // light on, the strand takes the laser's own colour, as the original draws it (see laserCoreColour).
         if (laserColour) this.colour.setXYZ(n++, colour.x, colour.y, colour.z);

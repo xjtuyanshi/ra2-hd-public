@@ -5,6 +5,11 @@ import { EFFECT_TABLE } from '../live/effectTable';
 import type { LiveAnim } from '../live/effects';
 import type { EmissivePrimitive } from '../realEmissive';
 import { animWorld, animLightPolicy } from './realLights';
+// LiveView.frame keeps zoom=1: 60/sqrt(2) engine pixels * device scale 2.5 = 106.07 device px/world unit.
+// DPR is already in bufferScale (a cell is 150x75 device px); do not multiply it twice.
+// 0.18 world = 19.1 px strand. The emissive core is 0.075*1.4*0.72*106.07 = 8.0 saturated px,
+// and its soft outer tail spans 0.075*2.5*106.07 = 19.9 px. Bolts keep their existing dimensions.
+export const REAL_LASER_STYLE = { strandWidth: 0.18, emissionWidth: 0.075, coreWidth: 1.4 } as const;
 export const EMISSIVE_EVENTS = { seconds: 0.15, dayEV: 0.25, nightEV: 0.5, headDistance: 0.9, headRise: 1.5 } as const;
 export function eventExposureKick(age: number, night: number): number {
   if (age < 0 || age >= EMISSIVE_EVENTS.seconds) return 0;
@@ -53,8 +58,10 @@ export function animEmission(anim: LiveAnim, age: number, _now: number, fps = 62
     // A short bloom behind the fireball's own core, about its size: the 2-radius disc spread a large yellow halo.
     width: radius * 1.2,
     disc: true,
-    colour: [1, 0.7, 0.42],
-    hot: [1, 0.95, 0.85],
+    // This additive attachment composites over translucent smoke too. A warm disc tinted grey smoke beige;
+    // keep the invented bloom achromatic. Source art is untouched; faint warmth comes from ground irradiance.
+    colour: [1, 1, 1],
+    hot: [1, 1, 1],
     gain: 1 - age / seconds,
     // Pull along the view direction only, preserving the native on-screen centre. The pull must clear the whole outer
     // glow (outerWidth / 2 of the width), or the ground cut the disc's lower half with a straight edge (sandbox

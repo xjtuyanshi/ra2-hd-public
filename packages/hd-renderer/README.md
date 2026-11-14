@@ -419,19 +419,32 @@ reflections keep the current path. The two physical layers follow terrain height
 
 `src/realLight.ts` owns generic point/finite-segment attenuation, bounded pools, directional moments, the scalar
 fallback and knees. `src/ra2/realLights.ts` owns source data and conversions on every host. Default reach is three
-cells; each source has a tighter window: bolts 2, muzzle 1.2, Prism 1.8, fire 2.2 and sustained beams 1.5. Explosions
-use `clamp(0.75 + tableRadius, 1.2, 3)`. Large events retain explicit longer windows. Every window reaches zero.
-Bolt peak ground irradiance is 0.8, muzzle 0.25 for two logic frames, explosions 1.1 with at most a 0.35-second tail.
-Bolt and Prism illumination desaturate their captured linear colours while preserving hue (saturation at most
-0.55 and 0.5 respectively). Muzzle colour is (1, 0.88, 0.72); explosions use (1, 0.74, 0.52), preceded by 120 ms hot.
+cells. Dynamic events use windowed Gaussians, negligible before their window closes at 2.7 widths. Beam/bolt
+width is 0.28 cells, peak irradiance 0.12 noon units (auxiliary beams 0.04-0.12), and captured colour saturation is
+capped at 0.3. Their ground footprint is projected along the actual camera ray, so it hugs the visible strand
+instead of forming a detached band below an elevated weapon. A second tile in the ground MRT atlas retains the
+unprojected moments for upright art, without adding receiver samplers. Coil-to-unit bolts also have a short
+0.38-width target glow (reach about one cell, 0.12-second tail).
+
+Explosion reach is `clamp(1.7 + tableRadius, 1.9, 3)` cells, width half that reach, with an 0.08-second hold and
+0.2-0.5-second fade. Point-source elevation/window losses are compensated at ground centre: explosion peak is 0.9
+noon irradiance, burning wreck peak 0.12, with a calm 0.15 flicker and a 1.2-cell window. At a reference night ambient
+of 0.1, the ground knee yields approximately +110% and +37% display luminance respectively, before exposure and
+postprocessing; these are math fixtures, not live-board measurements. Fires retain their 0.6-cell width/1.6-cell
+window. Muzzle flashes retain two logic frames and 0.4 source irradiance. Large events retain explicit longer windows.
+Fire/explosion source light is strongly desaturated (about 0.3); this does not recolour the source art.
 
 Ground's dynamic irradiance cap is `mix(1.2, 3 * ambientLum, night)`, including the receiver's existing map/scene
 grade. Upright receivers give physical light only the remaining `max(0, 0.8 - sceneLum)` noon-unit headroom, after
-accounting for existing static light. A hue-preserving exponential knee approaches that cap. Local physical light
+accounting for existing static light. The ground uses a logarithmic knee to avoid flat pools; upright art uses a hue-preserving exponential knee. Local physical light
 is diffuse times the final albedo/house paint, never an input to specular, rim, VPL bounce or emitter bloom. Projection pages use their existing 0.21 noon-art normalization before physical diffuse. Existing static
 lighting is preserved even where it already exceeds this physical headroom.
 
-Smudges, overlays, ore/gems, bridge decks and other flat cards use the ground knee and bypass upright art toning.
+At full night, ground diffuse uses the fully shown receiver colour (map grade, moon and scene multipliers) normalized
+to albedo luminance, preserving the night hue instead of uncovering daytime yellow grass. Smudges, overlays,
+ore/gems, bridge decks and other flat cards use that same colour rule and ground knee, bypassing upright art toning.
+Procedural smoke takes directional physical fill at saturation at most 0.1, bounded by 8% of scene brightness
+and 0.04 noon units before its existing material share; it does not multiply a whole plume by the coloured scalar field.
 Terrain, cliff and plain-fallback shaders share the additive receiver. Occluders contain building tops only: terrain
 steps, units and flat art are receivers, never tall blockers. Eight samples compare absolute ray height with the
 building-top texture, using `1 - smoothstep(0, 0.4, H - rayY)` and a 0.1 transmission floor. Samples within 0.35 cells
@@ -446,15 +459,20 @@ uploads through three. `cost()` reports a 120-frame moving CPU average for conta
 update, emissive construction and physical-lamp update, plus splat/texel estimates and field renders in the last
 second. These are CPU timings, not GPU completion time or proof of the full-match +1 ms budget.
 
-Physical emission shares the existing attachment. Exact beam vertices/timing are retained, with a white core at
-most 0.2 of the sheath width, a saturated original-colour sheath and a 2.5-width outer glow at alpha 0.25. Sheath
+Physical emission shares the existing attachment. Exact beam paths/timing are retained. Under the flag, straight
+lasers use their exact source hue throughout (no white core or sheath chroma boost), a 0.18-world strand and a
+0.075-world emission sheath with core fraction 1.4. With `60 / sqrt(2)` engine pixels per world unit and device scale
+2.5 (DPR already included), these give about 8 saturated core pixels and 19-20 soft outer pixels. Bolts retain their
+existing widths and generic core fraction 0.2; runtime-off retains the original white laser strand byte for byte.
+Generic emission retains a 2.5-width outer glow at alpha 0.25. Sheath
 chroma increases by 1.2 without raising its peak; peak radiance is capped at 0.8 after modulation/gain. Emission
 uses bounded additive display-linear composition after scene tone/grade, so Neutral's highlight desaturation
 does not whiten it. The new primitives apply their own frame budget before writing the shared attachment; existing
 static overlays retain their original display colour and gain. Only the achromatic core seeds physical bloom. Source/frame energy caps remain
 6/32 radiance-area units. Runtime-off restores the legacy bloom/overlay response. Unsupported MRT keeps the
 legacy fallback. Fires receive physical light without invented base discs; muzzle and explosion cores retain
-source-art timing. Captured firing endpoints gate coil/Prism head emission; no charge frames are inferred.
+source-art timing and use neutral additive bloom so they cannot paint translucent smoke beige. Source-art colours
+remain untouched; warm illumination comes from the physical ground field. Captured firing endpoints gate coil/Prism head emission; no charge frames are inferred.
 Nuke, dominator, storm-bolt and collapse events retain the bounded exposure kick through the existing sky flash.
 
 `&lightdbg=1` is instrumentation-only and adds no drawing or setting changes. The bench already exposes

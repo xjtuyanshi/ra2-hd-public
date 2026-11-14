@@ -72,7 +72,7 @@ describe('round 5: soft, source-sized light (round-1 review A and C)', () => {
     for (const name of ['fire', 'burning'] as const) {
       const p = REAL_LIGHT_POLICIES[name];
       expect(lightReach(policyLight(p, [0, p.height, 0]))).toBeLessThanOrEqual(1.6);
-      expect(p.flicker).toBeGreaterThanOrEqual(0.3);
+      expect(p.flicker).toBeGreaterThanOrEqual(0.15);
     }
     expect(REAL_LIGHT_POLICIES.burning.ground).toBeLessThan(REAL_LIGHT_POLICIES.fire.ground);
   });

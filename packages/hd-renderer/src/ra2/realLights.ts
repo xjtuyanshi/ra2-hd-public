@@ -39,6 +39,9 @@ export interface LightPolicy {
   /** Point/tube radius; for a Gaussian profile the falloff width (cells). */
   radius: number;
   ground: number;
+  /** Calibrate a point at ground centre instead of losing its authored peak to source elevation. */
+  groundPeak?: boolean;
+  viewProjectedFootprint?: boolean;
   colour: Rgb;
   day: number;
   hold?: number;
@@ -47,14 +50,24 @@ export interface LightPolicy {
   continuous?: boolean;
   profile?: 'gaussian';
 }
-/** Gaussian width of every beam/bolt: the lit ground band stays within about one cell of the beam. */
-const BEAM_SIGMA = 0.44;
+/** Live night beams need a 0.28-cell Gaussian centred on the strand, not a detached 0.44-cell road. */
+const BEAM_SIGMA = 0.28;
 const beam = (ground: number, colour: Rgb, day: number, radius = BEAM_SIGMA) =>
-  ({ reach: 1.2, height: 0.5, radius, ground, colour, day, profile: 'gaussian' }) as const;
+  ({
+    reach: 1.2,
+    height: 0.5,
+    radius,
+    ground,
+    colour,
+    day,
+    profile: 'gaussian',
+    viewProjectedFootprint: true,
+  }) as const;
 /**
  * Source-sized Gaussian falloffs (`radius` is the width, the window closes at 2.7 widths); `ground` is the peak
- * irradiance in noon units at the source (ground under a source `height` up takes exp(-(height / radius)^2) of it). Beams light a narrow soft line, never a band with edges; fires and burning wrecks
- * a small flickering glow; superweapons keep their design reach.
+ * irradiance in noon units at the source, or at ground centre when groundPeak is set (including elevation/window
+ * losses). Projected beams light a narrow soft line; fires and wrecks have a small flickering glow; superweapons
+ * keep their design reach.
  */
 export const REAL_LIGHT_POLICIES = {
   fire: {
@@ -72,10 +85,12 @@ export const REAL_LIGHT_POLICIES = {
     reach: 1.2,
     height: 0.3,
     radius: 0.45,
-    ground: 0.35,
+    // At 0.1 ambient: 0.3*log1p(0.12/0.3) = 0.101; display ratio (2.01)^(1/2.2) = 1.37.
+    ground: 0.12,
+    groundPeak: true,
     colour: LIGHT_COLOURS.fire,
     day: 0,
-    flicker: 0.35,
+    flicker: 0.15,
     continuous: true,
     profile: 'gaussian',
   },
@@ -122,15 +137,15 @@ export const REAL_LIGHT_POLICIES = {
     fade: 2,
     profile: 'gaussian',
   },
-  tesla: beam(0.7, LIGHT_COLOURS.tesla, 0.15),
-  psychic: beam(0.7, LIGHT_COLOURS.psychic, 0.15),
-  prism: beam(0.6, LIGHT_COLOURS.hot, 0.15),
-  temporal: beam(0.35, LIGHT_COLOURS.chrono, 0.1),
-  rad: beam(0.3, [0.75, 1, 0.72], 0.1),
-  eruption: beam(0.4, LIGHT_COLOURS.fire, 0.1),
-  sonic: beam(0.3, [0.75, 0.92, 1], 0.1),
-  magnetron: beam(0.3, LIGHT_COLOURS.psychic, 0.1),
-  link: beam(0.1, LIGHT_COLOURS.psychic, 0, 0.35),
+  tesla: beam(0.12, LIGHT_COLOURS.tesla, 0.15),
+  psychic: beam(0.12, LIGHT_COLOURS.psychic, 0.15),
+  prism: beam(0.12, LIGHT_COLOURS.hot, 0.15),
+  temporal: beam(0.1, LIGHT_COLOURS.chrono, 0.1),
+  rad: beam(0.1, [0.75, 1, 0.72], 0.1),
+  eruption: beam(0.12, LIGHT_COLOURS.fire, 0.1),
+  sonic: beam(0.1, [0.75, 0.92, 1], 0.1),
+  magnetron: beam(0.1, LIGHT_COLOURS.psychic, 0.1),
+  link: beam(0.04, LIGHT_COLOURS.psychic, 0, 0.35),
   storm: {
     reach: 4,
     height: 3,
@@ -173,7 +188,7 @@ export function capLightColour(colour: Rgb, saturation: number): [number, number
 const xyz = (p: { x: number; y: number; z: number }): Point => [p.x, p.y, p.z];
 export const animWorld = (anim: Pick<LiveAnim, 'x' | 'y' | 'z'>): Point => xyz(engineAnchor(anim.x, anim.y, anim.z));
 const energyCache = new Map<string, number>();
-/** Calibrate a policy's peak ground irradiance at half a cell; window is included, reach remains derived. */
+/** Convert source policy to physical radiance; point ground peaks include elevation and window losses. */
 export function policyLight(policy: LightPolicy, position: Point, end?: Point): PhysicalLight {
   const light: PhysicalLight = {
     position,
@@ -182,14 +197,18 @@ export function policyLight(policy: LightPolicy, position: Point, end?: Point): 
     intensity: policy.colour,
     dayFactor: policy.day,
     reach: policy.reach,
+    viewProjectedFootprint: policy.viewProjectedFootprint,
     occlude: !policy.hold || policy.hold >= 0.15,
     flicker: policy.flicker,
     ...(policy.profile ? { profile: policy.profile } : {}),
   };
-  // A Gaussian's `ground` is its irradiance at zero distance; the falloff is all geometry (no calibration point far
-  // out on the tail, which made a 0.44-cell beam 13 times brighter at its core than its nominal value).
+  // Gaussian peaks are authored at the source or directly beneath it, never far out on a tail: that older
+  // calibration made a 0.44-cell beam 13 times brighter at its core than its nominal value.
   if (policy.profile === 'gaussian') {
-    const k = policy.ground / Math.max(lightLuminance(policy.colour), 1e-8);
+    const centre = policy.groundPeak
+      ? lightLuminance(lightMoment({ ...light, position: [0, policy.height, 0], end: undefined }, [0, 0, 0]).s)
+      : lightLuminance(policy.colour);
+    const k = policy.ground / Math.max(centre, 1e-8);
     light.intensity = policy.colour.map((c) => c * k) as [number, number, number];
     return light;
   }
@@ -254,7 +273,10 @@ export function animLightPolicy(
       // Width half the reach: with the cosine of a low source the flash reads (> 6 % of its peak) out to about
       // 1.3 cells for EXPLOSML, 1.9 for EXPLOLRG and 2.3 for the largest blasts.
       radius: 0.5 * reach,
-      ground: 1.6,
+      // At ambient 0.1 noon, the logarithmic knee gives 0.416: (1 + 0.416/0.1)^(1/2.2) = 2.10
+      // displayed night luminance. Compensate elevation rather than widening/overdriving the Gaussian.
+      ground: 0.9,
+      groundPeak: true,
       reach,
       colour: LIGHT_COLOURS.explosion,
       day: 0.15,
@@ -305,6 +327,24 @@ export function nativeBeamLight(beam: LiveBeam): PhysicalLight {
         }
       : { ...REAL_LIGHT_POLICIES.prism, colour: capLightColour(beamColor(beam.colour), BEAM_LIGHT_SATURATION) };
   return policyLight(policy, animWorld(beam.source as LiveAnim), animWorld(beam.target as LiveAnim));
+}
+/** Coil-to-unit bolts receive a short, small target glow as well as their projected line. */
+export function nativeBoltImpactLight(beam: LiveBeam): PhysicalLight | null {
+  if (beam.kind !== 'bolt') return null;
+  const p = animWorld(beam.target as LiveAnim);
+  return policyLight(
+    {
+      height: 0.15,
+      radius: 0.38,
+      reach: 1.05,
+      ground: 0.12,
+      groundPeak: true,
+      colour: capLightColour(beamColor(beam.colour), BEAM_LIGHT_SATURATION),
+      day: 0.15,
+      profile: 'gaussian',
+    },
+    [p[0], p[1] + 0.15, p[2]],
+  );
 }
 export function auxiliaryBeamLights(effects: LiveEffects): { key: string; light: PhysicalLight }[] {
   const out: { key: string; light: PhysicalLight }[] = [];

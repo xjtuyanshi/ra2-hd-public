@@ -233,7 +233,7 @@ describe('round 4 source fidelity and receiver bounds', () => {
       expect(lightReach(l)).toBeLessThanOrEqual(cap);
       expect(lightMoment(l, [cap, 0, 0]).s).toEqual([0, 0, 0]);
     }
-    expect(REAL_LIGHT_POLICIES.tesla.ground).toBe(0.7);
+    expect(REAL_LIGHT_POLICIES.tesla.ground).toBe(0.12);
     expect(REAL_LIGHT_POLICIES.muzzle.ground).toBe(0.4);
     expect(animLightPolicy('VTMUZZLE')?.hold ?? REAL_LIGHT_POLICIES.muzzle.hold).toBe(2 / 62.5);
     // Explosion light lasts as long as its art (EXPLOLRG: 21 frames), never longer.

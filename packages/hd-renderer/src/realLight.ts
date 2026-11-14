@@ -10,6 +10,7 @@ import {
   InstancedBufferAttribute,
   InstancedMesh,
   LinearFilter,
+  Mesh,
   MeshBasicNodeMaterial,
   OneFactor,
   OrthographicCamera,
@@ -75,6 +76,8 @@ export interface PhysicalLight {
   reach?: number;
   /** Posts can bound the ground footprint independently of their elevation. */
   planarReach?: boolean;
+  /** Ground-only footprint along the camera ray; upright receivers keep the actual 3D source. */
+  viewProjectedFootprint?: boolean;
   flicker?: number;
   seed?: number;
   /**
@@ -147,6 +150,26 @@ export interface LightMoment {
   s: [number, number, number];
   d: [number, number, number];
   ground: number;
+}
+/** Project a source onto a receiver plane along the viewing ray, preserving its screen position. */
+export function viewProjectedPoint(p: Point, height: number, direction: Point): Point {
+  const t = (height - p[1]) / (Math.abs(direction[1]) > 1e-8 ? direction[1] : -1e-8);
+  return [p[0] + t * direction[0], height, p[2] + t * direction[2]];
+}
+/** CPU twin of the separate ground footprint; objects always call lightMoment on the original source. */
+export function groundLightMoment(l: PhysicalLight, p: Point, direction: Point): LightMoment {
+  if (!l.viewProjectedFootprint) return lightMoment(l, p);
+  const m = lightMoment(
+    {
+      ...l,
+      position: viewProjectedPoint(l.position, p[1], direction),
+      end: l.end ? viewProjectedPoint(l.end, p[1], direction) : undefined,
+    },
+    p,
+  );
+  // This is a screen-aligned diffuse footprint, not a grazing source at zero height.
+  m.d = [0, lightLuminance(m.s), 0];
+  return m;
 }
 /** Representative-point direction; finite-line integral normalises energy, including short and split tubes. */
 export function lightMoment(l: PhysicalLight, p: Point, windowed = true): LightMoment {
@@ -291,6 +314,7 @@ export class RealLightNodes {
    * the ground and a fire 0.4 above the ground lit it at a tenth of its strength (sandbox r1, XMP29U2 at level 2).
    */
   readonly groundHeight = texture(this.flat);
+  readonly groundHalfTexel = uniform(new Vector2(0.5, 0.5));
   readonly occluderHeight = texture(this.flat);
   readonly ambientContact = texture(this.flat);
   readonly accentGroundUv = uniform(new Vector4(1, 1, 0, 0));
@@ -301,6 +325,7 @@ export class RealLightNodes {
   readonly accentUpper = texture(this.black);
   readonly accentGroundDirection = texture(this.black);
   readonly accentUpperDirection = texture(this.black);
+  /** Left half = actual source moments for objects; right half = view-projected ground moments. */
   readonly ground = texture(this.black);
   readonly groundDirection = texture(this.black);
   readonly upper = texture(this.black);
@@ -356,7 +381,10 @@ export function sampleRealLight(
     .and(xz.x.lessThanEqual(bounds.z))
     .and(xz.y.lessThanEqual(bounds.w))
     .select(float(1), float(0));
-  const g = texture(nodes.ground, uv);
+  const groundUv = clamp(uv, nodes.groundHalfTexel, vec2(1).sub(nodes.groundHalfTexel))
+    .mul(vec2(0.5, 1))
+    .add(vec2(capScale === OBJECT_KNEE ? 0 : 0.5, 0));
+  const g = texture(nodes.ground, groundUv);
   let s = mix(g.rgb, texture(nodes.upper, uv).rgb, t).mul(nodes.scale).mul(inView);
   // Static accents light upright art only. Ground keeps its legacy grade/pools exactly between events.
   const agUv = clamp(uv, nodes.accentGroundHalf, vec2(1).sub(nodes.accentGroundHalf))
@@ -369,7 +397,7 @@ export function sampleRealLight(
     s = s.add(mix(texture(nodes.accentGround, agUv).rgb, texture(nodes.accentUpper, auUv).rgb, t).mul(nodes.scale));
   let e: ShaderNode = s;
   if (normal) {
-    let d = mix(texture(nodes.groundDirection, uv).xyz, texture(nodes.upperDirection, uv).xyz, t)
+    let d = mix(texture(nodes.groundDirection, groundUv).xyz, texture(nodes.upperDirection, uv).xyz, t)
       .mul(nodes.scale)
       .mul(inView);
     if (capScale === OBJECT_KNEE)
@@ -419,6 +447,10 @@ export class RealLightField {
   private readonly attributes: InstancedBufferAttribute[][] = [];
   private readonly meshes: InstancedMesh[] = [];
   private readonly layers: number[];
+  private readonly viewSlope = uniform(new Vector2());
+  private readonly groundRange = uniform(new Vector2());
+  private readonly footprintScene: Scene;
+  private readonly tileClears: Mesh[] = [];
   private readonly cursors = new Map<RealLightPool, number>();
   private lastNight = -1;
   private staticDirty = true;
@@ -440,6 +472,7 @@ export class RealLightField {
       x1 = -Infinity,
       z1 = -Infinity;
     const direction = this.corner.set(0, 0, -1).transformDirection(camera.matrixWorld).clone();
+    this.viewSlope.value.set(direction.x / Math.min(-1e-8, direction.y), direction.z / Math.min(-1e-8, direction.y));
     for (const y of [this.groundMin, this.groundMax])
       for (const x of [-1, 1])
         for (const z of [-1, 1]) {
@@ -454,7 +487,7 @@ export class RealLightField {
         }
     const target = this.targets[0]!;
     // Snap outwards to texels: subpixel camera motion need not re-render a stationary field.
-    const sx = target.width / this.width,
+    const sx = target.width / 2 / this.width,
       sz = target.height / this.height;
     Object.assign(this.viewport, {
       x0: Math.min(this.width, Math.max(0, Math.floor((x0 - 3) * sx) / sx)),
@@ -463,7 +496,7 @@ export class RealLightField {
       z1: Math.max(0, Math.min(this.height, Math.ceil((z1 + 3) * sz) / sz)),
     });
     this.nodes.dynamicBounds.value.set(this.viewport.x0, this.viewport.z0, this.viewport.x1, this.viewport.z1);
-    const key = Object.values(this.viewport).join(',');
+    const key = [...Object.values(this.viewport), ...this.viewSlope.value.toArray()].join(',');
     if (key !== this.viewKey) {
       this.viewKey = key;
     }
@@ -538,8 +571,31 @@ export class RealLightField {
     for (const pool of Object.keys(CAPACITIES) as RealLightPool[]) this.pools.set(pool, new Map());
     this.scenes = this.layers.map((y) => this.build(y, directional));
     this.staticScenes = this.layers.map((y) => this.build(y, directional));
+    this.footprintScene = this.build(0, directional, true);
+    this.addTileClear(this.footprintScene, directional);
+    for (const scene of this.staticScenes.slice(1)) this.addTileClear(scene, directional);
+    // Reuse the ground samplers: a second atlas tile avoids exceeding upright art's texture budget.
+    nodes.groundHalfTexel.value.set(0.5 / ground.width, 0.5 / ground.height);
+    ground.setSize(ground.width * 2, ground.height);
   }
-  private build(y: number, directional: boolean): Scene {
+  /**
+   * WebGPU loadOp=clear clears the WHOLE attachment, regardless of scissor. Clear later atlas tiles by drawing zero
+   * instead, with loadOp=load, so they cannot erase the first tile. This also resets stale texels on WebGL.
+   */
+  private addTileClear(scene: Scene, directional: boolean): void {
+    const material = new MeshBasicNodeMaterial();
+    material.depthTest = material.depthWrite = false;
+    material.positionNode = vec3(positionGeometry.xy.add(0.5).mul(vec2(this.width, this.height)), 0);
+    material.colorNode = vec4(0);
+    if (directional) material.mrtNode = mrt({ output: vec4(0), direction: vec4(0) });
+    const mesh = new Mesh(new PlaneGeometry(), material);
+    mesh.frustumCulled = false;
+    mesh.renderOrder = -1;
+    mesh.name = 'real-light-tile-clear';
+    scene.add(mesh);
+    this.tileClears.push(mesh);
+  }
+  private build(y: number, directional: boolean, footprint = false): Scene {
     const capacity = Object.values(CAPACITIES).reduce((a, b) => a + b, 0);
     const attrs = Array.from({ length: 4 }, () => new InstancedBufferAttribute(new Float32Array(capacity * 4), 4));
     const [a, b, c, extra] = attrs.map((v) => instancedBufferAttribute(v, 'vec4') as ShaderNode) as [
@@ -557,27 +613,35 @@ export class RealLightField {
     m.blendEquation = m.blendEquationAlpha = AddEquation;
     m.blendSrc = m.blendSrcAlpha = OneFactor;
     m.blendDst = m.blendDstAlpha = OneFactor;
-    const lo = a.xz.min(b.xz).sub(b.w),
-      hi = a.xz.max(b.xz).add(b.w);
+    const projected = footprint ? extra.w.greaterThan(1.5) : float(0).greaterThan(1);
+    const project = (v: ShaderNode, h: ShaderNode) => v.xz.add(this.viewSlope.mul(h.sub(v.y)));
+    const pa = project(a, this.groundRange.x),
+      pb = project(b, this.groundRange.x);
+    const qa = project(a, this.groundRange.y),
+      qb = project(b, this.groundRange.y);
+    const lo = projected.select(pa.min(pb).min(qa).min(qb), a.xz.min(b.xz)).sub(b.w),
+      hi = projected.select(pa.max(pb).max(qa).max(qb), a.xz.max(b.xz)).add(b.w);
     m.positionNode = vec3(mix(lo, hi, positionGeometry.xy.add(0.5)), 0);
     const p = vec3(
       positionWorld.x,
       texture(this.nodes.groundHeight, positionWorld.xy.div(this.nodes.size)).r.add(y),
       positionWorld.y,
     );
-    const ab = b.xyz.sub(a.xyz),
+    const source = projected.select(vec3(project(a, p.y).x, p.y, project(a, p.y).y), a.xyz);
+    const end = projected.select(vec3(project(b, p.y).x, p.y, project(b, p.y).y), b.xyz);
+    const ab = end.sub(source),
       len = length(ab),
       axis = ab.div(max(len, 1e-8));
-    const along = dot(p.sub(a.xyz), axis),
+    const along = dot(p.sub(source), axis),
       u = clamp(along, 0, len);
-    const delta = a.xyz.add(axis.mul(u)).sub(p),
+    const delta = source.add(axis.mul(u)).sub(p),
       distance = length(delta);
     const d2 = dot(delta, delta).add(a.w.mul(a.w));
     const perpendicular = max(d2.sub(along.sub(u).pow(2)), 1e-8).sqrt();
     const integral = atan(len.sub(along).div(perpendicular))
       .add(atan(along.div(perpendicular)))
       .div(perpendicular);
-    const windowDistance = extra.w.greaterThan(0.5).select(length(delta.xz), distance);
+    const windowDistance = extra.w.mod(2).greaterThan(0.5).select(length(delta.xz), distance);
     const windowT = clamp(windowDistance.div(max(b.w, 1e-8)), 0, 1);
     const weight = float(1)
       .sub(extra.z.greaterThan(1.5).select(windowT.pow(6), windowT.pow(2)))
@@ -601,9 +665,10 @@ export class RealLightField {
       .mul(transmission);
     const s = c.rgb.mul(scalar),
       lum = dot(s, vec3(...LUMA));
-    const output = vec4(directional ? s : s.mul(max(delta.y.div(max(distance, 1e-8)), 0)), lum.mul(extra.x));
+    const direction = projected.select(vec3(0, 1, 0), delta.div(max(distance, 1e-8)));
+    const output = vec4(directional ? s : s.mul(max(direction.y, 0)), lum.mul(extra.x));
     m.colorNode = output;
-    if (directional) m.mrtNode = mrt({ output, direction: vec4(delta.div(max(distance, 1e-8)).mul(lum), 0) });
+    if (directional) m.mrtNode = mrt({ output, direction: vec4(direction.mul(lum), 0) });
     const mesh = new InstancedMesh(new PlaneGeometry(), m, capacity);
     mesh.frustumCulled = false;
     mesh.count = 0;
@@ -644,6 +709,7 @@ export class RealLightField {
       this.groundMin = Math.min(this.groundMin, heights[i]!);
       this.groundMax = Math.max(this.groundMax, heights[i]!);
     }
+    this.groundRange.value.set(this.groundMin, this.groundMax);
     this.nodes.contactField?.invalidate();
     this.groundTexture?.dispose();
     this.groundTexture = new DataTexture(
@@ -744,20 +810,29 @@ export class RealLightField {
         const isStatic = pool === 'static';
         const reach = lightReach(l),
           v = this.viewport;
-        const x0 = Math.max(v.x0, Math.min(l.position[0], l.end?.[0] ?? l.position[0]) - reach),
-          z0 = Math.max(v.z0, Math.min(l.position[2], l.end?.[2] ?? l.position[2]) - reach),
-          x1 = Math.min(v.x1, Math.max(l.position[0], l.end?.[0] ?? l.position[0]) + reach),
-          z1 = Math.min(v.z1, Math.max(l.position[2], l.end?.[2] ?? l.position[2]) + reach);
+        // Projected elevated endpoints can lie beyond their vertical ground footprint.
+        const padding = l.viewProjectedFootprint
+          ? Math.max(
+              ...[l.position[1], (l.end ?? l.position)[1]].flatMap((h) => [
+                Math.abs(h - this.groundMin),
+                Math.abs(h - this.groundMax),
+              ]),
+            ) * this.viewSlope.value.length()
+          : 0;
+        const x0 = Math.max(v.x0, Math.min(l.position[0], l.end?.[0] ?? l.position[0]) - reach - padding),
+          z0 = Math.max(v.z0, Math.min(l.position[2], l.end?.[2] ?? l.position[2]) - reach - padding),
+          x1 = Math.min(v.x1, Math.max(l.position[0], l.end?.[0] ?? l.position[0]) + reach + padding),
+          z1 = Math.min(v.z1, Math.max(l.position[2], l.end?.[2] ?? l.position[2]) + reach + padding);
         if (!isStatic && (x1 <= x0 || z1 <= z0)) continue;
         if (!isStatic)
           texels +=
             (((((x1 - x0) * (z1 - z0) * this.targets[0]!.width) / this.width) * this.targets[0]!.height) /
               this.height) *
-            1.25;
+            (this.nodes.directional.value ? 1.125 : 1);
         const index = isStatic ? staticCount : count;
         const selected = isStatic
-          ? this.attributes.slice(this.layers.length)
-          : this.attributes.slice(0, this.layers.length);
+          ? this.attributes.slice(this.layers.length, this.layers.length * 2)
+          : [...this.attributes.slice(0, this.layers.length), this.attributes[this.layers.length * 2]!];
         for (const attrs of selected) {
           attrs[0]!.setXYZW(index, ...l.position, l.radius);
           attrs[1]!.setXYZW(index, ...(l.end ?? l.position), lightReach(l));
@@ -768,14 +843,14 @@ export class RealLightField {
             l.groundOnly ?? 0,
             l.occlude === false || (!isStatic && (ttl ?? hold + fade) < 0.3) || lightReach(l) < 1.5 ? 0 : 1,
             l.profile === 'gaussian' ? 2 : l.end ? 1 : 0,
-            l.planarReach ? 1 : 0,
+            (l.planarReach ? 1 : 0) + (l.viewProjectedFootprint ? 2 : 0),
           );
         }
         if (isStatic) staticCount++;
         else count++;
       }
     let changed = this.lastCount !== count || this.lastViewKey !== this.viewKey;
-    for (let layer = 0; layer < this.layers.length; layer++) {
+    for (const layer of [...this.layers.keys(), this.layers.length * 2]) {
       const previous = (this.previousDynamic[layer] ??= []);
       for (let i = 0; i < 4; i++) {
         const values = this.attributes[layer]![i]!.array;
@@ -820,23 +895,30 @@ export class RealLightField {
         if (refreshStatic) {
           const atlas = this.staticTargets[0]!,
             layer = this.targets[i]!,
-            offset = i ? this.targets[0]!.width : 0;
-          atlas.viewport.set(offset, 0, layer.width, atlas.height);
+            offset = i ? this.targets[0]!.width / 2 : 0;
+          atlas.viewport.set(offset, 0, i ? layer.width : layer.width / 2, atlas.height);
           atlas.scissor.copy(atlas.viewport);
           atlas.scissorTest = true;
-          draw(i + this.layers.length, staticCount, this.staticScenes[i]!, atlas, true);
+          draw(i + this.layers.length, staticCount, this.staticScenes[i]!, atlas, i === 0);
         }
         const target = this.targets[i]!,
           v = this.viewport;
-        const sx = target.width / this.width,
+        const tileWidth = i ? target.width : target.width / 2;
+        target.viewport.set(0, 0, tileWidth, target.height);
+        const sx = tileWidth / this.width,
           sz = target.height / this.height;
         const x0 = Math.floor(v.x0 * sx),
           z0 = Math.floor(v.z0 * sz),
-          x1 = Math.min(target.width, Math.ceil(v.x1 * sx)),
+          x1 = Math.min(tileWidth, Math.ceil(v.x1 * sx)),
           z1 = Math.min(target.height, Math.ceil(v.z1 * sz));
         target.scissor.set(x0, z0, Math.max(0, x1 - x0), Math.max(0, z1 - z0));
         target.scissorTest = true;
         draw(i, count, this.scenes[i]!, target, true);
+        if (i === 0) {
+          target.viewport.set(tileWidth, 0, tileWidth, target.height);
+          target.scissor.x += tileWidth;
+          draw(this.layers.length * 2, count, this.footprintScene, target, false);
+        }
       }
       if (refreshStatic) this.staticRenders++;
     } finally {
@@ -855,7 +937,11 @@ export class RealLightField {
       (m.material as MeshBasicNodeMaterial).dispose();
       m.dispose();
     }
-    for (const s of [...this.scenes, ...this.staticScenes]) s.clear();
+    for (const m of this.tileClears) {
+      m.geometry.dispose();
+      (m.material as MeshBasicNodeMaterial).dispose();
+    }
+    for (const s of [...this.scenes, ...this.staticScenes, this.footprintScene]) s.clear();
     this.occluders?.dispose();
     this.groundTexture?.dispose();
     this.clear();

@@ -1561,7 +1561,21 @@ export class HdRenderer {
 
   /** Seconds since the renderer started: the clock effects are spawned and animated on. */
   seconds(): number {
-    return (performance.now() - this.startTime) / 1000;
+    return this.frozenSeconds ?? (performance.now() - this.startTime) / 1000;
+  }
+
+  private frozenSeconds: number | null = null;
+  /**
+   * Development (light.hold): stop the presentation clock so timed effects and light pulses keep the state they had
+   * when the view was held. A same-frame on/off comparison of a 0.3 s explosion flash otherwise shows it faded out.
+   * Releasing resumes from the frozen time, so held seconds never count.
+   */
+  freezeClock(on: boolean): void {
+    if (on && this.frozenSeconds === null) this.frozenSeconds = this.seconds();
+    else if (!on && this.frozenSeconds !== null) {
+      this.startTime = performance.now() - this.frozenSeconds * 1000;
+      this.frozenSeconds = null;
+    }
   }
 
   resize(cssWidth: number, cssHeight: number): void {

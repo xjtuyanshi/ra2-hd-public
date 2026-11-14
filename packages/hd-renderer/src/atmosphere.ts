@@ -254,7 +254,21 @@ export function groundLightAlbedo(albedo: ShaderNode, shown: ShaderNode, nodes: 
   return mix(albedo, kept, nodes.realLight.nightWeight.mul(GROUND_LIGHT_HUE_KEEP));
 }
 /** Share of the night hue kept by physically lit ground (the rest takes the albedo's own hue). */
-export const GROUND_LIGHT_HUE_KEEP = 0.8;
+export const GROUND_LIGHT_HUE_KEEP = 1;
+/** CPU twin for art-review colour fixtures; `shown` must include the complete receiver grade. */
+export function groundLightAlbedoRgb(
+  albedo: readonly number[],
+  shown: readonly number[],
+  night: number,
+): [number, number, number] {
+  const lum = (v: readonly number[]) => v[0]! * 0.2126 + v[1]! * 0.7152 + v[2]! * 0.0722;
+  const k = lum(albedo) / Math.max(lum(shown.map((c) => Math.max(0, c))), 1e-4);
+  return albedo.map((c, i) => c + (Math.max(0, shown[i]!) * k - c) * night * GROUND_LIGHT_HUE_KEEP) as [
+    number,
+    number,
+    number,
+  ];
+}
 
 /** Blend at the final added term so the experimental runtime toggle restores the legacy response. */
 export function localSurfaceLight(
@@ -327,6 +341,27 @@ export function objectLight(
   const l: ShaderNode = luminance(lf);
   const legacy = mix(vec3(l, l, l), lf, float(OBJECT_TINT));
   return nodes.realLight && includePhysical ? mix(legacy, lf, nodes.realLight.enabled) : legacy;
+}
+
+/**
+ * Participating smoke receives a small directional fill, never the full coloured scalar field. The scalar object
+ * path washed whole SOV07 night plumes beige beside fire; chroma is capped at 0.1 and fill at 8% of scene brightness
+ * (at most 0.04 noon units).
+ * Existing static fill and the complete legacy expression remain available for runtime-off A/B.
+ */
+export function smokeLight(xz: ShaderNode, nodes: AtmosphereNodes, height: ShaderNode, normal: ShaderNode): ShaderNode {
+  const legacy = objectLight(xz, nodes, height);
+  if (!nodes.realLight) return legacy;
+  const e = physicalSurfaceLight(nodes, xz, height, normal, OBJECT_KNEE).div(nodes.referenceLevel);
+  const peak = max(e.r, max(e.g, e.b));
+  const neutral = mix(vec3(peak), e, 0.1);
+  const cap = nodes.sceneBrightness.mul(0.08).min(0.04);
+  const fill = neutral.mul(cap.div(max(luminance(neutral), cap.max(1e-8))));
+  return mix(
+    legacy,
+    objectLight(xz, nodes, height, false).add(fill.mul(nodes.referenceLevel)),
+    nodes.realLight.enabled,
+  );
 }
 
 /**

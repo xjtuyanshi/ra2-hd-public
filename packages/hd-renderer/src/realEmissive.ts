@@ -36,6 +36,9 @@ export interface EmissivePrimitive {
   to: Vector3;
   /** Full sheath width; a disc uses this as its diameter. */
   width: number;
+  coreWidth?: number;
+  /** Preserve source RGB ratios in a faithful laser sheath. */
+  preserveHue?: boolean;
   colour: Rgb;
   hot?: Rgb;
   gain: number;
@@ -64,7 +67,7 @@ export function emissiveEnergy(p: EmissivePrimitive): number {
   const area = p.disc ? Math.PI * (p.width * 0.5) ** 2 : p.width * p.from.distanceTo(p.to);
   return (
     Math.max(0, area * p.gain) *
-    (EMISSIVE_BUDGET.core * EMISSIVE_BUDGET.coreWidth * Math.max(...(p.hot ?? [1, 1, 1])) +
+    (EMISSIVE_BUDGET.core * (p.coreWidth ?? EMISSIVE_BUDGET.coreWidth) * Math.max(...(p.hot ?? [1, 1, 1])) +
       Math.max(...p.colour) * (1 + EMISSIVE_BUDGET.outerAlpha * EMISSIVE_BUDGET.outerWidth)) *
     Math.max(1.12, 1 + Math.abs(p.noise?.amount ?? 0))
   );
@@ -165,7 +168,8 @@ export class RealEmissiveLayer {
     const r = disc
       .select(length(uv().sub(0.5).mul(2)), length(vec2(cap, uv().y.sub(0.5).mul(2))))
       .mul(EMISSIVE_BUDGET.outerWidth);
-    const core = float(1).sub(smoothstep(EMISSIVE_BUDGET.coreWidth * 0.72, EMISSIVE_BUDGET.coreWidth, r));
+    const coreWidth = phase.z.greaterThan(0).select(phase.z, float(EMISSIVE_BUDGET.coreWidth));
+    const core = float(1).sub(smoothstep(coreWidth.mul(0.72), coreWidth, r));
     const sheath = float(1).sub(smoothstep(0.7, 1, r));
     const glow = float(1)
       .sub(smoothstep(0, EMISSIVE_BUDGET.outerWidth, r))
@@ -181,7 +185,9 @@ export class RealEmissiveLayer {
     const boost = float(EMISSIVE_BUDGET.sheathChroma).min(
       peak.div(peak.sub(min(colour.r, min(colour.g, colour.b))).max(1e-8)),
     );
-    const chromatic = vec3(peak).sub(vec3(peak).sub(colour.rgb).mul(boost)).max(0);
+    const chromatic = phase.w
+      .greaterThan(0.5)
+      .select(colour.rgb, vec3(peak).sub(vec3(peak).sub(colour.rgb).mul(boost)).max(0));
     const body = chromatic.mul(sheath.add(glow)).mul(colour.w).mul(modulation);
     const bodyScale = float(EMISSIVE_BUDGET.sheathCeiling)
       .div(max(body.r, max(body.g, body.b)).max(1e-8))
@@ -244,8 +250,8 @@ export class RealEmissiveLayer {
           p.noise?.amount ?? 0,
           p.noise?.seed ?? 0,
           p.noise?.distance ?? 0,
-          0,
-          0,
+          p.coreWidth ?? 0,
+          p.preserveHue ? 1 : 0,
         ];
         for (let i = 0; i < 28; i++) this.data.setComponent(n, i, values[i]!);
         n++;

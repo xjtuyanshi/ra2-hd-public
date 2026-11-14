@@ -1461,6 +1461,7 @@ export class LiveView {
   holdLight(on: boolean): boolean {
     if (!import.meta.env.DEV) return false;
     this.lightHeld = on;
+    this.hd.freezeClock?.(on);
     if (!on && this.heldPending) {
       const pending = this.heldPending;
       this.heldPending = null;

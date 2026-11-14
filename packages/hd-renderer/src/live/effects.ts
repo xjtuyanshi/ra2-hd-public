@@ -1,4 +1,4 @@
-import { animEmission, eventExposureKick, largeLightEvent } from '../ra2/realEmission';
+import { animEmission, eventExposureKick, largeLightEvent, REAL_LASER_STYLE } from '../ra2/realEmission';
 import type { EmissivePrimitive } from '../realEmissive';
 import { Vector3 } from 'three/webgpu';
 import { VOLUMETRIC_BLAST_PRESETS, type VolumetricBlast } from '../volumetricBlasts';
@@ -36,6 +36,7 @@ import {
   animWorld,
   auxiliaryBeamLights,
   nativeBeamLight,
+  nativeBoltImpactLight,
   policyLight,
   REAL_LIGHT_POLICIES,
 } from '../ra2/realLights';
@@ -427,7 +428,10 @@ export class LiveEffectsDriver {
     private readonly hidden: (x: number, y: number, z: number) => boolean,
     /** Whether a projectile type has native art (drawn by the projectile layer instead of a grey dot). */
     private readonly bulletArt: (type: string) => boolean = () => false,
-  ) {}
+  ) {
+    // Garnish-only hosts can omit the native beam renderer.
+    this.effects.setPhysicalLaserStyle?.(REAL_LASER_STYLE);
+  }
 
   /** A new snapshot arrived (logic frame `frame`, renderer clock `now` in seconds). */
   push(effects: LiveEffects, frame: number, now: number, wind: Vector3): void {
@@ -637,6 +641,8 @@ export class LiveEffectsDriver {
       const beam = effects.beams![i]!;
       if (this.hidden(beam.target.x, beam.target.y, beam.target.z)) continue;
       field.put('flash', `beam:${i}`, now, nativeBeamLight(beam), 0, 0.08, 0.08);
+      const impact = nativeBoltImpactLight(beam);
+      if (impact) field.put('flash', `beam-impact:${i}`, now, impact, 0, 0.12, 0.12);
     }
     for (const beam of auxiliaryBeamLights(effects)) {
       // Match LiveBeams' native shroud gates, including its deliberately ungated auxiliary links.
