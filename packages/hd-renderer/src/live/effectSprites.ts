@@ -47,6 +47,7 @@ import type { ShaderNode } from '../tsl';
 import type { TerrainDepth } from '../terrainDepth';
 import { LEVEL_HEIGHT, PIXELS_PER_CELL_EDGE } from '../world';
 import { paletteRowOf, type Ra2Cache } from '../ra2/cache';
+import { objectLevelAt, srgbScale } from '../ra2/mapLighting';
 import { cardDepthNode, EFFECT_DECAL_LIFT, GROUND_DEPTH } from '../ra2/cardDepth';
 import {
   fireballDepthBiasNode,
@@ -98,6 +99,13 @@ export interface EffectInstance {
   /** Ground effects use the same physical card depth profile as trees and units. */
   painter?: PainterObject;
   painterPart?: number;
+  /**
+   * Light the art the way the engine lights this anim and never self-light it (effect table `sceneLit`, see
+   * animShade): the object light of its cell through ANIM.PAL's shade rows, then the scene light like other original
+   * art. Native and redrawn cards alike; on a redrawn card the fire, coloured-glow and white-hot tests then give no
+   * light (the Chaos Drone's red gas passes the fire test but is a cloud the engine darkens with the map).
+   */
+  sceneLit?: boolean;
   /** Optional RGBA replacement: engine frames remain the clock, with a presentation-rate blend within one stage. */
   hd?: {
     frame: EffectHdFrame;
@@ -110,11 +118,6 @@ export interface EffectInstance {
      * still self-lit at its painted colour and smoke still takes the scene's light.
      */
     asPainted?: boolean;
-    /**
-     * Light the frames by the scene like the engine's own anim art and never self-light them (effect table
-     * `sceneLit`): a cloud whose colour passes the fire test (the Chaos Drone's red gas) gives no light.
-     */
-    sceneLit?: boolean;
     blend0: number;
     t0: number;
     stageSeconds: number;
@@ -134,7 +137,7 @@ export function packHdSize(size: number, asPainted: boolean): number {
 
 /**
  * The fourth component of an HD card's style attribute: the page's scale (redrawn pixels per native pixel), negative
- * for a card lit by the scene only (EffectInstance.hd.sceneLit). Same reason as packHdSize: no room for another
+ * for a card lit like the engine's anim (EffectInstance.sceneLit). Same reason as packHdSize: no room for another
  * attribute, and a scale is never 0 or negative.
  */
 export function packHdScale(scale: number, sceneLit: boolean): number {
@@ -150,6 +153,52 @@ export function unpackHdScale(packed: number): { scale: number; sceneLit: boolea
 /** CPU twin of the shader's read of packHdSize. */
 export function unpackHdSize(packed: number): { size: number; asPainted: boolean } {
   return { size: Math.abs(packed), asPainted: packed < 0 };
+}
+
+/** The third component of a native card's style attribute: 1 when it may glow, plus 2 when it is lit like the engine. */
+export function packNativeStyleFlags(glow: boolean, sceneLit: boolean): number {
+  return (glow ? 1 : 0) + (sceneLit ? 2 : 0);
+}
+
+/** CPU twin of the shader's read of packNativeStyleFlags. */
+export function unpackNativeStyleFlags(packed: number): { glow: boolean; sceneLit: boolean } {
+  const sceneLit = packed > 1.5;
+  return { glow: packed - (sceneLit ? 2 : 0) > 0.5, sceneLit };
+}
+
+/**
+ * Palette multiplier the engine draws a standalone anim with at object level `level` (the map grade's alpha, see
+ * mapLighting.ts objectLevelAt). Such anims draw through the ANIM.PAL converter, a plain 53-row ConvertClass picked by
+ * the object intensity of the anim's cell, untinted (docs/remaster/research/yr-unlit-palette.md); a row is 1/26 of
+ * the palette, truncated (ra2-assets engineShade, which this equals for every 8-bit grade value). Art with
+ * UseNormalLight=yes keeps row 26 (1) in the engine; this is applied only to rows marked `sceneLit`.
+ * CPU twin of animShadeNode.
+ */
+export function animShade(level: number): number {
+  if (!(level > 0)) return 0;
+  const byte = Math.min(254, Math.floor(level * 127 + ANIM_SHADE_EPS));
+  const row = Math.min(52, Math.floor((byte * 127 * 52) / 32258 + ANIM_SHADE_EPS));
+  return (2 * row) / 52;
+}
+
+/** Keeps exact products (1.000 x 127, row 26 at byte 127) on their own side of the truncation in 32-bit floats. */
+const ANIM_SHADE_EPS = 1e-3;
+
+/** Shader twin of animShade. */
+export function animShadeNode(level: ShaderNode): ShaderNode {
+  const byte = min(floor(max(level, 0).mul(127).add(ANIM_SHADE_EPS)), 254);
+  const row = min(floor(byte.mul((127 * 52) / 32258).add(ANIM_SHADE_EPS)), 52);
+  return row.mul(2 / 52);
+}
+
+/**
+ * A linear colour of `coverage` (premultiplied) with its straight display colour multiplied by `k`, like the engine's
+ * palette light, and clipped at white (or at the colour's own value where added light already exceeds it).
+ */
+function paletteLightNode(colour: ShaderNode, coverage: ShaderNode, k: ShaderNode): ShaderNode {
+  const a: ShaderNode = max(coverage, 1e-4);
+  const display: ShaderNode = sRGBTransferOETF(colour.div(a).max(0));
+  return (sRGBTransferEOTF(min(display.mul(k), max(display, vec3(1)))) as ShaderNode).mul(a);
 }
 
 /** Fire-coloured pixels (hue 15..65 degrees, value > 0.7) are brightened by this, just over the bloom threshold. */
@@ -393,6 +442,11 @@ export class EffectSpriteLayer {
     this.topRoot.name = 'live-top-effect-sprites';
   }
 
+  /** The map's engine light (object level per cell), for cards lit like the engine's anims (`sceneLit`). */
+  get mapLight(): Ra2Cache['mapLight'] {
+    return this.cache.mapLight;
+  }
+
   /**
    * Replace every instance; instances whose page is still loading are skipped. Returns false when some were skipped
    * for a page that is still loading, so the caller sets them again on a later frame; pages that failed are settled
@@ -633,7 +687,8 @@ class PageMesh {
     this.rect = new DirtyAttribute(new Float32Array(CAPACITY * 4), 4);
     // x, y = frame offset from the canvas centre (px); z = palette row; w = push.
     this.params = new DirtyAttribute(new Float32Array(CAPACITY * 4), 4);
-    // x = opacity; y = draw mode + sphere R/4 (see packEffectDrawRadius); z = glow; w = traversal + legacy bias.
+    // x = opacity; y = draw mode + sphere R/4 (see packEffectDrawRadius); z = glow + 2 x sceneLit
+    // (packNativeStyleFlags); w = traversal + legacy bias.
     this.style = new DirtyAttribute(new Float32Array(CAPACITY * 4), 4);
     this.opaqueMaterial = this.material(false);
     const geometry = instancedQuadGeometry();
@@ -788,11 +843,19 @@ class PageMesh {
         .and(s.g.sub(lo).greaterThanEqual(s.r.sub(lo).mul(0.25)))
         .and(hi.greaterThan(0.7))
         .and(hi.sub(lo).greaterThan(hi.mul(0.2)));
-      const fire: ShaderNode = warm.and(aStyle.z.greaterThan(0.5)).select(float(1), float(0));
+      // packNativeStyleFlags: z = glow + 2 x sceneLit.
+      const sceneLit: ShaderNode = step(1.5, aStyle.z);
+      const fire: ShaderNode = warm
+        .and(aStyle.z.sub(sceneLit.mul(2)).greaterThan(0.5))
+        .select(float(1), float(0))
+        .mul(float(1).sub(sceneLit));
+      // A card lit like the engine's anim (sceneLit) takes its cell's object light through ANIM.PAL's rows first.
+      const cellLit: ShaderNode = sceneLit
+        .greaterThan(0.5)
+        .select(srgbScale(art, animShadeNode(objectLevelAt(layer.mapLight, aAnchor.xz))), art);
       // Native Top cloud art remains bright over black shroud; it does not inherit the event's scene illumination.
-      const lit: ShaderNode = art.mul(
-        pass === 'top' ? vec3(layer.displayScale) : mix(layer.light, vec3(FX_GLOW), fire),
-      );
+      const lit: ShaderNode =
+        pass === 'top' ? art.mul(vec3(layer.displayScale)) : mix(cellLit.mul(layer.light), art.mul(FX_GLOW), fire);
       const isShadow = draw.greaterThan(1.5);
       const shadow = vec4(0, 0, 0, mask.mul(0.5).mul(aStyle.x));
       const a: ShaderNode = mask.mul(aStyle.x);
@@ -831,7 +894,7 @@ class PageMesh {
         i,
         s.alpha,
         packEffectDrawRadius(s.draw === 'shadow' ? 2 : s.draw === 'flat' ? 1 : 0, effectSphereRadius(s), s.engineZ),
-        s.glow ? 1 : 0,
+        packNativeStyleFlags(s.glow, s.sceneLit === true),
         cardPainterBias(s) + (s.depthBias ?? 0),
       );
       if (s.alpha < 1 && s.draw !== 'shadow') translucent = true;
@@ -1016,9 +1079,11 @@ class HdPageMesh {
       // White-hot cores (every display channel near 1) carry no red-over-blue excess, so the fire test above misses
       // them; scene-lit they turned grey by day and moonlit blue at night. Lit smoke tops stay below this threshold.
       const whiteHot = smoothstep(0.86, 0.96, min(s0.r, min(s0.g, s0.b)));
-      // A card lit by the scene only (the Chaos Drone's gas) is never emissive: the engine lights that art like any
-      // other, and self-lit at its painted colour it read as a pale pink glow over the darker, scene-lit ground.
-      const e = max(max(fire, glow), whiteHot).mul(float(1).sub(sceneLit));
+      // A card lit like the engine's anim (the Chaos Drone's gas) is never emissive: the engine darkens that art with
+      // its cell's light like any other anim. `flame` (unchanged) still picks the fade exponent below, so the flag
+      // changes the light only; Translucent=no art such as CDGAS never fades anyway.
+      const flame = max(max(fire, glow), whiteHot);
+      const e = flame.mul(float(1).sub(sceneLit));
       // Flame grade: the redrawn fireballs (like the original's) spend their first frames as a pale yellow-white blob.
       // Re-map flame pixels through a temperature ramp with a gamma on their heat, so only the hottest texels stay
       // white-yellow and the rest spread over yellow, orange and red while keeping the drawn texture. Pixels with
@@ -1042,11 +1107,20 @@ class HdPageMesh {
         .mul(smoothstep(0.35, 0.75, s.b))
         .mul(float(1).sub(asPainted));
       const gain: ShaderNode = mix(layer.hdFireGain, layer.hdHotGain, hot).mul(layer.displayScale);
-      const lit = colour.mul(pass === 'top' ? vec3(layer.displayScale) : mix(layer.light, vec3(gain), e));
+      // The scene-lit share: a sceneLit card first takes its cell's object light through ANIM.PAL's rows (animShade),
+      // like the engine; without it the gas drew at its full palette colour over ground the map darkens (ALL01UMD,
+      // object level 0.78: about 1.27x the original's red). Other cards keep the plain scene light.
+      const cellLit: ShaderNode = sceneLit
+        .greaterThan(0.5)
+        .select(paletteLightNode(colour, rgba.a, animShadeNode(objectLevelAt(layer.mapLight, aAnchor.xz))), colour);
+      const lit =
+        pass === 'top'
+          ? colour.mul(vec3(layer.displayScale))
+          : mix(cellLit.mul(layer.light), colour.mul(vec3(gain)), e);
       // The anim's translucency fade (animAlphaSmooth) is the engine's stand-in for a dissipating cloud; the redrawn
       // frames already thin out, so smoke keeps more body (sqrt of the fade) and flame most of it (fourth root): a
       // half-transparent fireball over grass mixes to an olive murk, and half-transparent smoke reads as a grey veil.
-      const fade: ShaderNode = pow(aAnchor.w, mix(layer.hdSmokeFade, layer.hdFlameFade, e));
+      const fade: ShaderNode = pow(aAnchor.w, mix(layer.hdSmokeFade, layer.hdFlameFade, flame));
       return vec4(lit.mul(fade), rgba.a.mul(fade));
     })();
     return material;
@@ -1072,7 +1146,7 @@ class HdPageMesh {
         packEffectDrawRadius(s.draw === 'flat' ? 1 : 0, effectSphereRadius(s), s.engineZ),
         s.push,
         cardPainterBias(s) + (s.depthBias ?? 0),
-        packHdScale(hd.scale, hd.sceneLit === true),
+        packHdScale(hd.scale, s.sceneLit === true),
       );
       this.timing.setXYZW(i, hd.blend0, hd.t0, hd.stageSeconds, packHdSize(hd.size ?? 1, hd.asPainted === true));
     }

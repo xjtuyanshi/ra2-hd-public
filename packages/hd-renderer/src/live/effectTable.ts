@@ -40,7 +40,7 @@ export interface EffectTableRow {
   shake?: 1;
   /** HD frames keep the original size and the art colours: no enlargement, no flame grade (HD_AS_PAINTED). */
   asPainted?: 1;
-  /** HD frames take the scene light and never glow: a cloud, not a flame (HD_SCENE_LIT). */
+  /** Lit like the engine lights the anim (its cell light, then the scene light), never self-lit (HD_SCENE_LIT). */
   sceneLit?: 1;
 }
 

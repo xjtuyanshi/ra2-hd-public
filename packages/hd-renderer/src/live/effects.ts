@@ -716,13 +716,13 @@ export class LiveEffectsDriver {
             glow: false,
             category: tracked.row.c,
             ...zFields,
+            ...(tracked.row.sceneLit ? { sceneLit: true } : {}),
             hd: {
               frame: hdFrame,
               next: next?.page === hdFrame.page ? next : null,
               scale: hd.scale,
               size,
               ...(tracked.row.asPainted ? { asPainted: true } : {}),
-              ...(tracked.row.sceneLit ? { sceneLit: true } : {}),
               blend0,
               t0: this.pushedAt,
               stageSeconds: rate / this.logicFps,
@@ -761,6 +761,7 @@ export class LiveEffectsDriver {
         depth,
         glow: cardGlows(a, index, alpha, resolved.remap),
         category: tracked.row.c,
+        ...(tracked.row.sceneLit ? { sceneLit: true } : {}),
         ...nativeZ,
       });
       drawn++;

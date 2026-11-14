@@ -840,10 +840,15 @@ empty.
   pure yellow stem and a pale cap that the ramp turns orange) and CDGAS (the Chaos Drone's red-pink gas, 89 % of
   whose coverage passes the fire test), and the generator writes it into the table. On the card it travels in the
   sign of the size (`packHdSize`), so no vertex buffer is added; `hdFlameGradeDisplay` is the grade's CPU twin.
-  A row that also says `sceneLit: 1` (`HD_SCENE_LIT`: CDGAS only) is never self-lit: fire, coloured glow and
-  white-hot all take the scene's light, as the engine lights that anim like any other art. Self-lit, the gas showed
-  as a pale salmon-pink ring over a darker scene-lit base (live ALL01UMD: HD gas mean (211, 99, 83) against the
-  original's (163, 70, 54) over the same pavement). The flag travels in the sign of the page scale (`packHdScale`). HD cards of the ground and air layers are
+  A row that also says `sceneLit: 1` (`HD_SCENE_LIT`: CDGAS only) is lit the way the engine lights that anim: its
+  cell's object light from the map grade (`objectLevelAt`, the alpha of `MapLightGrade`) through ANIM.PAL's 53
+  shade rows (`animShade`, equal to ra2-assets `engineShade`), multiplied in the palette's sRGB scale, then the scene
+  light; fire, coloured glow and white-hot never self-light it. This applies to native cards (`packNativeStyleFlags`:
+  the glow component plus 2) and redrawn cards (the sign of the page scale, `packHdScale`) alike. The fade exponent
+  still follows the flame test, so the flag changes the light only. Self-lit at its palette colour the gas showed as
+  a light salmon-red ring over a base the map darkens (live ALL01UMD, object level about 0.78: HD gas mean
+  (205, 95, 77) against the original's (163, 70, 53) over the same pavement). Other anims keep the plain scene light,
+  because the effects library does not yet record UseNormalLight= (anims drawn at the full palette by the engine). HD cards of the ground and air layers are
   depth-tested like the native cards (only Top is untested). Native `Layer=air` draws over the ground layer. The final P-L5H-3b policy is per **(fire, object)**:
   `front=objectCode-fireCode`; less than **FRONT_DISTANCE=1.5 horizontal cells** covers the complete owner;
   at least 1.5 keeps it completely in front. Rhino 5009 is 1.83848 cells ahead of EXPLOLRG but 0.84853

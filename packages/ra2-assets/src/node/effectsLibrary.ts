@@ -104,7 +104,7 @@ export interface EffectTableRow {
   shake?: 1;
   /** Redrawn (HD) frames of this anim are shown as painted, see HD_AS_PAINTED. */
   asPainted?: 1;
-  /** Redrawn (HD) frames of this anim take the scene's light and never glow, see HD_SCENE_LIT. */
+  /** Lit like the engine lights this anim (cell light, then scene light), never self-lit, see HD_SCENE_LIT. */
   sceneLit?: 1;
 }
 
@@ -124,13 +124,20 @@ export interface EffectTableRow {
 export const HD_AS_PAINTED: ReadonlySet<string> = new Set(['NUKEANIM', 'CDGAS']);
 
 /**
- * Anims whose redrawn (HD) frames are lit like the rest of the scene and never self-lit. The HD flipbook path treats
- * bright red-over-blue texels as flame and draws them at their painted colour regardless of the scene's light (fire
- * gives light). The engine draws these anims through the scene's light like any other anim art (no UseNormalLight):
+ * Anims the renderer lights the way the engine does and never self-lights, native and redrawn cards alike. The engine
+ * draws a standalone anim without UseNormalLight= through the ANIM.PAL converter at the object light of its cell
+ * (Ambient - Ground + Level x height plus light sources, in 53 rows; docs/remaster/research/yr-unlit-palette.md),
+ * so on a dim map it is darker than its palette. The HD effect path draws anim art at its palette colour times the
+ * scene light, and the HD flipbook path self-lights bright red-over-blue texels as flame:
  *
- *   - CDGAS, the Chaos Drone's gas, is a cloud, not a flame. Self-lit it came out as a light salmon-pink ring that
- *     stood out over the base (live ALL01UMD, 2026-11-14, mean gas colour (211, 99, 83) in HD against the original's
- *     (163, 70, 54) over the same pavement). Scene-lit it keeps the original's deep red against the ground.
+ *   - CDGAS, the Chaos Drone's gas, is a cloud, not a flame. Self-lit at its full palette colour it came out as a
+ *     light salmon-red ring that stood out over the base: live ALL01UMD (Ambient 0.8, object level about 0.78, row
+ *     20 = 0.77 of the palette), 2026-11-14, HD gas mean (205, 95, 77) against the original's (163, 70, 53) over the
+ *     same pavement, which HD matches within a few levels. Without the cell light (scene light only) it was still
+ *     (206, 90, 72).
+ *
+ * Other anims keep the plain scene light: many explosions and smoke trails (EXPLOSML, EXPLOLRG, SGRYSMK1, ...) are
+ * UseNormalLight=yes, drawn at the full palette by the engine, and the effects library does not record that flag yet.
  *
  * A fact about this piece of art, not a rule derived from the rules files, hence a list.
  */
@@ -601,7 +608,7 @@ export function renderEffectTable(rows: Record<string, EffectTableRow>, rules?: 
     '  shake?: 1;',
     '  /** HD frames keep the original size and the art colours: no enlargement, no flame grade (HD_AS_PAINTED). */',
     '  asPainted?: 1;',
-    '  /** HD frames take the scene light and never glow: a cloud, not a flame (HD_SCENE_LIT). */',
+    '  /** Lit like the engine lights the anim (its cell light, then the scene light), never self-lit (HD_SCENE_LIT). */',
     '  sceneLit?: 1;',
     '}',
     '',
