@@ -1817,83 +1817,109 @@ water dE, visual quality or GPU performance. Those require same-scene visual/pix
 
 ### Lush2 live ground tuning
 
-Development game flags `hd-tone=lush2` (or `hd-tune=1`) mount the live Chinese tuning overlay. The FX bench
-uses `tone=lush2`; add `tune=1` for the same panel and `__fx.tune.get()`, `.set(partial)`, `.ab(true|false)`.
-Backquote toggles **润v2 / 当前**; Shift+Backquote hides/shows the panel. Input fields keep their keys.
-The panel stores values under `hd-lush2-v1:<theatre>`; blocked storage still permits tuning. Reset restores
-the theatre recommendations, including the new chroma and softness sliders. Existing saved round-one values
-remain in effect until reset; missing keys take the new defaults. The bridge/bench owns disposal of its DOM
-and capture listener. The panel uses border-box `max-height: calc(100vh - 24px)`, vertical scrolling and 34px
-slider rows, retaining the large state label. Layout at 1000×640 still requires visual acceptance.
+Development game flags `hd-tone=lush2` (or `hd-tune=1`) mount the Chinese tuning overlay. The FX bench
+uses `tone=lush2`; add `tune=1` for the panel and `__fx.tune.get()`, `.set(partial)`, `.ab(true|false)`.
+Backquote toggles **润v2 / 当前**; Shift+Backquote hides/shows the panel. Inputs, textareas, selects,
+editable elements and IME composition keep their keys. Hosts can provide `textEntryActive()` for native
+text entry. The current game bridge/input contracts expose no RA2/YR native chat-active signal, so native
+chat suppression is **UNVERIFIED**; keyboard guessing is intentionally avoided.
 
-`lush2` is independent of `lush` and moist1–3. `HdSettings.cloudTone` supplies renderer-local runtime uniforms
-(`src/cloudTone.ts`); `src/ra2/lush2Tone.ts` owns the schema, recommendations and artistic policy, including
-contact radii/opacity and shoreline width. Both A/B sides keep `groundTone` and final `tone` null. Current
-restores the entry's exact URL alive options; new enables clouds alone with the `lush` cloud shape. Strength
-zero is an exact colour identity with those additional clouds off. Tuning changes no material or post graph.
+The bridge reserves physical `Backquote` at the game input's keydown **and** keyup forwarding entry while
+the panel exists. This handles Shift/non-US layouts even though game forwarding registered its window
+capture listener first. The panel also stops immediate propagation when handling its shortcut. Disposal
+releases the reservation and all panel listeners. The page's existing debug shortcut remains unchanged
+outside these development sessions.
 
-| Slider                | Range       | Mapping                                                                                          |
-| --------------------- | ----------- | ------------------------------------------------------------------------------------------------ |
-| 总强度 [strength]     | 0–1.5       | Grade amount, cloud amount and contact strength                                                  |
-| 地面深度 [depth]      | 0–1         | Linear grass gain `1-depth`; bare gain `1-0.35*depth`, snow gain `1-depth`                       |
-| 饱和度 [chroma]       | 0.6–2       | Grass-only linear-light chroma around tinted luminance; bare chroma fixed at 1; objects excluded |
-| 阴影色相 [shadeHue]   | 0–1         | Olive `[0.95,1,0.55]` to emerald `[0.70,1,0.62]`; neither endpoint boosts blue                   |
-| 金色量 [gold]         | 0–1         | Already-bright, locally isolated, clear-lit grass only                                           |
-| 片区大小 [patchScale] | 6–24 cells  | Fine lattice scale; coarse scale is twice this                                                   |
-| 片区柔和 [softness]   | 0.2–1       | Coverage edge width; 0.7 gives nominal 2.5-cell 10–90% penumbra                                  |
-| 漂移速度 [drift]      | 0–1 cells/s | Cloud speed, with wind animation disabled                                                        |
-| 单位跟随 [unitMatch]  | 0–1         | Object depth/general tint share; no ground chroma, wetting or whitening                          |
-| 接触阴影 [contact]    | 0–1         | Soft pool opacity `min(0.7,0.7*contact*strength)` at its centre                                  |
-| 岸边湿润 [wet]        | 0–1         | One-cell land band; 0.8 gives 0.68 linear gain and 1.15× chroma at the waterline                 |
-| 雪地蓝 [snowBlue]     | 0–1         | Eligible snow inside cloud shade only; full tint `[0.93,0.97,1.08]`                              |
-| 阴影深浅 [shadeDepth] | 0–0.5       | Shared cloud darkness, separate from raw coverage                                                |
+Storage uses `hd-lush2-v2:<theatre>`: v1 values no longer override these recommendations. Blocked/corrupt
+storage still permits tuning. Reset restores all 15 sliders. The owner disposes DOM/listeners. The overlay
+retains border-box sizing, viewport-limited height, vertical scrolling, 34px rows and the large state label;
+actual layout/input acceptance requires a browser review.
 
-| Theatre          | strength | depth | chroma | shadeHue | gold | patchScale | softness | drift | unitMatch | contact | wet | snowBlue | shadeDepth |
-| ---------------- | -------- | ----- | ------ | -------- | ---- | ---------- | -------- | ----- | --------- | ------- | --- | -------- | ---------- |
-| temperate        | 1        | .48   | 1.3    | .8       | .22  | 12         | .7       | .25   | .9        | .8      | .8  | 1        | .30        |
-| urban / newurban | 1        | .30   | 1.3    | .8       | .22  | 12         | .7       | .25   | .9        | .8      | .8  | 1        | .26        |
-| snow             | 1        | .02   | 1      | .8       | 0    | 12         | .7       | .25   | .9        | .8      | .8  | 1        | .18        |
-| desert           | 1        | .12   | 1.2    | .8       | .10  | 12         | .7       | .25   | .9        | .8      | .8  | 1        | .24        |
-| lunar            | 0        | 0     | 1.3    | .8       | 0    | 12         | .7       | .25   | .9        | 0       | 0   | 1        | 0          |
+`lush2` remains independent of `lush` and moist1–3. `HdSettings.cloudTone` holds renderer-local uniforms;
+`src/ra2/lush2Tone.ts` owns artistic values, material gates, sampling width, schema and defaults. A/B leaves
+`groundTone` and final `tone` null and restores the entry's exact URL alive options on current. Neither
+materials nor post graphs are rebuilt. Strength zero is exact identity with the added clouds off.
 
-One drifting coverage field drives shade colour and cloud attenuation. Broad albedo taps classify grass but
-never replace its pixels. The linear-light mean of the +/-12/6-pixel taps is converted to sRGB HSV:
-grass weight is `smoothstep(48,62,hue) * (1-smoothstep(175,195,hue)) * smoothstep(.08,.22,saturation)`.
-Pale yellow-green stripes share the lawn's treatment. A wide source-hue fade (40–60 degrees in,
-175–215 out) protects sand/dirt inside grass-valued taps; below source saturation .08 it smoothly
-defers to the mean, fully below .02, since neutral pixels have no reliable hue. Every wet-bank pixel
-has zero grass weight, including when the wet slider is zero. Lit grass uses `[0.88,1,0.6]`, gold
-`[1.25,1,0.45]`. After tinting, ground chroma
-has a soft positive-gain limit for pale grass (source sRGB saturation .45–.60 fade). With tinted luma `y`,
-minimum channel `m`, excess chroma `e=max(chroma-1,0)` and gamut headroom `r=max(1e-6,y/max(y-m,1e-6)-1)`,
-it subtracts `green * (1-smoothstep(.45,.60,saturation)) * e*e/(r+e)` from chroma. Thus pale grass still gains
-colour while approaching the nonnegative gamut boundary smoothly. Rich grass retains its existing recipe.
-The result is clamped nonnegative, normalized to the source luminance and deepened; the final luminance ceiling remains
-in force at extrapolated strength. Daylight general tint is grass-gated on ground; bare pixels retain their hue.
-The pre-existing moon tint is retained. The cloud's own cool tint has only a 10% share on land/objects (zero on snow). Night fades the additional chroma back to identity.
+| Slider                | Range       | Mapping                                                                                            |
+| --------------------- | ----------- | -------------------------------------------------------------------------------------------------- |
+| 总强度 [strength]     | 0–1.5       | Grade, cloud and contact amount                                                                    |
+| 地面深度 [depth]      | 0–1         | Grass gain `1-depth`; transition bare gain `1-.7*depth`; dry warm sand gain 1; snow gain `1-depth` |
+| 饱和度 [chroma]       | .6–2        | Mean-only display-space chroma, soft gamut shoulder; objects excluded                              |
+| 草纹对比 [detail]     | .4–1.2      | Fine source/mean ratio exponent; 1 retains original ratios, .75 softens fine detail                |
+| 云影覆盖 [cover]      | 0–1         | Estimated world-area fraction with coverage >= .5, through a noise-quantile edge threshold         |
+| 阴影色相 [shadeHue]   | 0–1         | Mean grass shade tint `[.96-.19*shadeHue,1,.70+.04*shadeHue]`                                      |
+| 金色量 [gold]         | 0–1         | Already-bright, isolated, lit grass gate; small scalar highlight lift (maximum 3% at gold=1)       |
+| 片区大小 [patchScale] | 6–24 cells  | Fine cloud lattice; coarse scale twice this                                                        |
+| 片区柔和 [softness]   | .2–1        | Edge width independent of the coverage midpoint; nominal width 2.25 cells at .7                    |
+| 漂移速度 [drift]      | 0–1 cells/s | Shared world-anchored cloud/wind clock; wind displacement disabled                                 |
+| 单位跟随 [unitMatch]  | 0–1         | Object depth, moonlight, highlight shoulder and low ground-bounce share                            |
+| 接触阴影 [contact]    | 0–1         | Soft pool peak opacity `min(.9,.9*contact*strength)`                                               |
+| 岸边湿润 [wet]        | 0–1         | One-cell land band; .8 gives shared warm gain (.72 neutral luma, chroma x1.15)                     |
+| 雪地蓝 [snowBlue]     | 0–1         | Eligible snow shade tint `[.93,.97,1.08]`                                                          |
+| 阴影深浅 [shadeDepth] | 0–.5        | Cloud attenuation, independent of coverage                                                         |
 
-Snow whitening uses internal `snowWhite=0.85`: sRGB luma above .45 and HSV saturation below .30 receive
-full neutralisation; luma .42–.45 and saturation .30–.35 feather the boundary. Classification uses the pixel
-after material-side map colouring, independently of grass taps, preserving dark/chromatic grass and rock.
-Whitening and subsequent scalar normalisation preserve source luminance before the existing bare depth.
-The cinematic grade runs later, outside the terrain material, in `HdRenderer`'s post graph. Its renderer-local
-inverse response at linear .8 compensates eligible terrain without altering that shared grade. Only when this
-compensation is active, snow above linear .8 uses the monotonic shoulder
-`y - max(y-.8,0)^2/(.2+max(y-.8,0))` before depth, preventing the later input clamp from breaking the inverse tint.
-Common cyan snow stays below the shoulder and keeps its luminance. The response follows grade fade, resets
-at A/B-off and is copied to mirrored nodes. `snowBlue` adds blue exclusively inside cloud shade.
-Numeric tests pass lit cyan and white snow through the actual cinematic grade with HSV S below .05;
-full rendered snow remains unverified.
+| Theatre          | strength | depth | chroma | detail | cover | shadeHue | gold | patchScale | softness | drift | unitMatch | contact | wet | snowBlue | shadeDepth |
+| ---------------- | -------- | ----- | ------ | ------ | ----- | -------- | ---- | ---------- | -------- | ----- | --------- | ------- | --- | -------- | ---------- |
+| temperate        | 1        | .63   | 1.4    | .75    | .45   | .8       | .12  | 12         | .7       | .6    | 1         | 1       | .8  | 1        | .30        |
+| urban / newurban | 1        | .30   | 1.4    | .75    | .40   | .8       | .12  | 12         | .7       | .6    | 1         | 1       | .8  | 1        | .26        |
+| snow             | 1        | .02   | 1      | .75    | .28   | .8       | 0    | 12         | .7       | .6    | 1         | 1       | .8  | 1        | .12        |
+| desert           | 1        | .12   | 1.2    | .75    | .35   | .8       | .10  | 12         | .7       | .6    | 1         | 1       | .8  | 1        | .24        |
+| lunar            | 0        | 0     | 1.4    | .75    | .45   | .8       | 0    | 12         | .7       | .6    | 1         | 0       | 0   | 1        | 0          |
 
-Upright SHP instances sample clouds at their ground anchor; voxel parts share their unit root. Objects take
-depth and general colour multipliers. A shared Gaussian quad adds soft hull contact on land: outer diameters
-are 1.3× hull extents, with broader falloff and default peak opacity .56. Water and airborne units are excluded.
-Wet shore uses the signed distance on both whole-map water paths. At the recommended wet=.8, the waterline
-recipe is original colour × luma-normalised `[1,.9,.74]` × chroma 1.15 × darkening .68 (in addition to bare depth).
-The internal wet amount is slider/.8; it fades over one cell inland and excludes water-majority pixels. Tile-atlas fallback has no signed shoreline field. Water retains its existing
-body/sky cloud weights and receives no new ground grade. `soft` and `deep` cloud shapes retain prior values.
+Whole-map terrain uses two rotated antithetic trilinear taps at explicit LOD `log2(20*mapScale)`
+and two broader context taps at `log2(96*mapScale)`, both with offsets `(±.46,±.19)` times their width.
+The local mean still owns grass tint/chroma and stripe suppression. Context greenness uses a 50–52° warm
+edge (upper hue and saturation gates stay shared) so a mixed lawn/dirt context reaches full lawn depth;
+ordinary grass retains the 48–62° gate. Depth blends the existing dry-sand treatment toward grass depth
+using contextGreen, independently of local material changes. Context dirt receives chroma 1.25 and a scalar
+source-luma correction weighted by `contextGreen*(1-localGreen)` to prevent a brighter disc. Dry 20–45°
+sand in a non-green context retains its previous hue, saturation and luminance. Atlas fallback retains
+its four tile-clamped local taps and cannot provide a whole-map context.
 
-Tests cover numerical twins, actual cloud-field transects, slider round trips/bounds, DOM contract and generated
-shaders. The measured default transect median is approximately 2.7 cells; irregular local slopes vary. Whole-frame
-RGB/HSV targets, GPU execution, exact water pixels, shoreline/contact visibility and real input interactions remain
-`UNVERIFIED` until a separate visual review. No browser acceptance is implied by these asset-free tests.
+The graded mean is normalised to its depth-scaled linear luminance. A soft chroma limit protects its
+channels after depth: minimum display channel >= .15 times display luma for fully eligible daylight grass.
+This boundary is in **display sRGB**, not linear RGB: a .15-linear-luma floor is incompatible with the
+requested .85–.92 display saturation. The per-source detail step is
+`gradedMean * (source/mean)^mix(1,detail,green)` with guarded division (a shared zero channel has ratio 1). At detail=1 each channel retains its original source ratio. The representative
+stripe/grass luma ratio stays within the input ratio raised to the detail exponent (outside the rare highlight gate).
+It retains the broad mean pattern and does not modify textures or geometry. A mean-only floor cannot
+guarantee a per-source floor for arbitrarily saturated source/mean combinations without a further
+source-dependent correction; that stronger condition is not claimed. Fine black luma stays black.
+Gold retains absolute/relative source-highlight gates against the smooth mean and contributes at most
+.36% luma at the default gold=.12. Night fades new grass/detail operations and retains the shared moon tint.
+
+Within the one-cell wet strip, local green tint is multiplied by `1-smoothstep(0,.3,wet)`.
+All hues share the same position-dependent linear RGB gain: `mix(1, [1,.9,.76]*.72/dot([1,.9,.76], lumaWeights), share)`.
+Here `share=slider/.8*wet*(1-night)`. The tint normalisation is constant, independent of source pixels;
+.72 is the neutral-input luminance gain, while coloured inputs vary with their channel mix. The dry grade
+fades to the original source with `smoothstep(0,.3,wet)`; the same wet gain then multiplies every pixel.
+Chroma is `mix(1,1.15,share)` around each resulting pixel's own linear luma, with no hue or saturation
+classification, hue target, source-dependent normalisation or per-material wet depth. This preserves
+painted surf detail without adding material-selection outlines. The internal share remains slider/.8.
+Water-majority texels bypass the land grade; water body/sky weights and the water recipe remain unchanged.
+Atlas fallback has no signed shoreline field.
+
+Snow's uniform branch retains the previous per-pixel whitening and cinematic compensation, and skips
+ordinary grass grading. The snow branch is skipped on other theatres. Internal snowWhite=.85 uses sRGB
+luma .42–.45 and saturation .30–.35 gates. SnowWhite, snowBlue, inverse post-grade compensation at linear
+.8, highlight headroom, mirror updates and A/B-off reset retain their previous contracts. Coverage now
+uses a noise quantile lookup: .28 for snow instead of a field shading most of the frame. This is a world-area
+estimate at half coverage; finite frames and penumbra pixels vary. The original soft/deep shapes are untouched.
+
+SHPs sample the field at their per-instance ground anchor; voxel hull/turret/barrel share their unit root.
+Both terrain and objects reference the same `LivingWorldNodes` clock, direction and lattice. At unitMatch=1,
+objects take the full grass depth. Above linear luma .55 a scalar shoulder compresses the excess by 30%,
+preserving hue; below .75 world units of height a small (.08) bounce multiplies by `grassSunTint^.25`, with
+scalar luma normalisation. Bounce fades at night. The land-only Gaussian contact pool has 1.6x hull diameter,
+falloff 1.5, peak opacity .9 and about .538 opacity at half radius; water/flight remain excluded.
+
+Terrain, water and object receivers evaluate analytic coverage with the shared `LivingWorldNodes` clock,
+wind direction, lattice and shape. A scope-local `aliveCloudShadow` shader function owns its neutral
+initializer; each material shares its coverage result across optical terms. No cloud-field texture,
+writer pass or shore/cliff packing is used. Mirrors copy the same clock/wind/shape values.
+Gold work is uniform-gated at zero; snow already skips non-snow work; detail powers are skipped at detail=1.
+
+Run `pnpm --filter hd-renderer test` for numeric, mip-sampling, shader-generation, analytic field sharing,
+texture/binding budgets, clock, snow, contact, A/B/reset/storage and DOM contracts. Run `pnpm run typecheck`
+for workspace types. These checks do not establish GPU numeric execution or UI acceptance. The <=+1.3 ms
+budget at 3456x2234 and rendered 1:1 appearance remain **UNVERIFIED** until a same-scene runtime review.

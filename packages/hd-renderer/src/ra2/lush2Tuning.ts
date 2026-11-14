@@ -20,7 +20,7 @@ export function mountLush2Tuning(host: HTMLElement, hd: HdRenderer, theater: str
   const panel = mountTuningPanel(host, {
     schema: LUSH2_SCHEMA,
     recommended: lush2Defaults(theater),
-    storageKey: `hd-lush2-v1:${theater}`,
+    storageKey: `hd-lush2-v2:${theater}`,
     get: () => ({ ...values }),
     set: (next) => {
       values = { ...next };

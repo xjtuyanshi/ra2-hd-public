@@ -124,6 +124,7 @@ class ElementDouble extends EventTarget {
   max = '';
   step = '';
   parent: ElementDouble | null = null;
+  isContentEditable = false;
   constructor(readonly tag = 'div') {
     super();
   }
@@ -139,7 +140,7 @@ class ElementDouble extends EventTarget {
   }
   setAttribute() {}
   closest() {
-    return ['input', 'textarea', 'select'].includes(this.tag) ? this : null;
+    return this.isContentEditable || ['input', 'textarea', 'select'].includes(this.tag) ? this : null;
   }
 }
 it('owns the DOM and capture hotkey, ignores inputs, supports hide and releases the listener', () => {
@@ -149,14 +150,17 @@ it('owns the DOM and capture hotkey, ignores inputs, supports hide and releases 
   const add = vi.spyOn(win, 'addEventListener'),
     remove = vi.spyOn(win, 'removeEventListener');
   vi.stubGlobal('window', win);
-  vi.stubGlobal('document', { createElement: (tag: string) => new ElementDouble(tag) });
+  const doc = { createElement: (tag: string) => new ElementDouble(tag), activeElement: null as ElementDouble | null };
+  vi.stubGlobal('document', doc);
   vi.stubGlobal('localStorage', {
     getItem: () => null,
     setItem: () => {
       throw new Error('denied');
     },
   });
+  let nativeTyping = false;
   const panel = mountTuningPanel(host as unknown as HTMLElement, {
+    textEntryActive: () => nativeTyping,
     schema: LUSH2_SCHEMA,
     recommended: lush2Defaults('temperate'),
     storageKey: 'test',
@@ -193,7 +197,24 @@ it('owns the DOM and capture hotkey, ignores inputs, supports hide and releases 
   expect(key('KeyX').defaultPrevented).toBe(false);
   expect(key('Backquote', false, true).defaultPrevented).toBe(false);
   expect(ab).toHaveBeenCalledTimes(initial);
+  for (const tag of ['input', 'textarea', 'select']) {
+    doc.activeElement = new ElementDouble(tag);
+    expect(key('Backquote').defaultPrevented).toBe(false);
+  }
+  doc.activeElement = new ElementDouble();
+  doc.activeElement.isContentEditable = true;
+  expect(key('Backquote').defaultPrevented).toBe(false);
+  doc.activeElement = null;
+  nativeTyping = true;
+  expect(key('Backquote').defaultPrevented).toBe(false);
+  nativeTyping = false;
+  const composing = Object.assign(new Event('keydown', { cancelable: true }), { code: 'Backquote', isComposing: true });
+  win.dispatchEvent(composing);
+  expect(composing.defaultPrevented).toBe(false);
+  const game = vi.fn();
+  win.addEventListener('keydown', game, { capture: true });
   expect(key('Backquote').defaultPrevented).toBe(true);
+  expect(game).not.toHaveBeenCalled();
   expect(ab).toHaveBeenLastCalledWith(false);
   expect(host.children[0]!.children[0]!.textContent).toBe('当前');
   key('Backquote');
@@ -216,7 +237,10 @@ it('the actual RA2 controller restores URL clouds and no-tone settings, preservi
   const win = new EventTarget();
   vi.stubGlobal('window', win);
   vi.stubGlobal('document', { createElement: (tag: string) => new ElementDouble(tag) });
-  vi.stubGlobal('localStorage', { getItem: () => null, setItem: () => {} });
+  const readStorage = vi.fn((key: string) =>
+    key.startsWith('hd-lush2-v1:') ? JSON.stringify({ depth: 0.01, drift: 0.01 }) : null,
+  );
+  vi.stubGlobal('localStorage', { getItem: readStorage, setItem: () => {} });
   const url = { ...ALIVE_DEFAULTS, clouds: true, preset: 'deep' as const, cloud: 0.3, speed: 0.2 };
   nodes.alive.set(url);
   nodes.alive.update(20, 0.6, 0, 0, false);
@@ -247,6 +271,8 @@ it('the actual RA2 controller restores URL clouds and no-tone settings, preservi
     url,
   );
   try {
+    expect(readStorage).toHaveBeenCalledWith('hd-lush2-v2:temperate');
+    expect(panel.get()).toEqual(lush2Defaults('temperate'));
     for (let i = 0; i < 3; i++) {
       panel.ab(false);
       expect(settings).toEqual({ groundTone: null, tone: null, cloudTone: null });

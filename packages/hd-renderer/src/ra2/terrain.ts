@@ -1,6 +1,6 @@
-import { LUSH2_SHORE } from './lush2Tone';
+import { LUSH2_SHORE, LUSH2_MEAN } from './lush2Tone';
 import { surfaceCloudFactor } from '../objectCloudTone';
-import { cloudToneNode } from '../cloudTone';
+import { cloudToneNode, cloudToneMeanNode } from '../cloudTone';
 import { groundToneNode, groundToneShareNode } from '../groundTone';
 import {
   createWaterTuning,
@@ -904,7 +904,7 @@ function terrainArtSampler(cache: Ra2Cache) {
     const tap = (offset: ShaderNode): ShaderNode =>
       texture(colourMap, clamp(uv.add(offset.mul(halfTexel).mul(2)), rect.xy.add(halfTexel), rect.zw.sub(halfTexel)))
         .rgb;
-    return { uv, colour: texture(colourMap, uv) as ShaderNode, tap };
+    return { uv, rect, colour: texture(colourMap, uv) as ShaderNode, tap };
   };
   return { colourMap, halfTexel, sample };
 }
@@ -1001,7 +1001,7 @@ function createMaterials(
   const ground = new ArtMaterial();
   ground.sceneMultiplier = nodes.sceneTerrainMul;
   ground.cloudShadow = nodes.alive.shadow;
-  const { uv, colour: raw, tap } = sample('atlasUv', 'atlasRect');
+  const { uv, rect, colour: raw, tap } = sample('atlasUv', 'atlasRect');
   // Tile art under the map's own light (see mapLighting.ts), as the engine draws it.
   const grade: ShaderNode = terrainGradeAt(cache.mapLight, positionWorld.xz);
   const art: ShaderNode = vec4(grassArt(srgbScale(raw.rgb, grade), raw.rgb, nodes), raw.a);
@@ -1353,25 +1353,45 @@ function createMaterials(
     });
     return result;
   })();
-  // The broad taps classify only: retaining the untouched pixel preserves the art's diamond detail and contrast.
-  // The hard water exclusion is intentional: no lush2 colour or wet gain reaches a water-majority texel.
+  // Whole-map mip low-pass suppresses the iso stripe lattice; atlas fallback stays inside its tile.
+  // Water-majority texels retain the original colour and shoreline recipe.
   const legacyAlbedo = albedo;
   albedo = Fn(() => {
     const result = legacyAlbedo.toVar();
-    If(nodes.cloudTone.strength.greaterThan(0), () => {
-      let mean: ShaderNode = vec3(0);
-      for (const x of [-12, 12])
-        for (const y of [-6, 6]) mean = mean.add(tap(vec2(x, y).mul(cache.terrainMap?.ref.scale ?? 1)));
+    If(nodes.cloudTone.strength.greaterThan(0).and(weatherLand.greaterThanEqual(0.5)), () => {
+      let mean: ShaderNode, context: ShaderNode;
+      if (cache.terrainMap) {
+        mean = cloudToneMeanNode(
+          colourMap,
+          uv,
+          halfTexel.mul(2),
+          LUSH2_MEAN.blockWidth * cache.terrainMap.ref.scale,
+          rect,
+        );
+        context = cloudToneMeanNode(
+          colourMap,
+          uv,
+          halfTexel.mul(2),
+          LUSH2_MEAN.contextWidth * cache.terrainMap.ref.scale,
+          rect,
+        );
+      } else {
+        mean = vec3(0);
+        for (const x of [-12, 12]) for (const y of [-6, 6]) mean = mean.add(tap(vec2(x, y)).mul(0.25));
+        context = mean;
+      }
       const dressed = cloudToneNode(
         legacyAlbedo,
-        mean.mul(0.25),
+        mean,
         nodes.alive.gradeCoverage(nodes.alive.coverage),
         nodes.cloudTone,
         nodes.night,
         false,
         shoreWetMask,
+        float(0),
+        context,
       );
-      If(weatherLand.greaterThanEqual(0.5), () => result.assign(dressed));
+      result.assign(dressed);
     });
     return result;
   })();

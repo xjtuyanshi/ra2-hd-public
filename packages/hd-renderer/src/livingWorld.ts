@@ -266,3 +266,25 @@ export function treeSway(
 export function grassRipple(x: number, z: number, seconds: number, direction: number, speed = 1): number {
   return (2 * aliveGust(x, z, seconds, direction, speed) - 1) * 0.05;
 }
+
+// Quantiles of this module's gradient noise, sampled over 512² stratified world points.
+// The single-lattice field uses this distribution; finite viewports and mixed lattices vary around it.
+const cloudQuantiles = [
+  -0.72, -0.3542, -0.3001, -0.2384, -0.1864, -0.1483, -0.1111, -0.0782, -0.0484, -0.0231, 0, 0.0235, 0.0486, 0.0779,
+  0.1109, 0.1474, 0.186, 0.2388, 0.3008, 0.3548, 0.72,
+];
+/** Map shaded fraction (coverage >= .5) to the field's mid-edge threshold, independent of softness. */
+export function cloudCoverThreshold(cover: number): number {
+  const index = (1 - Math.max(0, Math.min(1, cover))) * (cloudQuantiles.length - 1);
+  const i = Math.min(cloudQuantiles.length - 2, Math.floor(index));
+  return mix(cloudQuantiles[i]!, cloudQuantiles[i + 1]!, index - i);
+}
+export function cloudThresholdCover(threshold: number): number {
+  let i = 0;
+  while (i < cloudQuantiles.length - 2 && threshold > cloudQuantiles[i + 1]!) i++;
+  const fraction = Math.max(
+    0,
+    Math.min(1, (threshold - cloudQuantiles[i]!) / (cloudQuantiles[i + 1]! - cloudQuantiles[i]!)),
+  );
+  return 1 - (i + fraction) / (cloudQuantiles.length - 1);
+}

@@ -22,6 +22,15 @@ export function objectCloudTone(nodes: AtmosphereNodes) {
     shadow,
     shade: (colour: ShaderNode) => nodes.alive.shadeAt(colour, shadow),
     grade: (colour: ShaderNode) =>
-      cloudToneNode(colour, colour, nodes.alive.gradeCoverage(coverage), nodes.cloudTone, nodes.night, true),
+      cloudToneNode(
+        colour,
+        colour,
+        nodes.alive.gradeCoverage(coverage),
+        nodes.cloudTone,
+        nodes.night,
+        true,
+        float(0),
+        positionWorld.y.sub(objectGroundAnchor.y).max(0),
+      ),
   };
 }

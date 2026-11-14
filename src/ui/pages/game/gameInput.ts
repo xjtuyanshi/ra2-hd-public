@@ -24,6 +24,12 @@ const pointerLockHintShown = new WeakSet<HTMLCanvasElement>();
  * Leave number/letter keys available for native game hotkeys.
  */
 const UI_SHORTCUT_KEYS = new Set(['`', 'F11', '?', '[', ']']);
+const SESSION_SHORTCUT_CODES = new Set<string>();
+/** Physical shortcuts are layout/Shift independent and must be excluded before any native forwarding. */
+export function setSessionShortcutCode(code: string, reserved: boolean): void {
+  if (reserved) SESSION_SHORTCUT_CODES.add(code);
+  else SESSION_SHORTCUT_CODES.delete(code);
+}
 
 /**
  * Reserve a key for a page shortcut whose feature exists only in some sessions (true), or give it back to the game
@@ -1221,7 +1227,7 @@ export function installGameInput(
     'keydown',
     (event) => {
       // Page shortcuts (` debug / [ ] speed / F11 fullscreen / ? help / \\ HD view) are not injected into the game.
-      if (UI_SHORTCUT_KEYS.has(event.key)) return;
+      if (UI_SHORTCUT_KEYS.has(event.key) || SESSION_SHORTCUT_CODES.has(event.code)) return;
       if (document.activeElement !== canvas || event.isComposing) return;
       // A key can follow a physical move before the pending pointer rAF runs.
       // Preserve that position before key state/messages reach either backend.
@@ -1270,7 +1276,7 @@ export function installGameInput(
     window,
     'keyup',
     (event) => {
-      if (UI_SHORTCUT_KEYS.has(event.key)) return;
+      if (UI_SHORTCUT_KEYS.has(event.key) || SESSION_SHORTCUT_CODES.has(event.code)) return;
       const code = forwardedCode(event.code);
       if (metaReleased.delete(code)) {
         // Already released by the page while ⌘ was held; the late physical keyup has nothing left to do.

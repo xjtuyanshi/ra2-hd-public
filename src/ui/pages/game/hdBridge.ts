@@ -1,3 +1,4 @@
+import { setSessionShortcutCode } from './gameInput';
 import { parseAliveParams } from '../../../../packages/hd-renderer/src/livingWorld';
 import { parseWaterStyle, WATER_STYLES, type WaterStyle } from '../../../../packages/hd-renderer/src/ra2/waterStyles';
 import type { VmShell } from '../../../adapter/vmShell';
@@ -1453,13 +1454,24 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
         tuningPanel = null;
         live?.dispose();
         live = view;
-        if (tuningModule)
-          tuningPanel = tuningModule.mountLush2Tuning(
+        if (tuningModule) {
+          const panel = tuningModule.mountLush2Tuning(
             canvas.parentElement!,
             view.hd,
             view.theater,
             parseAliveParams(params, 'hd-alive'),
           );
+          // Input was installed before this async view. Reserve by physical code at its forwarding entry,
+          // rather than relying on registration order among window capture listeners.
+          // The bridge exposes no native RA2/YR chat/text-entry signal; do not guess it from keystrokes.
+          setSessionShortcutCode('Backquote', true);
+          tuningPanel = {
+            dispose() {
+              panel.dispose();
+              setSessionShortcutCode('Backquote', false);
+            },
+          };
+        }
         liveMap = mapId;
         failed.delete(mapId);
         pushed = null;

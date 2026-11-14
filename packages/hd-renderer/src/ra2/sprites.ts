@@ -1198,6 +1198,8 @@ class SpriteGraph {
               nodes.cloudTone,
               nodes.night,
               true,
+              float(0),
+              positionWorld.y.sub(aAnchor.y).max(0),
             ),
           );
         });

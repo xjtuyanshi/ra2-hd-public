@@ -13,6 +13,8 @@ export interface TuningOptions<K extends string> {
   set(values: Record<K, number>): void;
   ab(enabled: boolean): void;
   names?: readonly [string, string];
+  /** Host-provided native text-entry state, when observable. */
+  textEntryActive?(): boolean;
 }
 /** Storage is optional, including environments where merely accessing localStorage throws. */
 export function tuningModel<K extends string>(
@@ -143,10 +145,19 @@ export function mountTuningPanel<K extends string>(host: HTMLElement, options: T
     (event) => {
       const e = event as KeyboardEvent;
       const target = e.target as HTMLElement | null;
-      if (target?.closest?.('input,textarea,select,[contenteditable="true"]')) return;
+      const focused = document.activeElement as HTMLElement | null;
+      if (
+        e.isComposing ||
+        options.textEntryActive?.() ||
+        target?.isContentEditable ||
+        focused?.isContentEditable ||
+        target?.closest?.('input,textarea,select,[contenteditable]:not([contenteditable="false"])') ||
+        focused?.closest?.('input,textarea,select,[contenteditable]:not([contenteditable="false"])')
+      )
+        return;
       if (e.code !== 'Backquote' || e.altKey || e.ctrlKey || e.metaKey) return;
       e.preventDefault();
-      e.stopPropagation();
+      e.stopImmediatePropagation();
       if (e.repeat) return;
       if (e.shiftKey) root.hidden = !root.hidden;
       else model.ab(!model.isNew());
