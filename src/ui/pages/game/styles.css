@@ -2208,16 +2208,15 @@ input[type='range']::-webkit-slider-thumb {
 #vm-controls .resolution-controls .select-value {
   min-height: 24px;
 }
-@media (max-height: 560px) {
-  /* After moving fullscreen to the bottom, short landscape windows must allow scrolling to it instead of clipping it outside the viewport. */
-  #vm-controls {
-    max-height: calc(100dvh - var(--safe-top) - var(--safe-bottom) - 20px);
-    overflow-y: auto;
-    pointer-events: auto;
-  }
-  #vm-controls > * {
-    flex-shrink: 0;
-  }
+/* The open panel is taller than many windows (about 860 CSS px in English); it scrolls instead of leaving its lower
+   buttons, Fullscreen last, outside the window. */
+#vm-controls:not(.collapsed) {
+  max-height: calc(100dvh - var(--safe-top) - var(--safe-bottom) - 20px);
+  overflow-y: auto;
+  pointer-events: auto;
+}
+#vm-controls > * {
+  flex-shrink: 0;
 }
 #vm-touch-controls {
   background: #191919;
