@@ -25,6 +25,7 @@ import {
   animLightPolicy,
   animPhysicalLight,
   engineLampLights,
+  LAMP_GROUND_AT_ONE_CELL,
   buildingPhysicalLight,
   nearestLampHead,
   ra2LightOccluders,
@@ -114,7 +115,7 @@ describe('physical light CPU twins', () => {
   });
   it('calibrates a night fire, retains convex physical falloff and caps source colours', () => {
     const light = policyLight(REAL_LIGHT_POLICIES.fire, [0, 0.4, 0]);
-    expect(lightLuminance(irradiance(light, 0.5))).toBeCloseTo(0.5, 8);
+    expect(lightLuminance(irradiance(light, 0.5))).toBeCloseTo(REAL_LIGHT_POLICIES.fire.ground, 8);
     const profile = [0.5, 1, 2, 3].map((d) => lightLuminance(irradiance(light, d)));
     expect(profile[2]! / profile[0]!).toBeLessThan(0.15);
     expect(profile[0]).toBeGreaterThan(profile[1]!);
@@ -308,14 +309,14 @@ describe('RA2 source policy and capture integration', () => {
     grade.dispose();
     negative.dispose();
   });
-  it('calibrates the combined lamp head/post moment to engineCellLight brightness', () => {
+  it('calibrates the combined lamp head/post moment to engineCellLight brightness one cell out, within the lamp range', () => {
     const source = {
       position: [0, 0, 0] as [number, number, number],
       radius: 2000,
       intensity: 0.2,
       tint: [0.1, 0.1, 0.05] as [number, number, number],
     };
-    const d = (source.radius / 256) * 0.25,
+    const d = Math.min(1, (source.radius / 256) * 0.25),
       lights = engineLampLights(source, lighting);
     const s: [number, number, number] = [0, 0, 0],
       direction: [number, number, number] = [0, 0, 0];
@@ -330,8 +331,9 @@ describe('RA2 source policy and capture integration', () => {
       [{ ...source, position: [128 - d * 256, 128, 0] }],
       lighting.ambient,
     );
+    const engine = lightLuminance([delta[0]!, delta[1]!, delta[2]!]);
     expect(lightLuminance(irradianceKnee(reconstructLight(s, direction, [0, 1, 0]), 1))).toBeCloseTo(
-      lightLuminance([delta[0]!, delta[1]!, delta[2]!]),
+      Math.min(LAMP_GROUND_AT_ONE_CELL.max, Math.max(LAMP_GROUND_AT_ONE_CELL.min, engine)),
       8,
     );
     expect(nearestLampHead(source, [{ x: 2, z: 0, height: 4 }])).toBe(1.25);

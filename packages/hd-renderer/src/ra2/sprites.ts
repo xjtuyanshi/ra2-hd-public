@@ -62,6 +62,7 @@ import {
   LOCAL_LIGHT_HEIGHT_FALLOFF,
   localLightHeadroom,
   localSurfaceLight,
+  OBJECT_KNEE,
   objectLightAt,
   pavedAt,
   puddleNoise,
@@ -866,6 +867,8 @@ class SpriteGraph {
                 ground,
                 height.add(aAnchor.y),
                 physicalNormal ?? vec3(0, 1, 0),
+                undefined,
+                OBJECT_KNEE,
               ),
             ),
           );

@@ -38,7 +38,7 @@ export interface LightPolicy {
   continuous?: boolean;
 }
 export const REAL_LIGHT_POLICIES = {
-  fire: { height: 0.4, radius: 0.25, ground: 0.5, colour: LIGHT_COLOURS.fire, day: 0, flicker: 0.18, continuous: true },
+  fire: { height: 0.4, radius: 0.25, ground: 0.8, colour: LIGHT_COLOURS.fire, day: 0, flicker: 0.18, continuous: true },
   burning: {
     height: 0.3,
     radius: 0.15,
@@ -150,7 +150,8 @@ export function animLightPolicy(
     return {
       height: 0.4 + 0.3 * rho,
       radius: 0.3 * rho,
-      ground: 1.2 * rho ** 0.7,
+      // Sandbox r2: 1.2 rho^0.7 lit only the ground under the blast art itself (EXPLOLRG covers ~1.5 cells).
+      ground: 2.4 * rho ** 0.7,
       colour: LIGHT_COLOURS.explosion,
       day: 0.2,
       hold: 0.12,
@@ -252,10 +253,16 @@ export function nearestLampHead(source: EngineLight, heads: readonly LampArtHead
   return height;
 }
 
-/** Match engine added brightness at one quarter LightVisibility after the irradiance knee. */
+/**
+ * Ground irradiance one cell from the post, in noon units, for an engine lamp: the engine's own added brightness
+ * there, kept within a lamp's range. Matching the engine farther out (a quarter of LightVisibility, ~5 cells) made the
+ * inverse-square near field 30x brighter than noon under the post: the whole block read as daylight (sandbox r1).
+ */
+export const LAMP_GROUND_AT_ONE_CELL = { min: 0.12, max: 0.45 } as const;
+/** Match engine added brightness one cell from the post (clamped, LAMP_GROUND_AT_ONE_CELL) after the knee. */
 export function engineLampLights(source: EngineLight, lighting: EngineLighting, head = 1.25): PhysicalLight[] {
   if (!(source.intensity > 0)) return [];
-  const distance = (source.radius / 256) * 0.25;
+  const distance = Math.min(1, (source.radius / 256) * 0.25);
   const grid = {
     width: 1,
     height: 1,
@@ -300,7 +307,7 @@ export function engineLampLights(source: EngineLight, lighting: EngineLighting, 
   };
   let lo = 0,
     hi = 1;
-  const reachable = Math.min(target, 2.49);
+  const reachable = Math.min(LAMP_GROUND_AT_ONE_CELL.max, Math.max(LAMP_GROUND_AT_ONE_CELL.min, target));
   while (sample(hi) < reachable && hi < 1e8) hi *= 2;
   for (let i = 0; i < 48; i++) {
     const mid = (lo + hi) / 2;

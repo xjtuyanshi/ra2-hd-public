@@ -112,9 +112,9 @@ export function reconstructLight(s: Rgb, d: Point, normal: Point): [number, numb
   const k = (dominant * cosine + 0.5 * Math.max(0, lum - dominant)) / Math.max(lum, 1e-8);
   return s.map((c) => c * k) as [number, number, number];
 }
-export function irradianceKnee(e: Rgb, night: number): [number, number, number] {
+export function irradianceKnee(e: Rgb, night: number, capScale = 1): [number, number, number] {
   const lum = lightLuminance(e),
-    cap = 1.2 + 1.3 * Math.min(1, Math.max(0, night));
+    cap = (1.2 + 1.3 * Math.min(1, Math.max(0, night))) * capScale;
   const k = lum > 0 ? Math.min(1, (cap * -Math.expm1(-lum / cap)) / lum) : 1;
   return e.map((c) => c * k) as [number, number, number];
 }
@@ -134,20 +134,35 @@ export class RealLightNodes {
   readonly scale = uniform(1);
   readonly size = uniform(new Vector2(1, 1));
   private readonly black = new DataTexture(new Float32Array(4), 1, 1, RGBAFormat, FloatType);
+  private readonly flat = new DataTexture(new Uint16Array(1), 1, 1, RedFormat, HalfFloatType);
+  /**
+   * Ground height (world y) per cell, linearly filtered. Both field layers sit at this height (+0 and +UPPER) and
+   * receivers measure their height above it: with absolute layers, elevated maps put the ground layer a level below
+   * the ground and a fire 0.4 above the ground lit it at a tenth of its strength (sandbox r1, XMP29U2 at level 2).
+   */
+  readonly groundHeight = texture(this.flat);
   readonly ground = texture(this.black);
   readonly groundDirection = texture(this.black);
   readonly upper = texture(this.black);
   readonly upperDirection = texture(this.black);
   constructor() {
     this.black.needsUpdate = true;
+    this.flat.needsUpdate = true;
   }
   dispose(): void {
     this.black.dispose();
+    this.flat.dispose();
   }
 }
-function kneeNode(e: ShaderNode, night: ShaderNode): ShaderNode {
+/**
+ * Knee ceiling for objects (units, building art) relative to the ground's: a voxel face turned to a blast takes full
+ * cosine while the ground beside it takes a grazing one, and at the ground's 2.5 night ceiling a Rhino two cells from
+ * EXPLOLRG clipped on 53 % of its lit side (sandbox r3, M6). Objects keep their paint at 0.3 of it (0.45 still clipped 49 %).
+ */
+export const OBJECT_KNEE = 0.3;
+function kneeNode(e: ShaderNode, night: ShaderNode, capScale = 1): ShaderNode {
   const lum = dot(e, vec3(...LUMA));
-  const cap = mix(float(1.2), float(2.5), night);
+  const cap = mix(float(1.2), float(2.5), night).mul(capScale);
   return e.mul(
     cap
       .mul(float(1).sub(exp(lum.negate().div(cap))))
@@ -161,8 +176,11 @@ export function sampleRealLight(
   xz: ShaderNode,
   height: ShaderNode,
   normal?: ShaderNode,
+  capScale = 1,
 ): ShaderNode {
   const uv = xz.div(nodes.size);
+  // Callers pass absolute world y; the layers follow the ground.
+  height = max(height.sub(texture(nodes.groundHeight, uv).r), 0);
   const t = clamp(height.div(REAL_LIGHT_UPPER), 0, 1).mul(nodes.directional);
   const g = texture(nodes.ground, uv);
   const s = mix(g.rgb, texture(nodes.upper, uv).rgb, t).mul(nodes.scale);
@@ -179,7 +197,7 @@ export function sampleRealLight(
     const groundShare = mix(g.a, texture(nodes.upper, uv).a, t).mul(nodes.scale).div(max(lum, 1e-8)).clamp(0, 1);
     e = e.mul(float(1).sub(groundShare.mul(max(normal.y.negate().add(1), 0).min(1)).mul(0.7)));
   }
-  return kneeNode(e.mul(exp(max(height.sub(REAL_LIGHT_UPPER), 0).mul(-0.45))), nodes.nightWeight);
+  return kneeNode(e.mul(exp(max(height.sub(REAL_LIGHT_UPPER), 0).mul(-0.45))), nodes.nightWeight, capScale);
 }
 
 interface TimedLight {
@@ -206,6 +224,7 @@ export class RealLightField {
   private lastNight = -1;
   private lastDynamic = false;
   private occluders: DataTexture | null = null;
+  private groundTexture: DataTexture | null = null;
   private readonly clearColour = new Color();
   renders = 0;
   constructor(
@@ -270,7 +289,11 @@ export class RealLightField {
     const lo = a.xz.min(b.xz).sub(b.w),
       hi = a.xz.max(b.xz).add(b.w);
     m.positionNode = vec3(mix(lo, hi, positionGeometry.xy.add(0.5)), 0);
-    const p = vec3(positionWorld.x, y, positionWorld.y);
+    const p = vec3(
+      positionWorld.x,
+      texture(this.nodes.groundHeight, positionWorld.xy.div(this.nodes.size)).r.add(y),
+      positionWorld.y,
+    );
     const ab = b.xyz.sub(a.xyz),
       len = length(ab),
       axis = ab.div(max(len, 1e-8));
@@ -322,6 +345,22 @@ export class RealLightField {
       HalfFloatType,
     );
     this.occluders.needsUpdate = true;
+  }
+  /** Ground height per cell (world y), row-major width x height cells. */
+  setGround(heights: ArrayLike<number>): void {
+    if (heights.length !== this.width * this.height) throw new Error('Invalid light ground dimensions');
+    this.groundTexture?.dispose();
+    this.groundTexture = new DataTexture(
+      Uint16Array.from(heights as ArrayLike<number>, (h) => DataUtils.toHalfFloat(h)),
+      this.width,
+      this.height,
+      RedFormat,
+      HalfFloatType,
+    );
+    this.groundTexture.minFilter = this.groundTexture.magFilter = LinearFilter;
+    this.groundTexture.needsUpdate = true;
+    this.nodes.groundHeight.value = this.groundTexture;
+    this.dirty = true;
   }
   setStatic(lights: readonly PhysicalLight[]): void {
     this.pools.get('static')!.clear();
@@ -435,6 +474,7 @@ export class RealLightField {
     }
     for (const s of this.scenes) s.clear();
     this.occluders?.dispose();
+    this.groundTexture?.dispose();
     this.clear();
   }
 }

@@ -49,6 +49,7 @@ import {
   moonlit,
   objectLight,
   physicalSurfaceLight,
+  OBJECT_KNEE,
   type AtmosphereNodes,
 } from '../atmosphere';
 import type { ShaderNode } from '../tsl';
@@ -555,7 +556,7 @@ function createGraph(
   const local: ShaderNode = nodes.realLight
     ? mix(
         legacyLocal,
-        physicalSurfaceLight(nodes, positionWorld.xz, positionWorld.y, normalWorld).mul(1 / Math.PI),
+        physicalSurfaceLight(nodes, positionWorld.xz, positionWorld.y, normalWorld, OBJECT_KNEE).mul(1 / Math.PI),
         nodes.realLight.enabled,
       )
     : legacyLocal;
@@ -597,6 +598,8 @@ function createGraph(
         positionWorld.xz,
         positionWorld.y,
         n,
+        undefined,
+        OBJECT_KNEE,
       ),
     );
     // The redraw already contains AO and directional shading. Only uncovered engine art receives mesh AO/sheen.

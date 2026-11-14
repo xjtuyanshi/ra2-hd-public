@@ -80,7 +80,13 @@ export const CLEAR_WATER = {
 } as const;
 
 /** One ground world unit is one cell (world.ts); eight metres per cell is the chosen visual scale. */
-export const CLEAR_SURFACE = { tileMetres: 26, metresPerCell: 8, timeScale: 0.6, normalGain: 1.7, viewStretch: 1.5 } as const;
+export const CLEAR_SURFACE = {
+  tileMetres: 26,
+  metresPerCell: 8,
+  timeScale: 0.6,
+  normalGain: 1.7,
+  viewStretch: 1.5,
+} as const;
 /** WaterMesh.getNoise: divisor (x,z), signed scroll rate (tiles per surface-clock second), equal weights. */
 export const CLEAR_LAYERS = [
   [103, 103, 1 / 17, 1 / 29],
@@ -436,11 +442,7 @@ export function clearWaterLook(
   );
   // Night: the moonlight is blue; a greener, brighter body keeps the water a dark teal, never black navy.
   const nightBody = body.mul(vec3(5.0, 3.4, 1.9));
-  body = mix(
-    body,
-    mix(nightBody, vec3(dot(nightBody, vec3(0.2126, 0.7152, 0.0722))), 0.1),
-    night,
-  );
+  body = mix(body, mix(nightBody, vec3(dot(nightBody, vec3(0.2126, 0.7152, 0.0722))), 0.1), night);
 
   // The RTS camera is orthographic: one view direction for the whole screen (IsoCamera, 30 degree pitch), so the
   // glitter is spread by the waves alone instead of gathering on one side of the screen.

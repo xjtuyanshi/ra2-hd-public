@@ -1785,6 +1785,7 @@ export class LiveView {
 
   private physicalLampKey = '';
   private physicalOccluderKey = '';
+  private physicalGroundSet = false;
   /** Live on/off engine list wins over sidecar placement; cached per source/height/base, never per presentation pixel. */
   private updatePhysicalLamps(snapshot: LiveSnapshot | undefined): void {
     const field = this.hd.realLightField;
@@ -1843,6 +1844,15 @@ export class LiveView {
     if (occluderKey !== this.physicalOccluderKey) {
       this.physicalOccluderKey = occluderKey;
       field.setOccluders(ra2LightOccluders(this.world.width, this.world.height, this.cache.height, occluders));
+      if (!this.physicalGroundSet) {
+        this.physicalGroundSet = true;
+        field.setGround(
+          Array.from(
+            { length: this.world.width * this.world.height },
+            (_, i) => (this.cache.height[i] ?? 0) * LEVEL_HEIGHT,
+          ),
+        );
+      }
     }
     const heads = sources.map((s) => nearestLampHead(s, artHeads));
     const key = JSON.stringify([sources, lighting, heads, this.hd.atmosphere.lights]);

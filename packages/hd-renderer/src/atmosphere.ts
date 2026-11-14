@@ -26,7 +26,8 @@ import type { EmitterLayer } from './emitters';
 import type { LightField } from './lightField';
 import { SceneLightingUniforms } from './lighting';
 import type { ShaderNode } from './tsl';
-import { RealLightNodes, sampleRealLight } from './realLight';
+import { OBJECT_KNEE, RealLightNodes, sampleRealLight } from './realLight';
+export { OBJECT_KNEE };
 
 /** Shader inputs owned by one renderer/world. Legacy exports below remain for standalone material callers. */
 export class AtmosphereNodes extends SceneLightingUniforms {
@@ -181,9 +182,10 @@ export function physicalSurfaceLight(
   xz: ShaderNode,
   height: ShaderNode,
   normal: ShaderNode,
+  capScale = 1,
 ): ShaderNode {
   if (!nodes.realLight) throw new Error('Physical light receiver requires an opted-in context');
-  return sampleRealLight(nodes.realLight, xz, height, normal).mul(nodes.referenceLevel);
+  return sampleRealLight(nodes.realLight, xz, height, normal, capScale).mul(nodes.referenceLevel);
 }
 
 /** Blend at the final added term so the experimental runtime toggle restores the legacy response. */
@@ -195,11 +197,16 @@ export function localSurfaceLight(
   height: ShaderNode,
   normal: ShaderNode,
   scalarShare?: ShaderNode,
+  capScale = 1,
 ): ShaderNode {
   if (!nodes.realLight) return legacy;
-  let physical = physicalSurfaceLight(nodes, xz, height, normal);
+  let physical = physicalSurfaceLight(nodes, xz, height, normal, capScale);
   if (scalarShare)
-    physical = mix(physical, sampleRealLight(nodes.realLight, xz, height).mul(nodes.referenceLevel), scalarShare);
+    physical = mix(
+      physical,
+      sampleRealLight(nodes.realLight, xz, height, undefined, capScale).mul(nodes.referenceLevel),
+      scalarShare,
+    );
   return mix(legacy, albedo.mul(physical).mul(1 / Math.PI), nodes.realLight.enabled);
 }
 

@@ -2050,6 +2050,19 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
         }
       : {}),
     ...(diagnostics ? { diagnostics: diagnostics.handle } : {}),
+    /** Development: real light (hd-light=1) on/off at runtime, and the beam/charge probe. */
+    light: {
+      get probe() {
+        return lightProbe;
+      },
+      set(on: boolean) {
+        return live ? live.setRealLight(on) : false;
+      },
+      stats() {
+        const f = live?.hd.realLightField;
+        return f ? Object.fromEntries([...f.pools].map(([k, p]) => [k, p.size])) : null;
+      },
+    },
     toggle() {
       if (stopped) return enabled;
       enabled = !enabled;
@@ -2201,7 +2214,42 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
   });
 }
 
+/**
+ * Development probe for the real-light work (hd-light): per logic frame, how many beams of each kind the host read
+ * and the building frames of charge turrets, so a live fight can show the bolt/laser lists fill and how a coil's frame
+ * runs while it fires. Console: __hdBridge.light.probe.
+ */
+const LIGHT_PROBE_TYPES = new Set(['TESLA', 'ATESLA', 'NATSLA', 'YAPSYT', 'NAPSIS']);
+const lightProbe: {
+  frame: number;
+  bolts: number;
+  lasers: number;
+  rad: number;
+  waves: number;
+  links: number;
+  turrets: [number, string, number | undefined][];
+}[] = [];
+function probeLight(state: GameRenderState): void {
+  if (!import.meta.env.DEV) return;
+  if (lightProbe.length && lightProbe[lightProbe.length - 1]!.frame === state.frame) return;
+  const e = state.effects;
+  if (!e) return;
+  lightProbe.push({
+    frame: state.frame,
+    bolts: e.electricBolts.length,
+    lasers: e.lasers.length,
+    rad: e.radBeams?.length ?? 0,
+    waves: e.waves?.length ?? 0,
+    links: e.mindControlLinks?.length ?? 0,
+    turrets: state.objects
+      .filter((o) => LIGHT_PROBE_TYPES.has(o.type))
+      .map((o) => [o.uid ?? o.id, o.type, o.buildingFrame] as [number, string, number | undefined]),
+  });
+  if (lightProbe.length > 4000) lightProbe.splice(0, 1000);
+}
+
 function toSnapshot(state: GameRenderState): LiveSnapshot {
+  probeLight(state);
   return {
     frame: state.frame,
     view: state.view,
