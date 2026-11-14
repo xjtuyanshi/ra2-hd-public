@@ -1341,8 +1341,9 @@ documentation/naming of those generated assets, not shader restrictions. `ra2-as
   depth from the drawn terrain under the pixel (`SHADOW_GROUND_SEARCH`, `groundRay.ts`: the view ray against the
   terrain's height grid, `AtmosphereNodes.groundHeightGrid`), not from their anchor's plane, so shadows of objects on
   different levels compare by coverage alone; on anchor planes the faint fringe of a higher tree's shadow used to block
-  a lower tree's dense one (light gaps with straight edges on slopes). Ground rising in front of the anchor's plane by
-  more than the pull still hides a shadow, as before. The faithful look keeps the single pass.
+  a lower tree's dense one (light gaps with straight edges on slopes). The same ground lets a shadow reach up a slope
+  as the engine draws it (on the anchor's plane the rising terrain hid it along its cell edges); terrain beyond the
+  search (a cliff more than four levels up) still hides it. The faithful look keeps the single pass.
 - Voxels (`voxels.ts`, `vpl.ts`, `voxelShadow.ts`): geometry is built once per model (palette indices, normals, corner
   occlusion) and shared by every house colour; each palette gets a small lookup texture and material. Every section is
   decoded with its own normal table (`ra2-assets` `voxelNormals.ts`). Colour comes from the engine's `voxels.vpl` table
