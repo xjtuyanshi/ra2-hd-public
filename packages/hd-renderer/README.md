@@ -241,7 +241,10 @@ eight new materials, and 235-350 ms in the unsliced second form. Earlier full-ma
 addresses those bursts. `setWarmPace(options)` updates current and future slicers of an active warm-up;
 `WarmSlicer.setLimits` re-clamps its current size. `LiveView.hiddenWarmPace` lets the host raise the limits behind a
 loading screen and lower them before the next frame when play starts. Its default is 12/8/1; the game bridge uses
-100/64/8 while loading, alongside unlimited art admission and uploads, without requiring an empty campaign state.
+100/64/8 while loading, alongside unlimited art admission and two upload strips per frame, without requiring an
+empty campaign state. `LiveView.hiddenGpuBacklogMs` (default Infinity) makes a hidden view skip frames while its GPU
+queue is more than that many milliseconds behind (`gpuBacklogMs`, one `onSubmittedWorkDone` fence at a time), so
+the work it queues cannot hold back another picture the page presents meanwhile; a shown view never skips.
 A view shown before the slices are through (`HdRenderer.finishWarm`, called by `LiveView` once it is in sight) draws
 the rest as full frames, with no further slices in any form.
 
