@@ -1042,6 +1042,21 @@ describe('HD bridge look parameters', () => {
     harness.stop();
   });
 
+  it('applies hd-tone=lush through the lazy tone path before the first snapshot', async () => {
+    const harness = setup('?hd=1&hd-tone=lush');
+    const view = fakeLookView();
+    await goLive(harness, view);
+    expect(view.hd.settings).toMatchObject({
+      groundTone: { depth: 0.72, scale: 4.5, soften: 0.1 },
+      tone: { grade: null, density: 0, contrast: 0, chroma: [1, 1, 1], grain: 0.3, groundClarity: 0.7 },
+    });
+    expect(hdRenderer.applyLookPreset).not.toHaveBeenCalled();
+    expect(view.hd.applySettings).toHaveBeenCalledTimes(1);
+    expect(view.hd.applySettings.mock.invocationCallOrder[0]).toBeLessThan(view.push.mock.invocationCallOrder[0]!);
+    expect(view.hd.applySettings.mock.invocationCallOrder[0]).toBeLessThan(view.render.mock.invocationCallOrder[0]!);
+    harness.stop();
+  });
+
   it('derives tone from the applied look and the live theatre', async () => {
     const harness = setup('?hd=1&hd-look=cinematic&hd-tone=moist1');
     const view = fakeLookView();

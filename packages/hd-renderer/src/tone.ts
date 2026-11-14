@@ -76,6 +76,8 @@ export interface FinalToneParams {
   objectDensity: number;
   foliage: ToneHueWindow | null;
   grain: number;
+  /** Ground/foliage clarity share, only when the grain pass is active. Defaults to 1. */
+  groundClarity?: number;
   night: { colour: number; grain: number };
 }
 export type Rgb = readonly [number, number, number];
@@ -123,6 +125,17 @@ export function toneLuma(y: number, p: Pick<FinalToneParams, 'density' | 'contra
   return yd + p.contrast * (yd - p.pivot) * 4 * yd * (1 - yd);
 }
 
+/** Neutral final colour must be bit-identical, including HDR and very dark input. Grain is independent. */
+function hasColourChange(p: FinalToneParams): boolean {
+  return (
+    p.grade !== null ||
+    p.density !== 0 ||
+    p.contrast !== 0 ||
+    p.chroma.some((v) => v !== 1) ||
+    p.hueShifts.some((s) => s.shift !== 0 || (s.exposure ?? 0) !== 0)
+  );
+}
+
 /**
  * JavaScript twin: gradeShare is zero when the look has no cinematic grade. `key` is the blurred tone-mapped colour
  * around the pixel (before any grade); without it the pixel classifies itself.
@@ -133,6 +146,7 @@ export function finalToneRgb(
   p: FinalToneParams,
   opts: { object: boolean; gradeShare: number; night: number; key?: Rgb },
 ): [number, number, number] {
+  if (!hasColourChange(p)) return [...look];
   const l = space(look);
   const foliage = windowWeight(l.h, l.c, l.y, p.foliage);
   const objectFactor = opts.object ? Math.max(p.objectShare, foliage) : 1;
@@ -205,6 +219,7 @@ function hueWeight(t: ReturnType<typeof toneSpace>, w: ShaderNode, limits: Shade
 /** Uniform-only final colour transform. The owner decides whether to include it in a pipeline. */
 export class FinalTone {
   readonly strength = uniform(0);
+  readonly colourActive = uniform(1);
   readonly density = uniform(0);
   readonly contrast = uniform(0);
   readonly pivot = uniform(0.5);
@@ -220,6 +235,7 @@ export class FinalTone {
   readonly foliage = uniform(new Vector4(0, 1, 1, 0));
   readonly objectShare = uniform(1);
   readonly grain = uniform(0);
+  readonly groundClarity = uniform(1);
   readonly nightColour = uniform(1);
   readonly nightGrain = uniform(1);
   readonly useGrade = uniform(0);
@@ -234,6 +250,7 @@ export class FinalTone {
 
   set(p: FinalToneParams, airless = false): void {
     this.strength.value = p.strength;
+    this.colourActive.value = hasColourChange(p) ? 1 : 0;
     this.density.value = p.density;
     this.contrast.value = p.contrast;
     this.pivot.value = p.pivot;
@@ -251,6 +268,7 @@ export class FinalTone {
     this.objectShare.value = p.objectShare;
     this.objectDensity.value = p.objectDensity;
     this.grain.value = p.grain;
+    this.groundClarity.value = p.groundClarity ?? 1;
     this.nightColour.value = p.night.colour;
     this.nightGrain.value = p.night.grain;
     this.useGrade.value = p.grade ? 1 : 0;
@@ -330,7 +348,7 @@ export class FinalTone {
       .mul(mix(1, this.nightColour, night))
       .mul(float(1).sub(hueWeight(l, this.protect, this.limits[4]!).mul(this.protect.w)))
       .mul(factor);
-    return mix(look, toned, m);
+    return this.colourActive.greaterThan(0).select(mix(look, toned, m), look);
   }
 
   /** Store this mask in the shared picture's scratch alpha, avoiding a second evaluation of the scene/grade. */

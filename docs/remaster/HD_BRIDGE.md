@@ -1321,3 +1321,29 @@ Run `pnpm exec node scripts/remaster/qa/water_boards.mjs "$WATER_MANIFEST"`, the
 See [Water review instructions](../../scripts/remaster/qa/WATER.md) for native save restoration, capture configuration,
 mask review, lossless/4 Mb/s encodes, per-gate metrics and the separate 60-second fleet logic-FPS runs. Captures and
 terrain artwork stay outside Git. Asset-free regressions do not establish GPU equivalence or visual acceptance.
+
+### Terrain-only lush selection
+
+`hd-tone=lush` uses the existing lazy tone import and leaves default startup unchanged. Unlike moist1–3,
+it selects `HdSettings.groundTone` (`src/groundTone.ts` in hd-renderer) plus an identity-colour final tone
+that only cuts grain and reduces ground/foliage clarity. RA2 theatre policy is in `src/ra2/lushTone.ts`:
+unknown theatres use temperate, lunar disables both stages, and every other tone selection clears the ground stage.
+The look selector preserves `groundTone` just as it preserves `tone`.
+
+Ground dressing runs on terrain albedo before contact shading and moonlight, using world xz (cells),
+with no camera/time inputs. Cliff faces share the dressing. Units/buildings keep their brightness.
+Water, lake beds and the wet shore retain the original water inputs, masked out of ground dressing.
+Night fades the ground change to identity. The default null setting skips dressing at a uniform branch.
+
+The FX sandbox accepts `&tone=lush&ground=depth:0.6,scale:4.5,sunTint:1.1/1/0.78` after look/tone setup.
+`ground=` supports every numeric `GroundToneParams` field and the three tint triples; unknown keys throw.
+`&toneset=grain:0.3,groundClarity:0.7` tunes the final-pass grain and clarity share. `groundClarity` defaults
+to 1 and only affects the existing scratch-alpha ground/foliage mask while grain cutting is active.
+For live tuning, mutate `__fx.live.hd.settings.groundTone` and call `__fx.live.hd.applySettings()`;
+all ground parameters are uniforms, so this does not rebuild materials or pipelines. Parameter names,
+ranges and a console example are in [the renderer guide](../../packages/hd-renderer/README.md#lush-ground-stage).
+
+Sandbox acceptance (FX sandbox, same scenes as the moist rounds, 2026-11-14): the XMP27T8 base frame median
+L* falls from 66 to 44 (the owner's reference 40), clear water stays within dE 0.6 of the current look, night
+frames are unchanged, and the stage costs about 0.5-0.6 ms at 1920x1080 on the development Mac. Not yet seen live
+in a match on the owner's display.

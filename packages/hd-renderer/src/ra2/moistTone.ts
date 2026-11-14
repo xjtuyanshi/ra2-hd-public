@@ -1,9 +1,10 @@
+import { lushFinalTone, lushTheatre } from './lushTone';
 import type { HdSettings } from '../HdRenderer';
 import type { Theater } from '../contract';
 import { hasCinematicGrade, type CinematicGradeParams } from '../post';
 import type { FinalToneParams, ToneHueShift } from '../tone';
 
-export const TONE_STYLES = ['off', 'moist1', 'moist2', 'moist3'] as const;
+export const TONE_STYLES = ['off', 'moist1', 'moist2', 'moist3', 'lush'] as const;
 export type ToneStyle = (typeof TONE_STYLES)[number];
 export function parseToneStyle(v: string | null): ToneStyle {
   return TONE_STYLES.find((style) => style === v) ?? 'off';
@@ -127,6 +128,10 @@ export function moistTone(
   lookGrade: CinematicGradeParams,
 ): FinalToneParams | null {
   if (style === 'off') return null;
+  if (style === 'lush') {
+    const p = lushTheatre(theater);
+    return p ? lushFinalTone(p) : null;
+  }
   const t = Object.hasOwn(MOIST_THEATRES, theater ?? '')
     ? MOIST_THEATRES[theater as Theater]
     : MOIST_THEATRES.temperate;
@@ -172,5 +177,6 @@ export function moistTone(
 }
 
 export function applyMoistTone(settings: HdSettings, theater: string | undefined, style: ToneStyle): void {
+  settings.groundTone = style === 'lush' ? lushTheatre(theater) : null;
   settings.tone = moistTone(theater, style, settings);
 }

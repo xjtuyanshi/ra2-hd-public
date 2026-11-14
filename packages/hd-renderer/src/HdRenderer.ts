@@ -1,3 +1,4 @@
+import type { GroundToneParams } from './groundTone';
 import {
   ACESFilmicToneMapping,
   AgXToneMapping,
@@ -131,6 +132,7 @@ export interface HdSettings extends CinematicGradeParams {
   toneMapper: ToneMapper;
   /** Optional final colour stage; null preserves the original graph and key. */
   tone: FinalToneParams | null;
+  groundTone: GroundToneParams | null;
   exposure: number;
   bloom: number;
   vignette: number;
@@ -775,6 +777,7 @@ export class HdRenderer {
     voxelLook: 'engine',
     toneMapper: 'faithful',
     tone: null,
+    groundTone: null,
     exposure: 1,
     bloom: 0.55,
     vignette: 0.25,
@@ -1218,6 +1221,7 @@ export class HdRenderer {
     if (this.topEffectsPass) key.push('top-effects');
     if (this.mistWanted()) key.push('mist');
     if (this.settings.tone) key.push('tone', this.settings.tone.grain > 0, this.settings.tone.keyRadius > 0);
+    if (this.settings.tone?.groundClarity !== undefined) key.push('groundClarity');
     return JSON.stringify(key);
   }
 
@@ -1466,7 +1470,9 @@ export class HdRenderer {
       // Lit edges gain fully, shaded sides half as much: deep shade must not grow (the targets keep warm, readable
       // shadows); mid-tones only, so near-white highlights and the darkest pixels do not ring.
       const detail = band.max(0).add(band.min(0).mul(0.5));
-      const weight = smoothstep(0.05, 0.25, lum).mul(smoothstep(0.98, 0.75, lum));
+      let weight = smoothstep(0.05, 0.25, lum).mul(smoothstep(0.98, 0.75, lum));
+      if (grainCut && this.settings.tone?.groundClarity !== undefined)
+        weight = weight.mul(mix(float(1), this.finalTone.groundClarity, picture.a));
       display = vec4(
         display.rgb.mul(float(1).add(detail.mul(this.clarityAmount).mul(weight).div(lum.max(0.05)))).max(0),
         1,
@@ -1490,6 +1496,8 @@ export class HdRenderer {
   }
 
   applySettings(): void {
+    this.nodes.groundTone.set(this.settings.groundTone);
+    if (this.layerNodes !== this.nodes) this.layerNodes.groundTone.set(this.settings.groundTone);
     updateUnlitDisplay(this.nodes, this.settings);
     if (this.layerNodes !== this.nodes) updateUnlitDisplay(this.layerNodes, this.settings);
     // Exposure is applied in the pipeline for every tone mapper.

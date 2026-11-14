@@ -16,7 +16,9 @@ import { HdRenderer, applyLookPreset, LOOK_PRESETS } from '../src/HdRenderer';
 import { FinalTone, finalToneRgb, type FinalToneParams, type Rgb } from '../src/tone';
 import { cinematicGradeRgb } from '../src/post';
 import { createScenario } from '../sandbox/scenario';
-import { moistTone } from '../src/ra2/moistTone';
+import { moistTone, applyMoistTone } from '../src/ra2/moistTone';
+import { lushTheatre } from '../src/ra2/lushTone';
+import { AtmosphereNodes } from '../src/atmosphere';
 import type { ShaderNode } from '../src/tsl';
 
 const params = (): FinalToneParams => ({
@@ -330,6 +332,64 @@ describe('tone pipeline lifecycle', () => {
   });
 });
 
+it('live-tunes ground and ground clarity across both node sets without rebuilding the pipeline', () => {
+  vi.stubGlobal('window', { devicePixelRatio: 1 });
+  const hd = new HdRenderer(
+    { width: 1, height: 1, style: {}, addEventListener() {}, removeEventListener() {} } as unknown as HTMLCanvasElement,
+    createScenario(2, 2),
+  );
+  const layer = new AtmosphereNodes();
+  const state = hd as unknown as {
+    layerNodes: AtmosphereNodes;
+    pipeline: RenderPipeline;
+    pipelineNodes: { dispose(): void }[];
+    finalTone: FinalTone;
+  };
+  state.layerNodes = layer;
+  hd.settings.antialias = 'none';
+  hd.settings.sharpness = -1;
+  try {
+    hd.applySettings();
+    const original = state.pipeline;
+    hd.settings.groundTone = lushTheatre('temperate');
+    const p = hd.settings.groundTone!;
+    applyLookPreset(hd.settings, 'faithful');
+    expect(hd.settings.groundTone).toBe(p);
+    hd.applySettings();
+    expect(state.pipeline).toBe(original);
+    expect(hd.nodes.groundTone.depth.value).toBe(lushTheatre('temperate')!.depth);
+    expect(layer.groundTone.depth.value).toBe(lushTheatre('temperate')!.depth);
+    p.depth = 0.71;
+    p.sunTint = [1.2, 1, 0.8];
+    p.soften = 0.8;
+    hd.applySettings();
+    expect(state.pipeline).toBe(original);
+    expect(layer.groundTone.depth.value).toBe(0.71);
+    expect(hd.nodes.groundTone.sunTint.value.toArray()).toEqual([1.2, 1, 0.8]);
+    expect(layer.groundTone.soften.value).toBe(0.8);
+    applyMoistTone(hd.settings, 'temperate', 'lush');
+    hd.settings.clarity = 0.5;
+    hd.applySettings();
+    const lushPipeline = state.pipeline;
+    hd.settings.tone!.groundClarity = 0.2;
+    hd.settings.groundTone!.scale = 4;
+    hd.applySettings();
+    expect(state.pipeline).toBe(lushPipeline);
+    expect(state.finalTone.groundClarity.value).toBe(0.2);
+    expect(layer.groundTone.scale.value).toBe(4);
+    hd.settings.groundTone = null;
+    hd.applySettings();
+    expect(layer.groundTone.strength.value).toBe(0);
+    expect(hd.nodes.groundTone.strength.value).toBe(0);
+    expect(state.pipeline).toBe(lushPipeline);
+  } finally {
+    state.pipeline?.dispose();
+    state.pipelineNodes.forEach((n) => n.dispose());
+    layer.dispose();
+    hd.nodes.dispose();
+  }
+});
+
 /** Build WGSL on the CPU, following silhouette.test.ts; no device initialization or drawing. */
 function shader(node: ShaderNode): string {
   const renderer = new WebGPURenderer({ canvas: { width: 1, height: 1 } as HTMLCanvasElement });
@@ -394,6 +454,35 @@ it('cuts only low-amplitude luminance residuals, preserves RGB ratios and applie
   }
   expect(day[0]! / day[1]!).toBeCloseTo(centre[0] / centre[1], 12);
   expect(run([0, 0, 0], [0, 0, 0], 1, 0)).toEqual([0, 0, 0, 1]);
+});
+
+it('keeps lush final colour bit-identical in the TSL graph while grain retains its mask/night weights', () => {
+  const tone = new FinalTone();
+  const p = moistTone('temperate', 'lush', LOOK_PRESETS.cinematic.settings)!;
+  tone.set(p);
+  for (const rgb of [
+    [0, 0, 0],
+    [0.2, 0.5, 0.1],
+    [0.1, 0.3, 0.7],
+    [2, 0.001, 0.4],
+  ] as const)
+    for (const night of [0, 0.5, 1])
+      for (const object of [vec2(0, 0), vec2(0.1, 0.2)]) {
+        expect(evaluate(tone.node(vec3(0.9, 0.1, 0.2), vec3(...rgb), float(1), float(night), object))).toEqual(rgb);
+      }
+  const run = (mask: number, night: number) => {
+    let taps = 0;
+    return evaluate(
+      tone.grainCut(
+        { sample: () => vec4(...(taps++ === 0 ? [0.3, 0.2, 0.1] : [0.27, 0.18, 0.09]), mask) },
+        float(night),
+      ),
+    );
+  };
+  expect(run(0, 0)).toEqual([0.3, 0.2, 0.1, 1]);
+  expect(run(1, 0).slice(0, 3)).not.toEqual([0.3, 0.2, 0.1]);
+  for (let i = 0; i < 3; i++)
+    expect(run(1, 1)[i]! - run(0, 0)[i]!).toBeCloseTo((run(1, 0)[i]! - run(0, 0)[i]!) * 0.6, 12);
 });
 
 it('shares one picture between clarity and grain, omitting grain without painter depth', () => {

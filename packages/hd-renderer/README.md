@@ -1686,3 +1686,40 @@ Fixture tests cover coverage, sprite-pool reuse, dedicated page routing and gene
 Full alpha removes ground transmission before postprocessing; mist, bloom and night tone mapping can still affect
 displayed colour. The tests do not establish displayed-pixel strength: conscripts were measured on frozen live
 frames (above); live GI, Initiate and Slave comparisons remain `UNVERIFIED`.
+
+### Lush ground stage
+
+`hd-tone=lush` in the game bridge, or `&tone=lush` in the FX sandbox, enables a separate terrain-material
+stage (`src/groundTone.ts`, RA2 data in `src/ra2/lushTone.ts`). It deepens the ground with olive shade,
+golden light and broad, soft, irregular light patches anchored to world xz (one unit is one map cell).
+It changes light and colour only. Units/buildings retain their colour and brightness; cliffs share the
+ground transform. Lunar is untouched, unknown theatres use temperate. Night fades out the material change.
+The existing default and moist1–3 selections retain their behaviour; switching away clears `groundTone`.
+
+`HdSettings.groundTone` defaults to null. `AtmosphereNodes.groundTone` owns one uniform per parameter:
+`strength`, `scale`, `detailScale`, `detailMix`, `stretch`, `angle`, `coverage`, `softness`, `depth`,
+`bareDepth`, `bareChroma`, `darkLo`, `darkHi`, `darkKeep`, `sunGain`, `shadeGain`, `sunTint`, `shadeTint`, `grassShadeTint`, `sunChroma`, `shadeChroma`, `soften`.
+Angles are degrees, scales are world units, and tints are linear RGB multipliers normalised against the
+albedo's luminance. `coverage` approximates lit area share; zero/one give all shade/sun. `softness` controls
+the transition width. Two-octave integer-hash value noise uses no camera or time input. `soften` mixes
+four rect-clamped diagonal art taps before wet-ground processing; its contribution is masked back onto land.
+Water, refracted lake beds and the wet-shore band retain their original art inputs.
+
+The final tone for lush has identity colour and only cuts grain on the existing ground/foliage mask.
+`FinalToneParams.groundClarity` (default 1) scales clarity on that mask only when the grain cut is active;
+it does not alter object clarity. Tune these final-pass values through `toneset=grain:0.5,groundClarity:0.4`.
+
+Sandbox overrides run after look and tone selection, reject unknown keys, and accept numeric values or
+RGB triples: `&tone=lush&ground=depth:0.62,scale:3.4,soften:0.5,sunTint:1.1/1/0.74`.
+Live tuning changes uniforms on the next frame without rebuilding terrain materials or pipelines:
+
+```js
+const h = __fx.live.hd;
+Object.assign(h.settings.groundTone, { depth: 0.58, scale: 4, coverage: 0.55 });
+h.settings.groundTone.sunTint = [1.12, 1, 0.75];
+h.applySettings();
+```
+
+Material branches skip patch/colour work at zero strength and skip extra art taps at zero soften.
+These are initial tuning values: generated WGSL and numerical twins do not establish rendered L* depth,
+water dE, visual quality or GPU performance. Those require same-scene visual/pixel acceptance separately.

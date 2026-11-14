@@ -1,3 +1,4 @@
+import { groundToneNode } from '../groundTone';
 import {
   createWaterTuning,
   writeWaterTuning,
@@ -878,7 +879,10 @@ function terrainArtSampler(cache: Ra2Cache) {
   const sample = (uvName: string, rectName: string) => {
     const rect: ShaderNode = attribute(rectName, 'vec4');
     const uv: ShaderNode = clamp(attribute(uvName, 'vec2'), rect.xy.add(halfTexel), rect.zw.sub(halfTexel));
-    return { uv, colour: texture(colourMap, uv) as ShaderNode };
+    const tap = (offset: ShaderNode): ShaderNode =>
+      texture(colourMap, clamp(uv.add(offset.mul(halfTexel).mul(2)), rect.xy.add(halfTexel), rect.zw.sub(halfTexel)))
+        .rgb;
+    return { uv, colour: texture(colourMap, uv) as ShaderNode, tap };
   };
   return { colourMap, halfTexel, sample };
 }
@@ -888,6 +892,7 @@ function terrainArtSampler(cache: Ra2Cache) {
  * fires, explosions) from the light field as diffuse irradiance. Cliff walls, and the ground's last stand-in.
  */
 function plainArtMaterial(colour: ShaderNode, nodes: AtmosphereNodes): ArtMaterial {
+  colour = groundToneNode(colour, positionWorld.xz, nodes.groundTone, nodes.night);
   const material = new ArtMaterial();
   material.sceneMultiplier = nodes.sceneTerrainMul;
   // The sun and sky see the night-desaturated albedo; local lights (emissive) the full colour.
@@ -959,7 +964,7 @@ function createMaterials(
 
   const ground = new ArtMaterial();
   ground.sceneMultiplier = nodes.sceneTerrainMul;
-  const { uv, colour: raw } = sample('atlasUv', 'atlasRect');
+  const { uv, colour: raw, tap } = sample('atlasUv', 'atlasRect');
   // Tile art under the map's own light (see mapLighting.ts), as the engine draws it.
   const grade: ShaderNode = terrainGradeAt(cache.mapLight, positionWorld.xz);
   const art: ShaderNode = vec4(srgbScale(raw.rgb, grade), raw.a);
@@ -978,6 +983,7 @@ function createMaterials(
   let gloss: ShaderNode = groundWetness.mul(mix(paved, float(1), nodes.night));
   let sheen: ShaderNode = wetSheen(wet.albedo, localLight, water.skyHorizon, groundWetness, paved, wet.puddle, nodes);
   let weatherLand: ShaderNode = float(1);
+  let landMask: ShaderNode = float(1);
   let reflectionTarget: Object3D | null = null;
   let mirrorAtlas: MirrorAtlas | null = null;
   // Share of the cliff-foot contact shading dropped near painted water (art tone); null where no path sets it.
@@ -1021,6 +1027,7 @@ function createMaterials(
     const waterline = hard ? hardShoreInputs(deepened, hard, sheltered, waterness) : null;
     const shore: ShaderNode = waterline ? waterline.shore : deepened;
     weatherLand = float(1).sub(waterness);
+    landMask = weatherLand;
     let reflection: { colour: ShaderNode; coverage: ShaderNode } | undefined;
     if (lakeBed) {
       const levels = selectWaterMirrorLevels(waterLevels);
@@ -1157,6 +1164,8 @@ function createMaterials(
         },
         nodes,
       );
+      // The bed look's moving sheet, wet sand and foam are water dressing too.
+      landMask = landMask.mul(float(1).sub(max(look.wetness, max(look.coverage, look.foam))));
       // The same sheet and foam cross onto land, independently of the static water mask.
       const paintedBody = originalWater.mul(
         float(1).add(sin(time.mul(Math.PI * 2).div(tuning.swellPeriod)).mul(tuning.swellAmplitude)),
@@ -1229,6 +1238,7 @@ function createMaterials(
       const ownShore: ShaderNode = waterline ? float(1).sub(tone).mul(waterline.beach) : float(1).sub(tone);
       const band = smoothstep(-0.55, -0.12, shore).mul(ownShore);
       const sand = wetShore(shore).mul(ownShore);
+      landMask = landMask.mul(float(1).sub(max(band, sand)));
       // Clear: the ground stepped to inland is often brighter sand behind a darker grass or rock bank, and at its full
       // brightness it drew a pale rim along the waterline; the band is wet, so darker than the dry ground it copies.
       const land = mix(albedo, wetGround(inland, groundWetness, paved, nodes).albedo, band).mul(
@@ -1266,11 +1276,34 @@ function createMaterials(
     const surface = waterSurface(water);
     const waterness: ShaderNode = texture(cache.waterMask, uv).r;
     weatherLand = float(1).sub(waterness);
+    landMask = weatherLand;
     const body = albedo.mul(float(1).sub(surface.fresnel.mul(0.8)));
     albedo = mix(albedo, body, waterness);
     ground.emissiveNode = surface.sky.mul(surface.fresnel).add(surface.glint).mul(waterness);
     roughness = mix(roughness, float(0.25), waterness);
   }
+  // Keep the water inputs, refracted bed and wet shore on their original art. Only the final land share
+  // receives softened art and dressing; soften itself is independent of the mask and fades fully at night.
+  const undressed = albedo;
+  albedo = Fn(() => {
+    const result = undressed.toVar();
+    If(nodes.groundTone.strength.greaterThan(0).and(nodes.night.lessThan(1)), () => {
+      const land = undressed.toVar();
+      If(nodes.groundTone.soften.greaterThan(0), () => {
+        let sum: ShaderNode = vec3(0);
+        for (const x of [-0.65, 0.65]) for (const y of [-0.65, 0.65]) sum = sum.add(tap(vec2(x, y)));
+        const softened = mix(
+          raw.rgb,
+          sum.mul(0.25),
+          nodes.groundTone.soften.mul(nodes.groundTone.strength).mul(float(1).sub(nodes.night)),
+        );
+        const softWet = wetGround(srgbScale(softened, grade), groundWetness, paved, nodes).albedo;
+        land.addAssign(softWet.sub(wet.albedo));
+      });
+      result.assign(mix(undressed, groundToneNode(land, positionWorld.xz, nodes.groundTone, nodes.night), landMask));
+    });
+    return result;
+  })();
   // Contact shading darkens every light at cliff feet (an occlusion term); the sun and sky see the night-desaturated
   // albedo, local lights (emissive, below) the full colour.
   const look = spriteLookFor(nodes);

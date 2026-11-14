@@ -103,6 +103,7 @@ import { parseSceneLighting } from './sceneLighting';
 import { parseWaterStyle } from '../src/ra2/waterStyles';
 import { applyMoistTone, parseToneStyle } from '../src/ra2/moistTone';
 import { applyToneOverrides } from './tone';
+import { applyGroundOverrides } from './ground';
 
 const params = new URLSearchParams(location.search);
 const canvas = document.querySelector<HTMLCanvasElement>('#view')!;
@@ -191,6 +192,10 @@ if (overrides.length) {
 if (params.has('tone')) {
   applyMoistTone(live.hd.settings, live.theater, parseToneStyle(params.get('tone')));
   applyToneOverrides(live.hd.settings.tone, params.get('toneset'));
+  live.hd.applySettings();
+}
+if (params.has('ground')) {
+  applyGroundOverrides(live.hd.settings.groundTone, params.get('ground'));
   live.hd.applySettings();
 }
 // &lightspec=TYPE.orb.key:value,TYPE.arc.key:value,...: building-light tuning reviews without code edits (development
