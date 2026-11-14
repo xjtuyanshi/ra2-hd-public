@@ -228,12 +228,22 @@ with mist and without. The first request also puts the top-layer pass into the p
 top-layer art shows), so neither the first top-layer art nor the first mist of a match builds anything. `LiveView`
 asks for warm frames behind the loading screen and again when the opening's art is in, and does not count as
 settled while they run or while pipelines are pending; `EffectSpriteLayer.warm` adds one idle page mesh of every
-kind and pass for them to build. Before those full frames, the scene's drawable objects are drawn a few material
-groups per frame (`src/warmSlices.ts`: objects that build the same node graphs form a group; each slice is sized
-from the cost of the frame before to about 12 ms), because three builds node graphs on the drawing thread and one
-frame that built a running match's ~400 shaders took 2.0-2.2 s, freezing the original picture shown meanwhile. The
-full frames then find the graphs built. A view shown before the slices are through (`HdRenderer.finishWarm`, called
-by `LiveView` once it is in sight) draws the rest as full frames.
+kind and pass for them to build. Before the full frame of **each** form, the scene's drawable objects are drawn a
+few material groups per frame (`src/warmSlices.ts`: objects that build the same node graphs form a group).
+`warm({ budgetMs, maxGroups, maxNew })` defaults to 12 ms, eight total groups and one previously unseen group, starting
+with one. Time and growth limits adapt to measured costs; the unseen-group cap holds even after cheap cached slices.
+A renderer-owned set remembers handed-out keys across forms and warm-ups. Seen groups still need slices for each
+form's pass-specific builds. A group is never split, so an individual build can exceed the budget.
+
+Build 13 campaign start SOV07TMD (2026-11-14) measured 344-489 ms / 20-28 new shader modules when cheap slices grew to
+eight new materials, and 235-350 ms in the unsliced second form. Earlier full-match warm frames took 2.0-2.2 s for
+~400 shaders, freezing the original picture shown meanwhile. Slicing both forms and independently capping new groups
+addresses those bursts. `setWarmPace(options)` updates current and future slicers of an active warm-up;
+`WarmSlicer.setLimits` re-clamps its current size. `LiveView.hiddenWarmPace` lets the host raise the limits behind a
+loading screen and lower them before the next frame when play starts. Its default is 12/8/1; the game bridge uses
+100/64/8 while loading, alongside unlimited art admission and uploads, without requiring an empty campaign state.
+A view shown before the slices are through (`HdRenderer.finishWarm`, called by `LiveView` once it is in sight) draws
+the rest as full frames, with no further slices in any form.
 
 **Quality tiers (`HdRenderer.setQualityTier`, `HdRenderer.QUALITY_TIERS`).** What the renderer gives up to hold a
 frame rate, least visible first; no tier changes the resolution of anything or the outline pass (see "Outlines"

@@ -68,7 +68,7 @@ import { LightField, type DynamicLight } from './lightField';
 import { Lighting, clearLightAt, noonFlatLuminance } from './lighting';
 import { applyMaterialFallbacks, failedPipelineMaterials, type PipelineHost } from './materialFallback';
 import { installAsyncPipelines, type AsyncPipelines } from './asyncPipelines';
-import { showOnly, warmGroups, WarmSlicer } from './warmSlices';
+import { showOnly, warmGroups, WarmSlicer, type WarmSliceLimits } from './warmSlices';
 import { resolveSceneLighting, type SceneLighting } from './sceneLighting';
 import { Mist, MIST_CAP } from './mist';
 import { ObjectLayer } from './objects';
@@ -757,6 +757,10 @@ export class HdRenderer {
    * are left or the warm-up was asked to finish at once (finishWarm).
    */
   private warmSlicer: WarmSlicer | null = null;
+  /** Null after finishWarm: later forms must not start slicing again. */
+  private warmPace: Required<WarmSliceLimits> | null = null;
+  /** First-build history belongs to this renderer, across warm-ups and post-graph forms. */
+  private readonly warmSeen = new Set<string>();
   /** The clock a slice frame's cost is measured with (the thread's wall clock; see wallNow). */
   private warmClock: () => number = wallNow;
   /** The tier whose state is applied (see drawTier). */
@@ -1934,10 +1938,11 @@ export class HdRenderer {
    *
    * Building every shader of a running match in one frame took 2.0-2.2 s in one task, and the page's original picture
    * stood still meanwhile (live, six players). So the objects are first drawn a few material groups per frame
-   * (warmSlices.ts), each frame about `WARM_SLICE_MS` long, and the full warm frames that follow find their graphs
-   * built. A host that shows the view before the warm-up is through calls finishWarm.
+   * (warmSlices.ts) in every post-graph form. The measured budget defaults to `WARM_SLICE_MS`, at most eight groups
+   * and one previously unseen group per slice; a single group cannot be split. Full warm frames follow each form's
+   * slices. A host that shows the view before the warm-up is through calls finishWarm.
    */
-  warm(): void {
+  warm(options: WarmSliceLimits = {}): void {
     if (!this.pipeline || this.warmQueue) return;
     if (!this.topEffectsPass) {
       this.topEffectsPass = true;
@@ -1946,7 +1951,23 @@ export class HdRenderer {
     // The form in use comes last: its render targets are the ones that stay.
     const mist = this.mist.amount.value > 0;
     this.warmQueue = [!mist, mist];
-    this.warmSlicer = new WarmSlicer({ budgetMs: WARM_SLICE_MS, first: 1 });
+    this.warmPace = {
+      budgetMs: options.budgetMs ?? WARM_SLICE_MS,
+      maxGroups: options.maxGroups ?? 8,
+      maxNew: options.maxNew ?? 1,
+    };
+    this.warmSlicer = new WarmSlicer({ ...this.warmPace, first: 1, seen: this.warmSeen });
+  }
+
+  /** Change the current slice limits and those of later forms in this warm-up. */
+  setWarmPace(options: WarmSliceLimits): void {
+    if (!this.warmPace) return;
+    this.warmPace = {
+      budgetMs: options.budgetMs ?? this.warmPace.budgetMs,
+      maxGroups: options.maxGroups ?? this.warmPace.maxGroups,
+      maxNew: options.maxNew ?? this.warmPace.maxNew,
+    };
+    this.warmSlicer?.setLimits(options);
   }
 
   /**
@@ -1955,6 +1976,7 @@ export class HdRenderer {
    */
   finishWarm(): void {
     this.warmSlicer = null;
+    this.warmPace = null;
   }
 
   /** Whether warm frames are still being drawn (see warm). */
@@ -1966,7 +1988,7 @@ export class HdRenderer {
     const queue = this.warmQueue!;
     const slice = this.warmSlicer?.next(warmGroups([this.scene, this.topScene])) ?? null;
     if (slice === null) this.warmSlicer = null;
-    // A slice frame draws in the first form; the form is used up by the full warm frame after the last slice.
+    // Each form is used up only by its full frame, after its own pass-specific builds have been sliced.
     this.warmMist = slice ? queue[0]! : queue.shift()!;
     if (this.pipelineKey !== this.settingsPipelineKey()) this.switchPipeline();
     const hidden: Object3D[] = [];
@@ -2002,8 +2024,11 @@ export class HdRenderer {
     }
     if (!queue.length) {
       this.warmQueue = null;
+      this.warmPace = null;
       this.warmMist = null;
       if (this.pipelineKey !== this.settingsPipelineKey()) this.switchPipeline();
+    } else if (!slice && this.warmPace) {
+      this.warmSlicer = new WarmSlicer({ ...this.warmPace, first: 1, seen: this.warmSeen });
     }
   }
 

@@ -280,6 +280,8 @@ const REVEAL_SETTLED_FRAMES = 3;
  */
 const HIDDEN_NEW_ART_PER_FRAME = 1;
 const HIDDEN_UPLOAD_PIXELS = 8 << 20;
+const HIDDEN_WARM_PACE = { budgetMs: 12, maxGroups: 8, maxNew: 1 };
+const LOADING_WARM_PACE = { budgetMs: 100, maxGroups: 64, maxNew: 8 };
 /** Out of sight and complete, the view only needs an occasional frame until the match starts (every Nth tick). */
 const HIDDEN_IDLE_TICKS = 12;
 /**
@@ -588,6 +590,20 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
   let revealed = false;
   /** The match's snapshots have no objects yet: the game still loads the scenario. */
   let prematch = true;
+  /** State history belongs to the installed view, surviving menus and restarts on the same map. */
+  let viewHadState = false;
+  let viewHadObjects = false;
+
+  const applyHiddenPace = () => {
+    if (!live) return;
+    // Campaigns need not publish an empty state. A fresh hinted view can use the loading interval anyway, but a
+    // reused view in menus cannot. A real battle surface ends fast preparation even before its state arrives.
+    const emptyState = stateMap === liveMap && latestState?.objects.length === 0 && !viewHadObjects;
+    const loadingPace = live.outOfSight && !nativeBattleSurface && (!viewHadState || emptyState);
+    live.newArtPerFrame = loadingPace ? Infinity : HIDDEN_NEW_ART_PER_FRAME;
+    live.hiddenUploadPixels = loadingPace ? Infinity : HIDDEN_UPLOAD_PIXELS;
+    live.hiddenWarmPace = loadingPace ? LOADING_WARM_PACE : HIDDEN_WARM_PACE;
+  };
   /** Whether the view of the current match was handed its remembered list (once per match). */
   let warmed = false;
   /** The sidebar's upcoming types as last handed to the current view (see sidebarUpcomingTypes). */
@@ -1441,6 +1457,8 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
         live?.dispose();
         live = view;
         liveMap = mapId;
+        viewHadState = stateMap === mapId && latestState !== null;
+        viewHadObjects = viewHadState && !!latestState?.objects.length;
         failed.delete(mapId);
         pushed = null;
         nativeDrawQueue.length = 0;
@@ -1458,6 +1476,7 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
               });
         // Out of sight until the match it is for has been drawn completely (see tick).
         view.outOfSight = true;
+        applyHiddenPace();
         // Its first frame is drawn at once, whatever it reports before it has drawn anything.
         hiddenTicks = HIDDEN_IDLE_TICKS;
         revealed = false;
@@ -1615,6 +1634,11 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
     if (!mapId) clearFallback();
     stateMap = mapId;
     stateFrame = state?.frame ?? 0;
+    if (live && mapId === liveMap && state) {
+      viewHadState = true;
+      if (state.objects.length) viewHadObjects = true;
+      applyHiddenPace();
+    }
     if (fallback && fallback.until === Infinity && stateFrame > fallback.frame)
       fallback.until = performance.now() + NOTICE_MS;
     if (!state || !mapId || !mapName || !state.view) {
@@ -1632,10 +1656,6 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
     }
     const now = performance.now();
     prematch = state.objects.length === 0;
-    // Nothing moves behind a loading screen: prepare as fast as possible. Once the scenario has objects the game's
-    // own picture is about to be (or is) on screen, and the view prepares at a pace that leaves it its frames.
-    live.newArtPerFrame = prematch ? Infinity : HIDDEN_NEW_ART_PER_FRAME;
-    live.hiddenUploadPixels = prematch ? Infinity : HIDDEN_UPLOAD_PIXELS;
     if (!prematch) timeline.objectsAt ??= now;
     if (state.frame > 0) timeline.matchAt ??= now;
     if (prematch && !revealed && !warmed) {
@@ -2009,6 +2029,7 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
     } else if (live && preparing()) {
       shownAt = null;
       publishTier(null);
+      applyHiddenPace();
       // Draw out of sight: every frame while art is arriving or the match already runs, else now and then.
       const complete = live.settledFrames >= REVEAL_SETTLED_FRAMES;
       if (complete && timeline.warmAt !== null) timeline.warmSettledAt ??= now;

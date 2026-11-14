@@ -338,12 +338,18 @@ about 0.6 s uploading 8192 px atlas pages, while objects appeared as their pages
   (`LiveLibrary.preloadVoxels`), so a new kind has a model in its first frame. Out of sight a sprite layer waits for its material
   page instead of being built twice. Decoded atlas pages are copied to the GPU in strips
   (`packages/hd-renderer/src/pageUpload.ts`) instead of 253 MiB in one call: 8 M pixels per frame while the view is
-  shown (up to twice that when a frame comes late). Out of sight the bridge sets the pace: behind the loading screen
-  (the scenario has no objects yet) everything is built and uploaded as it arrives; from the first objects on, when
-  the game's own picture is or is about to be on screen, one new kind of art per frame (`LiveView.newArtPerFrame`:
+  shown (up to twice that when a frame comes late). Out of sight the bridge sets the pace every preparation tick:
+  a fresh view with no state for its map can build and upload everything as it arrives while the native picture is
+  still the loading/menu surface. Empty prematch states use the same pace. Warm slices then allow 100 ms, 64 total
+  groups and eight unseen groups (`LiveView.hiddenWarmPace`). The first battle-size native picture or a state with
+  objects immediately restores 12 ms / eight total / one unseen group, one new kind of art per frame (`LiveView.newArtPerFrame`:
   each brings shaders that are built in the frame that first draws it, and a whole opening in one frame froze the
   page, the game's picture included, for a second) and the same 8 M pixels of pages per frame
-  (`LiveView.hiddenUploadPixels`). Sprite material pages no longer keep their decoded bitmap after the upload.
+  (`LiveView.hiddenUploadPixels`). A view that already received battle objects retains the in-match pace through
+  menus and same-map restarts; a view that received only empty states gets fast preparation only while an actual
+  empty state is current. Campaigns need not publish an empty state: Build 13 SOV07TMD (2026-11-14) had a view ready
+  4.5 s before battle, but the old state-only pace spilled its 108-kind list and stage-one warm-up 15 s into play.
+  Sprite material pages no longer keep their decoded bitmap after the upload.
   The smooth-mesh Worker also keeps a content-addressed IndexedDB cache (`ra2-hd-smooth-meshes`). Its key includes
   the complete voxel section, all smoothing options and the mesh algorithm version. It stores GPU-independent
   typed arrays, commits them before transferring the result, and evicts least-recently-used entries above
@@ -425,7 +431,12 @@ about 0.6 s uploading 8192 px atlas pages, while objects appeared as their pages
   cost" section): a new sprite page, palette, house colour or unit type builds none. What does have to be built is
   built out of sight: the view draws warm frames behind the loading screen and again when the opening's art is in
   (`HdRenderer.warm`: everything that exists, hidden or not, in every pass and for both forms of the post graph,
-  with mist and without; the top-layer pass joins the graph then), render pipelines are compiled asynchronously (`HdRenderer.enableAsyncPipelines`; `?hd-pipelines=sync`
+  with mist and without; the top-layer pass joins the graph then). Every form gets material-group slices before its
+  full warm frame: group keys already handed out are remembered across forms and warm-ups, but pass-specific node
+  builds still need drawing in each form. Measured time limits total groups; a separate unseen-group cap prevents
+  cheap cached groups from admitting a burst of new builds. Build 13 SOV07TMD (2026-11-14) measured 344-489 ms for
+  eight new groups (20-28 shader modules) and 235-350 ms for the unsliced second form. `setWarmPace` updates an active
+  warm-up as well as later forms; `finishWarm` disables slices for all remaining forms. Render pipelines are compiled asynchronously (`HdRenderer.enableAsyncPipelines`; `?hd-pipelines=sync`
   keeps three's own behaviour), and the view counts as complete only when no warm frame is due and no pipeline is
   still compiling (`LiveView.settledFrames`). In a shown view a pipeline that is new after all (a unit type's first
   appearance, a blend state not met before) delays that object by the time its compile takes (0.3 s typical), not
@@ -496,8 +507,9 @@ Limits:
   thread) takes 2 s on a small map and 4 to 5 s on the largest; it normally ends 4 to 9 s before the match runs. If it
   ends later (a slow disk, a busy machine), the list is not through when the match runs and the rest is prepared
   behind the original picture.
-- A shader graph that no art has used yet is still built in one piece on the presenting thread (5 to 25 ms each;
-  a sprite graph has six passes). Warm frames cover the graphs that exist when the view is prepared; a graph first
+- A material group is never split, so its first graphs can still exceed the warm budget on the presenting thread
+  (Build 13 SOV07TMD, 2026-11-14: about 40 ms or more per new sprite-layer material under load; a sprite graph has
+  six passes). The unseen cap bounds new groups per slice, not the duration of an individual build. Warm frames cover the graphs that exist when the view is prepared; a graph first
   needed later (a page with a feature combination not seen before) costs such a frame in the shown view. Meshes are
   built off the presenting thread and pages arrive in strips.
 - Uploads wait for the GPU process. Next to other pages that load the same GPU, single strips were seen to block for

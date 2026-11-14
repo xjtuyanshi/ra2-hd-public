@@ -856,6 +856,12 @@ export class LiveView {
    * page in the frame after it was decoded, for a host that knows nothing moves on screen (see newArtPerFrame).
    */
   hiddenUploadPixels = UPLOAD_PIXELS_PER_FRAME;
+  /**
+   * Warm slice limits while hidden: measured milliseconds, total groups and previously unseen groups per frame.
+   * The host may raise these behind a loading screen and lower them during a warm-up once play starts.
+   */
+  hiddenWarmPace = { budgetMs: 12, maxGroups: 8, maxNew: 1 };
+  private appliedWarmPace: typeof this.hiddenWarmPace | null = null;
   /** Requests more of the library's voxel model files; null once every one has been requested (see render). */
   private fetchAhead: (() => boolean) | null = null;
   /** New kinds added in the frame being drawn, and kinds that had to wait for a later frame. */
@@ -1913,8 +1919,18 @@ export class LiveView {
         this.warmStage = stage;
         this.effectSprites?.warm();
         this.warmStandIns();
-        this.hd.warm();
+        this.hd.warm(this.hiddenWarmPace);
+        this.appliedWarmPace = { ...this.hiddenWarmPace };
       }
+    }
+    if (
+      this.hd.warming &&
+      (this.appliedWarmPace?.budgetMs !== this.hiddenWarmPace.budgetMs ||
+        this.appliedWarmPace?.maxGroups !== this.hiddenWarmPace.maxGroups ||
+        this.appliedWarmPace?.maxNew !== this.hiddenWarmPace.maxNew)
+    ) {
+      this.hd.setWarmPace(this.hiddenWarmPace);
+      this.appliedWarmPace = { ...this.hiddenWarmPace };
     }
     // A view shown while it still warms draws the rest in full warm frames: a slice frame has only some objects in it.
     if (!this.hiddenFromSight && this.hd.warming) this.hd.finishWarm();
