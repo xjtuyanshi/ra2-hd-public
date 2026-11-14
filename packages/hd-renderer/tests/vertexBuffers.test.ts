@@ -331,6 +331,30 @@ describe('r186 vertex and uniform binding budget', () => {
     }
   });
 
+  it('ranks over-pass shadows by conditionally softened coverage in indexed and HD shaders', () => {
+    const source = cache();
+    spriteLookFor(source.nodes).shadowSoftness.name = 'testShadowSoftness';
+    for (const hd of [null, { color: texture(), remap: texture() }]) {
+      const layer = new SpriteLayer(source, [], 1, undefined, hd);
+      try {
+        const { fragmentShader } = assertLimits(layer.groundPasses[1]!);
+        // The depth rank must consume the blended penumbra, with its taps inside the softness/water branch.
+        const blend = fragmentShader.indexOf('spriteShadowRankCoverage = mix(');
+        const guard = fragmentShader.lastIndexOf('object.testShadowSoftness > 0.0001', blend);
+        const rank = fragmentShader.indexOf('clamp( spriteShadowRankCoverage, 0.0, 1.0 ) * 16.0');
+        expect(guard).toBeGreaterThan(-1);
+        expect(blend).toBeGreaterThan(guard);
+        expect(rank).toBeGreaterThan(blend);
+        expect(/texture(?:Load|Sample\w*)\(/.test(fragmentShader.slice(guard, blend))).toBe(true);
+        expect(fragmentShader.slice(blend, rank)).toContain('smoothstep( 0.3, 1.5,');
+      } finally {
+        dispose(layer.mesh);
+        hd?.color.dispose();
+        hd?.remap.dispose();
+      }
+    }
+  });
+
   it('builds native signed integer template loads and a test-only door pass without adding vertex buffers', () => {
     const source = cache();
     source.depthTemplate = {

@@ -4214,7 +4214,11 @@ export class LiveView {
         // passes it (ra2/world.ts): absent means 'full'.
         const lighting = object.lighting ?? 'full';
         const shadow = entry.shadows?.[index];
-        if (shadow) instances.push(this.cellPool.take(anchor, shadow, palette, 0, true, true, undefined, lighting));
+        if (shadow) {
+          const instance = this.cellPool.take(anchor, shadow, palette, 0, true, true, undefined, lighting);
+          instance.terrainShadow = (object.kind === 'overlay' && !isHighBridge(object.type)) || undefined;
+          instances.push(instance);
+        }
         const body = this.cellPool.take(
           anchor,
           frame,

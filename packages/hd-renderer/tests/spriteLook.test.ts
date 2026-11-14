@@ -16,7 +16,6 @@ import {
   shadowStretch,
   shadowTransform,
   spriteLookFor,
-  TERRAIN_SHADOW_MAX_STRETCH,
 } from '../src/ra2/spriteLook';
 import type { ShaderNode } from '../src/tsl';
 import { InstancedQuad } from '../src/instancedQuad';
@@ -79,7 +78,7 @@ describe('enhanced look: terrain-object shadows', () => {
   const length = (m: Vector4) => Math.hypot(...apply(m, ART_SHADOW_DIRECTION[0], ART_SHADOW_DIRECTION[1]));
   const turn = (m: Vector4) => Math.atan2(m.y, m.x);
 
-  it('caps the tree shadow stretch at the cinematic hour and keeps the turn of every other shadow', () => {
+  it('keeps the art shadow shape at the cinematic hour while other shadows turn and stretch', () => {
     // The cinematic look: hour 16.5 on the sun arc (key elevation 34 degrees), shadowLength 1.4 -> about 1.62.
     const stretch = shadowStretch(34, 1.4);
     expect(stretch).toBeGreaterThan(1.5);
@@ -87,16 +86,15 @@ describe('enhanced look: terrain-object shadows', () => {
     const m = look();
     setShadowTransforms(m, sun, stretch, 1);
     expect(length(m.shadowMatrix.value)).toBeCloseTo(stretch, 9);
-    expect(length(m.terrainShadowMatrix.value)).toBeCloseTo(TERRAIN_SHADOW_MAX_STRETCH, 9);
-    expect(TERRAIN_SHADOW_MAX_STRETCH).toBeLessThanOrEqual(1.3);
-    expect(turn(m.terrainShadowMatrix.value)).toBeCloseTo(turn(m.shadowMatrix.value), 9);
+    expect(m.terrainShadowMatrix.value.toArray()).toEqual([1, 0, 0, 1]);
     expect(Math.abs(turn(m.shadowMatrix.value))).toBeGreaterThan(0.1);
   });
 
-  it('leaves shorter stretches and the faithful identity alone', () => {
+  it('keeps the art shape at shorter stretches and resets both matrices at follow zero', () => {
     const m = look();
     setShadowTransforms(m, ART_LIGHT, 1.05, 1);
-    expect(m.terrainShadowMatrix.value.toArray()).toEqual(m.shadowMatrix.value.toArray());
+    expect(m.terrainShadowMatrix.value.toArray()).toEqual([1, 0, 0, 1]);
+    expect(length(m.shadowMatrix.value)).toBeCloseTo(1.05, 9);
     setShadowTransforms(m, new Vector3(1, 0.4, 0), 2.8, 0);
     expect(m.shadowMatrix.value.toArray()).toEqual([1, 0, 0, 1]);
     expect(m.terrainShadowMatrix.value.toArray()).toEqual([1, 0, 0, 1]);
