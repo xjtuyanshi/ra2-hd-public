@@ -51,14 +51,24 @@ reachable (and checks what it imports); only a build shows that the bridge itsel
    Switching to the original picture closes passthrough even while native preflight has not yet opened a hole.
    Disabled idle polls still track the match, but cannot re-enable the guest's render flags.
    Both routes keep the original battlefield live, visible and interactive while HD prepares. A complete
-   scene cross-fades with the current original frames over 300 ms at match start and after reader recovery. No screenshot or cover is
-   used. Native preparation shows a noninteractive status notice in the page's language at 16 CSS pixels;
+   scene cross-fades with the current original frames over 300 ms at match start and after reader recovery.
+   Preparation never introduces a loading cover. Native preparation shows a noninteractive status notice in the page's language at 16 CSS pixels;
    an early map hint does not show it in menus. The notice clears on HD reveal, a menu return, or bridge stop,
    and yields to cache/art failure explanations. `VmFrameRenderer.setOpacityRegion` scales the tactical region's
    premultiplied RGB and alpha together,
    leaving the sidebar and independent pointer opaque. Passthrough is enabled after the fade; an actual keyed
    game picture switches the original overlays back to full opacity on both routes. A passthrough acknowledgement
    alone cannot replace that picture: its configuration only takes effect in a subsequent game frame.
+   A recovery from shown native HD (capture starvation, read faults or reader timeout) cross-fades out as well.
+   The logical hole closes and presentation switches to `original` immediately, with passthrough disabled and the
+   HD sidebar hidden. A presentation-only ghost retains the last HD canvas picture over the former hole rectangle;
+   it neither renders nor resizes, early map-hint preparation cannot replace its canvas, and `outOfSight` is deferred
+   until the ghost ends. Until the first unkeyed native
+   frame arrives, that entire rectangle stays transparent so queued key pixels cannot show through. That frame
+   starts a 300 ms native opacity ramp from 0 to 1 over the ghost. Completion hides the canvas and clears all
+   regions. If no unkeyed frame arrives within the 500 ms passthrough trail deadline measured from fallback,
+   recovery uses the previous immediate cut. Dialog surfaces, menu video mode, a new match, toggle-off and stop
+   cancel the ghost immediately; any later HD reveal supersedes it. Dialogs are always opaque at once.
    Before beginning the fade, a zero-flag
    preflight installs and validates passthrough without changing the original picture; rejection keeps the original
    visible and retries. Disabling passthrough also retries an unconfirmed zero write. The optional HD sidebar
@@ -68,9 +78,13 @@ reachable (and checks what it imports); only a build shows that the bridge itsel
    sidebar while coherent subscriptions catch up. After a 500 ms gap (or a one-second pending reader), the bridge
    checks native health; only a confirmed unreadable range persisting for 500 ms disables passthrough and shows the
    Chinese recovery notice over the live original picture. A rendering exception also retains its recovery path;
-   a short time-budget truncation never changes the picture style. A capture that stays truncated for 2 s without one
-   completed render state (`native.renderHealth.incompleteSinceEpochMs`; a match that outgrew the agent's per-frame
-   copy) also returns to the live original. Its notice names the cause from `renderHealth.incompleteCause`: the agent's
+   a short time-budget truncation never changes the picture style. While HD is shown, a capture that stays truncated
+   for 1 s without one completed render state (`native.renderHealth.incompleteSinceEpochMs`) returns to the live
+   original through the fade-out. After the initial 500 ms missing-state hold, health is read every 250 ms so the
+   decision lands near that one-second limit. On 2026-11-13, YR Allied 1 at the real 12 ms capture budget and machine
+   load 24-40 with scrolling recovered from episodes up to about 1.4 s; a frozen HD picture over a running match is
+   a cover, so HD yields above 1 s and the hold/calm rule controls its return. Preparation still uses 2 s, since it
+   already shows the live original. The notice names the cause from `renderHealth.incompleteCause`: the agent's
    page-capacity fault, or a time-budget miss in a match of 2 500 objects or more, is a match too large for HD; a
    time-budget miss in a smaller match is a busy computer (YR Allied 1, 271-354 objects, starved only at a machine
    load of 10 or more); an unknown cause says only that HD cannot keep up. The original then stays for a hold of
@@ -78,6 +92,9 @@ reachable (and checks what it imports); only a build shows that the bridge itsel
    returns only once the capture has been calm for 5 s: no open truncation episode, at most 10% of the publications
    in those 5 s truncated (`renderHealth.mirrors` and `truncatedMirrors`, cumulative counters compared between health
    reports read once a second), and complete states of new logic frames arriving with no gap above 0.75 s. A capture
+   paused without a dialog can also be calm: over the same 5 s neither publication counter advances, no truncation
+   is counted, `lastTruncatedAtEpochMs` is at least 5 s old or null, no truncation episode remains open, and a complete
+   state has arrived since the fallback (`completeStateSerial` advanced). This does not shorten the hold. A capture
    that completes between frequent truncations therefore cannot switch the picture every few seconds, while an
    occasional miss no longer keeps the original for good (2026-11-13: with the capture budget squeezed to 4 ms, about
    one capture in 25 still missed after the load ended, and the earlier rule of no truncation at all for 5 s brought HD
@@ -86,12 +103,14 @@ reachable (and checks what it imports); only a build shows that the bridge itsel
    2 s of preparation). A native dialog (save, load, options) may lead to another, lighter battle, so it clears that
    finding: the preparation probe starts over, and a capacity recovery shows its notice again only after a health
    report still says starved (no stale notice while a small save loads). Health reports time out after 2 s, so one that never answers cannot block later checks. A complete
-   unkeyed native frame retires queued keyed frames immediately. A new complete state must draw settled art before
+   unkeyed native frame retires queued keyed frames and starts the recovery ghost's fade-out. A new complete state must draw settled art before
    HD cross-fades back; late replies from before the recovery cannot reveal an old picture. Real dialogs switch to
    the original immediately and preserve the ordinary return without another fade. A confirmed native menu video mode resets reveal state immediately,
    while retaining prepared GPU assets for another match. Transient passthrough failures retry; they do not become
    permanent unsupported flags. `__hdBridge.timeline` records the first battle picture, preparation and fade
-   timestamps plus a detached, bounded page-session `transitions` history (`atMs`, ISO `time`, map, frame,
+   timestamps, including `fadeOutStartedAt` (fallback/ghost creation) and `fadeOutFinishedAt` (completion, cancellation
+   or timeout). `__hdBridge.presentation.fadingOut` distinguishes the ghost from its already-original logic mode.
+   The timeline also has a detached, bounded page-session `transitions` history (`atMs`, ISO `time`, map, frame,
    from/to and reason); `transitionsOmitted` explicitly counts records beyond 512.
 
 3. **Live view.** `packages/hd-renderer/src/live/liveView.ts` draws the snapshot: static map content (terrain, water,
@@ -444,6 +463,8 @@ sRGB variants are accepted; aligned rows are removed and BGRA bytes are swizzled
 The detached RGBA result carries the draw timestamp, native source frame and combat-state subset, camera view,
 map, native size, actual tactical rectangle and passthrough flags fixed at that draw. Normal LiveView interpolation
 continues and is explicitly named in the result. A Backslash trail draw may correctly report `shown=false`.
+Recovery ghosts perform no new draw: `captureNextDraw()` waits for an actual later draw or its normal timeout;
+it never labels the retained ghost as a newly rendered snapshot.
 Readback accepts at most ten million pixels, a 48 MiB aligned buffer, and one pending request/buffer; another
 request, unsupported backend/format/usage, failed mapping or a ten-second timeout rejects. Bridge stop or view
 replacement rejects the request and destroys its buffer; late mapping replies cannot revive the session. The

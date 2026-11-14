@@ -182,6 +182,14 @@ const STATE_REQUEST_STALL_MS = 1000;
  * save of that match never left the preparation notice). Short truncations while scrolling end well within it.
  */
 const CAPTURE_STARVED_MS = 2000;
+/**
+ * Live data, 2026-11-13: YR Allied 1 at the real 12 ms capture budget, machine load 24-40 with scrolling, recovered
+ * from truncation episodes up to about 1.4 s. A frozen HD picture over a live game is a cover: after 1 s shown,
+ * fade in the live original and let the existing hold/calm rule decide the return. Preparation still gets 2 s.
+ */
+const CAPTURE_STALL_SHOWN_MS = 1000;
+/** While shown HD waits on missing states, sample closely enough to decide near its one-second stall limit. */
+const CAPTURE_STALL_PROBE_MS = 250;
 /** While the preparation notice waits on such a capture, the health report is read this often. */
 const CAPTURE_PROBE_MS = 1000;
 /**
@@ -189,8 +197,8 @@ const CAPTURE_PROBE_MS = 1000;
  * machine load of 13-19 switched between HD and the original every 1.5-4 s for 100 s: every truncation was a
  * time-budget miss (agent fault reason 1, about 40% of captures), none a page-capacity fault, and at load 7.7 the same
  * mission never starved. The original picture therefore stays for at least STARVED_HOLD_MS after such a fallback,
- * doubled on every further one in the same match up to STARVED_HOLD_MAX_MS, and HD returns only after the capture has
- * run STARVED_CALM_MS without a truncated publication. The original picture stays fully playable meanwhile.
+ * doubled on every further one in the same match up to STARVED_HOLD_MAX_MS, and HD returns only after the capture
+ * meets the calm rule below. The original picture stays fully playable meanwhile.
  */
 const STARVED_HOLD_MS = 10_000;
 const STARVED_HOLD_MAX_MS = 120_000;
@@ -202,8 +210,9 @@ const STARVED_CALM_MS = 5_000;
  * back, although at that rate complete states arrive many times a second. The capture is calm when, over
  * STARVED_CALM_MS, at most STARVED_CALM_TRUNCATED_SHARE of its publications were truncated (Allied 1 starved HD at
  * 24-35% on 2026-11-11, and at 30% on 2026-11-13 it held for minutes before one two-second gap) and complete states
- * kept arriving with no gap above STARVED_CALM_GAP_MS (a third of the two seconds that count as starved). Without the
- * publication counters (an older core) the earlier rule applies: no truncation for STARVED_CALM_MS.
+ * kept arriving with no gap above STARVED_CALM_GAP_MS. A paused game also qualifies when neither counter advances,
+ * no truncation occurred in the window, and a complete state arrived since fallback. Without the publication
+ * counters (an older core) the earlier rule applies: no truncation for STARVED_CALM_MS.
  */
 const STARVED_CALM_TRUNCATED_SHARE = 0.1;
 const STARVED_CALM_GAP_MS = 750;
@@ -308,6 +317,9 @@ export interface HdBridgeTimeline {
   /** The live original-to-HD fade began and completed. */
   fadeStartedAt: number | null;
   fadeFinishedAt: number | null;
+  /** Recovery ghost began waiting for the unkeyed original, and ended (including cancellation or timeout). */
+  fadeOutStartedAt: number | null;
+  fadeOutFinishedAt: number | null;
   /** Art still on its way when the view was shown; complete reveals record zero. */
   revealLoading: number;
   /** Legacy diagnostic fields retained for saved-observation readers; always null. No curtain is created. */
@@ -442,6 +454,8 @@ const emptyTimeline = (map: string | null): HdBridgeTimeline => ({
   firstBattleFrameAt: null,
   fadeStartedAt: null,
   fadeFinishedAt: null,
+  fadeOutStartedAt: null,
+  fadeOutFinishedAt: null,
   revealLoading: 0,
   curtainAt: null,
   curtainLiftedAt: null,
@@ -592,6 +606,8 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
   const native = host.vm.runtimeInfo?.backend === 'native';
   let fadeStartedAt: number | null = null;
   let fadeFinished = false;
+  /** Presentation only: the logical hole is closed while the last HD picture waits for and fades to the original. */
+  let fadeOut: { rect: FrameRect; requestedAt: number; startedAt: number | null } | null = null;
   let nativeBattleSurface = false;
   let nativeMenuSurface = false;
   let nativeDialogSurface = false;
@@ -825,6 +841,8 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
   let starvedCalm = false;
   /** Health reports read since the latest starved fallback: when, and the cumulative publication counters. */
   let calmSamples: { at: number; mirrors: number; truncated: number }[] = [];
+  /** A paused capture must still have delivered a complete state after its fallback. */
+  let starvedStateSerial = 0;
   /** The newest complete state of a new logic frame (performance.now()), and since when none came later than the gap. */
   let lastNewStateAt: number | null = null;
   let lastNewStateFrame = -1;
@@ -961,20 +979,45 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
     );
   };
 
+  const finishFadeOut = () => {
+    if (!fadeOut) return;
+    fadeOut = null;
+    timeline.fadeOutFinishedAt = performance.now();
+    keyRect = null;
+    keyUntil = 0;
+    if (live) live.outOfSight = true;
+  };
+
   /** Apply hole/key/canvas visibility without ever replacing the original with an incomplete scene. */
   const present = () => {
+    const now = performance.now();
+    if (
+      fadeOut &&
+      (fadeOut.startedAt === null
+        ? now - fadeOut.requestedAt >= PASSTHROUGH_TRAIL_MS
+        : now - fadeOut.startedAt >= CROSS_FADE_MS)
+    )
+      finishFadeOut();
     const keyedReady = passthroughAcceptedAt !== null && (keyFrameAt ?? -Infinity) >= passthroughAcceptedAt;
     const keyed = !!hole && fadeFinished && keyable && !passthroughUnsupported && keyedReady;
     if (keyed) keyRect = hole;
-    const trailing = !hole && !!keyRect && performance.now() < keyUntil;
+    const trailing = !hole && !fadeOut && !!keyRect && now < keyUntil;
     if (!keyed && !trailing) keyRect = null;
     host.frameRenderer.setTransparentKey(keyRect ? { rect: keyRect, rgb565: RENDER_PASSTHROUGH_KEY_RGB565 } : null);
     // Fade the current original frame, never a screenshot. At its end an ordinary transparent rectangle keeps
     // HD visible until the first keyed native frame supplies the game's independent overlays.
-    const opacity = fadeStartedAt === null ? 0 : Math.max(0, 1 - (performance.now() - fadeStartedAt) / CROSS_FADE_MS);
-    host.frameRenderer.setOpacityRegion(hole && !keyRect && opacity > 0 ? { rect: hole, opacity } : null);
-    host.frameRenderer.setTransparentRect(hole && !keyRect && opacity <= 0 ? hole : null);
-    canvas.style.display = (hole || keyRect) && live ? 'block' : 'none';
+    const opacity = fadeStartedAt === null ? 0 : Math.max(0, 1 - (now - fadeStartedAt) / CROSS_FADE_MS);
+    host.frameRenderer.setOpacityRegion(
+      fadeOut && fadeOut.startedAt !== null
+        ? { rect: fadeOut.rect, opacity: Math.min(1, (now - fadeOut.startedAt) / CROSS_FADE_MS) }
+        : hole && !keyRect && opacity > 0
+          ? { rect: hole, opacity }
+          : null,
+    );
+    host.frameRenderer.setTransparentRect(
+      fadeOut && fadeOut.startedAt === null ? fadeOut.rect : hole && !keyRect && opacity <= 0 ? hole : null,
+    );
+    canvas.style.display = (hole || keyRect || fadeOut) && live ? 'block' : 'none';
     host.invalidate();
   };
 
@@ -1010,6 +1053,7 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
       requestPassthrough(0);
       return false;
     }
+    finishFadeOut();
     if (fade) {
       fadeStartedAt = performance.now();
       fadeFinished = false;
@@ -1034,6 +1078,14 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
     hidePending = null;
     recoveryText = notice;
     capacityUnconfirmed = false;
+    if (native && nativeBattleSurface && !nativeDialogSurface && revealed && hole && live) {
+      fadeOut = { rect: { ...hole }, requestedAt: performance.now(), startedAt: null };
+      timeline.fadeOutStartedAt = fadeOut.requestedAt;
+      timeline.fadeOutFinishedAt = null;
+      // Hide the entire queued keyed picture until the first unkeyed frame, rather than exposing its key pixels.
+      keyRect = null;
+      keyUntil = 0;
+    }
     setHole(null, reason);
     requestPassthrough(0);
     changePresentation('original', reason);
@@ -1050,7 +1102,7 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
     fadeStartedAt = null;
     fadeFinished = false;
     ui?.update(null);
-    if (live) live.outOfSight = true;
+    if (live && !fadeOut) live.outOfSight = true;
     syncPreparationNotice();
   };
   const checkUnavailableState = (reason: string) => {
@@ -1059,7 +1111,8 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
       recoverOriginal(reason);
       return;
     }
-    if (healthPending || now - healthCheckedAt < STATE_HIDE_HOLD_MS || recoveringState) return;
+    const interval = revealed && hole && hidePending ? CAPTURE_STALL_PROBE_MS : STATE_HIDE_HOLD_MS;
+    if (healthPending || now - healthCheckedAt < interval || recoveringState) return;
     readHealth(now, (health) => {
       const unreadableSince = health?.unreadableSinceEpochMs;
       // A late or incomplete capture is not an unreadable game. Keep the last complete scene drawing while
@@ -1067,7 +1120,8 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
       // may replace it with the original.
       if (typeof unreadableSince === 'number' && sinceEpoch(unreadableSince) >= STATE_HIDE_HOLD_MS)
         recoverOriginal(reason);
-      else if (captureStarvedNow(health)) recoverStarved(health);
+      else if (captureStarvedNow(health, revealed && hole ? CAPTURE_STALL_SHOWN_MS : CAPTURE_STARVED_MS))
+        recoverStarved(health);
     });
   };
   /** A starved capture: back to the live original, held there (see STARVED_HOLD_MS) with a notice naming its cause. */
@@ -1078,6 +1132,7 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
     starvedHoldUntil = now + starvedHoldMs(starvedFallbacks);
     starvedCalm = false;
     calmSamples = [];
+    starvedStateSerial = completeStateSerial;
     recoverOriginal('capture-starved', starvedNoticeFor(health));
   };
   /** Complete states of new logic frames: the gaps between them say whether the stream would hold HD. */
@@ -1106,7 +1161,16 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
     let base: { at: number; mirrors: number; truncated: number } | undefined;
     while (calmSamples.length > 1 && now - calmSamples[1]!.at >= STARVED_CALM_MS) calmSamples.shift();
     if (now - calmSamples[0]!.at >= STARVED_CALM_MS) base = calmSamples[0];
-    if (!base || mirrors <= base.mirrors || !statesSteady(now)) return false;
+    if (!base) return false;
+    if (mirrors === base.mirrors && truncated === base.truncated)
+      return (
+        completeStateSerial > starvedStateSerial &&
+        !(
+          typeof health?.lastTruncatedAtEpochMs === 'number' &&
+          sinceEpoch(health.lastTruncatedAtEpochMs) < STARVED_CALM_MS
+        )
+      );
+    if (mirrors <= base.mirrors || !statesSteady(now)) return false;
     return (truncated - base.truncated) / (mirrors - base.mirrors) <= STARVED_CALM_TRUNCATED_SHARE;
   };
   /**
@@ -1132,9 +1196,9 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
     return true;
   };
   const sinceEpoch = (epochMs: number) => performance.timeOrigin + performance.now() - epochMs;
-  const captureStarvedNow = (health: NativeRenderHealth | undefined) => {
+  const captureStarvedNow = (health: NativeRenderHealth | undefined, limit = CAPTURE_STARVED_MS) => {
     const incompleteSince = health?.incompleteSinceEpochMs;
-    return typeof incompleteSince === 'number' && sinceEpoch(incompleteSince) >= CAPTURE_STARVED_MS;
+    return typeof incompleteSince === 'number' && sinceEpoch(incompleteSince) >= limit;
   };
   /**
    * Read the native render health once (one at a time, at most HEALTH_TIMEOUT_MS) and hand it to `use` while the
@@ -1213,6 +1277,7 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
         // question text must be opaque immediately, without the missing-state
         // grace period or the keyed battlefield's trailing frame.
         hidePending = null;
+        finishFadeOut();
         setHole(null, 'native-dialog-surface');
         if (passthroughEverRequested) requestPassthrough(0);
         keyRect = null;
@@ -1222,6 +1287,7 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
       const battleSurface = picture.width > 800 || picture.height > 600;
       if (battleSurface) {
         if (!nativeBattleSurface) {
+          finishFadeOut();
           battleEpoch++;
           battleSerial++;
           nativeDrawQueue.length = 0;
@@ -1240,6 +1306,7 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
         resetStarved();
         revealedSince = null;
         if (isRecoveryNotice(published)) publish(null);
+        finishFadeOut();
         setHole(null, 'menu-video-mode');
         requestPassthrough(0);
         // This actual unkeyed menu picture has already replaced every trailing keyed battlefield frame.
@@ -1285,8 +1352,14 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
       }
     }
     if (native && !passthroughRequest) {
-      // This complete original frame supersedes queued keyed frames. Retire the old HD tail immediately.
+      // This complete original frame supersedes queued keyed frames. Recoveries fade it over the frozen HD ghost.
       if (recoveringState && !nativeDialogSurface) recoveryOriginalFrameSeen = true;
+      if (fadeOut) {
+        if (performance.now() - fadeOut.requestedAt >= PASSTHROUGH_TRAIL_MS && fadeOut.startedAt === null)
+          finishFadeOut();
+        else fadeOut.startedAt ??= performance.now();
+        present();
+      }
       if (keyRect) {
         keyRect = null;
         keyUntil = 0;
@@ -1424,6 +1497,7 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
   const prepareEarly = (now: number) => {
     if (
       !enabled ||
+      fadeOut ||
       stateMap !== null ||
       !host.vm.getRenderPreparation ||
       preparationAsking ||
@@ -1435,7 +1509,8 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
     void host.vm
       .getRenderPreparation()
       .then((hint) => {
-        if (stopped || !enabled || !hint || stateMap !== null) return;
+        // A hint must not replace the canvas/device whose last picture is still the recovery ghost.
+        if (stopped || !enabled || fadeOut || !hint || stateMap !== null) return;
         const name = hint.map.fileName.replace(/\.[^.]+$/, '');
         const key = name.toLowerCase();
         preparationMap = key;
@@ -1489,7 +1564,9 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
     // screen) goes on where it was: its view is complete, and hiding it would flash the original picture.
     if (state && mapId && (mapId !== matchMap || state.frame < matchFrame)) {
       const firstBattleFrameAt = matchMap === null ? timeline.firstBattleFrameAt : null;
+      finishFadeOut();
       setHole(null, 'new-match');
+      present();
       fadeStartedAt = null;
       fadeFinished = false;
       revealed = false;
@@ -1879,9 +1956,14 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
       if (hole) samplePace(now);
     }
     if (!native && !polling && now - lastPollAt >= pollInterval()) poll(now);
+    if (fadeOut) present();
     if (!hole && keyRect && now >= keyUntil) present();
     if (fallback && now >= fallback.until) publish(null);
-    if (live && (hole || keyRect)) {
+    if (fadeOut) {
+      // No draw or resize may clear/change the ghost's last image. Polling and logical recovery continue above.
+      shownAt = null;
+      publishTier(null);
+    } else if (live && (hole || keyRect)) {
       // The display frame's own time is steady from frame to frame; the clock read inside the callback is not.
       const displayTime = typeof frameTime === 'number' ? frameTime : now;
       if (!pacer || pacer.due(displayTime)) {
@@ -1971,10 +2053,12 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
       syncUiVisibility();
       if (!enabled) {
         hidePending = null;
+        finishFadeOut();
         // Native preflight can already be enabled before a hole exists, so setHole(null) may be a no-op.
         requestPassthrough(0);
         setHole(null, 'commanded-toggle');
         changePresentation('original', 'commanded-toggle');
+        present();
         // The original picture was asked for: nothing to explain.
         publish(null);
       }
@@ -2014,6 +2098,7 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
         recoveryOriginalFrameSeen,
         curtain: false,
         fading: !!hole && !fadeFinished && fadeStartedAt !== null,
+        fadingOut: fadeOut !== null,
         hidePending: !!hidePending,
       };
     },
@@ -2050,6 +2135,7 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
     latestState = null;
     nativeDrawQueue.length = 0;
     hidePending = null;
+    finishFadeOut();
     changePresentation('original', 'bridge-stopped');
     if (passthroughEverRequested) void host.vm.setTacticalPassthrough(0).catch(() => undefined);
     // Pending polls, loads and passthrough replies check `stopped`; reset the rest so nothing refers to this session.
