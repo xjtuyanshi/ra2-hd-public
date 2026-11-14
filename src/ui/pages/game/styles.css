@@ -2265,44 +2265,62 @@ input[type='range']::-webkit-slider-thumb {
   display: none;
 }
 
-/* English labels need a wider shared column while keeping dropdowns aligned. */
-:lang(en) #vm-controls:not(.collapsed) {
-  width: 216px;
+/* One width per language for the expanded panel. useControlsPlacement.ts reads --vm-controls-width to decide whether
+   the expanded panel would lie over the game picture, so the width lives only here. English labels need a wider
+   shared column while keeping dropdowns aligned. */
+#vm-controls {
+  --vm-controls-width: 144px;
+  width: var(--vm-controls-width);
+  min-width: var(--vm-controls-width);
+  max-width: var(--vm-controls-width);
+  overflow-x: hidden;
 }
-:lang(en) #vm-controls.collapsed {
-  width: 216px;
+:lang(en) #vm-controls {
+  --vm-controls-width: 176px;
 }
 :lang(en) #vm-controls .resolution-controls > .label {
   flex-basis: 64px;
 }
-
-/* Keep the sidebar frame stable while collapsing only its contents. */
-#vm-controls,
+/* Folded, the panel is only its small handle in the corner, so during play it hides almost none of the game picture
+   (a game that fills the window has no free margin). It stays faint until pointed at or focused. */
 #vm-controls.collapsed {
-  width: 184px;
-  min-width: 184px;
-  max-width: 184px;
-  overflow-x: hidden;
+  width: auto;
+  min-width: 0;
+  max-width: none;
+  padding: 0;
+  gap: 0;
+  background: none;
+  border: 0;
+  box-shadow: none;
 }
-:lang(en) #vm-controls,
-:lang(en) #vm-controls.collapsed {
-  width: 216px;
-  min-width: 216px;
-  max-width: 216px;
+#vm-controls.collapsed #vm-controls-toggle {
+  width: 26px;
+  height: 26px;
+  min-width: 26px;
+  min-height: 26px;
+  font-size: 14px;
+  line-height: 1;
+  opacity: 0.55;
+  transition: opacity 0.15s;
 }
-
-/* Keep the sidebar frame stable while reducing its shared width in both states. */
-#vm-controls,
-#vm-controls.collapsed {
-  width: 144px;
-  min-width: 144px;
-  max-width: 144px;
+#vm-controls.collapsed #vm-controls-toggle:hover,
+#vm-controls.collapsed #vm-controls-toggle:focus-visible {
+  opacity: 1;
 }
-:lang(en) #vm-controls,
-:lang(en) #vm-controls.collapsed {
-  width: 176px;
-  min-width: 176px;
-  max-width: 176px;
+/* Status lines under a dropdown take their own full-width row instead of squeezing beside it into a narrow column
+   ("高清画面显示时不运行……" used to wrap one word per line). */
+#vm-controls .upscale-controls {
+  flex-wrap: wrap;
+}
+#vm-controls .upscale-controls .game-select {
+  flex: 1;
+  min-width: 0;
+}
+#vm-upscale-status,
+#vm-upscale-hd-note {
+  flex-basis: 100%;
+  font-size: 11px;
+  line-height: 1.5;
 }
 
 /* Keep mobile overlays ordered: sidebar above touch tray, touch tray above joystick. */

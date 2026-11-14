@@ -1,6 +1,7 @@
 import { t } from '../../../shared/i18n/translate';
 import { createPortal } from 'react-dom';
-import { lazy, Suspense } from 'react';
+import { lazy, Suspense, useState } from 'react';
+import { useControlsPlacement } from '../hooks/useControlsPlacement';
 import { useStore } from '../../../shared/state/useStore';
 import * as state from '../state/uiState';
 import { RuntimeToolbarView } from './RuntimeToolbarView';
@@ -22,6 +23,10 @@ export function Toolbar() {
   const props = useStore(state.toolbarState);
   const collapsed = useStore(state.controlsCollapsed);
   const boot = useStore(state.bootState);
+  const running = useStore(state.gameRunning);
+  // A callback ref: the panel mounts only after the start gate, and placement must measure it once it exists.
+  const [nav, setNav] = useState<HTMLElement | null>(null);
+  useControlsPlacement(nav, props?.canvas ?? null, running, collapsed);
   const stage = props?.canvas.closest('#stage');
   return (
     <>
@@ -34,7 +39,12 @@ export function Toolbar() {
           stage,
         )}
       {!boot?.start && (
-        <nav id="vm-controls" aria-label={t('运行状态与控制')} className={collapsed ? 'collapsed' : undefined}>
+        <nav
+          ref={setNav}
+          id="vm-controls"
+          aria-label={t('运行状态与控制')}
+          className={collapsed ? 'collapsed' : undefined}
+        >
           {props && <RuntimeToolbarView {...props} />}
         </nav>
       )}

@@ -346,7 +346,7 @@ export function RuntimeToolbarView({
       >
         {model.gameSpeed ?? ''}
       </output>
-      <div className="resolution-controls">
+      <div className="resolution-controls upscale-controls">
         <span className="label">{t('超分')}</span>
         <GameSelect
           id="vm-upscale"
