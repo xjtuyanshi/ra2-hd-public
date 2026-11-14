@@ -40,6 +40,7 @@ interface BridgeHandle {
   readonly ui: { enabled: boolean; readonly state: GameRenderState['sidebar']; toggle(): boolean };
   readonly live: unknown;
   readonly timeline: HdBridgeTimeline;
+  readonly presentation: { mode: 'original' | 'hd'; fading: boolean; fadingOut: boolean; hidePending: boolean };
   readonly passthrough: { flags: number; unsupported: boolean; keyed: boolean };
   readonly pace: { mode: string; level: number; levels: number; rate: number; stride: number } | null;
   readonly diagnostics: {
@@ -2663,6 +2664,7 @@ describe('live original to HD transition', () => {
     expect(harness.status).toHaveBeenLastCalledWith('高清画面已暂停，正在恢复；您可以继续操作。');
     harness.nativeFrame(false);
     harness.vm.getRenderState.mockResolvedValue(battle(99));
+    await advance(300);
     await advance(17, 3);
     expect(harness.bridge()!.diagnostics.shown).toBe(true);
     expect(harness.bridge()!.diagnostics.state?.frame).toBe(99);
@@ -2685,10 +2687,13 @@ describe('live original to HD transition', () => {
     expect(harness.vm.setTacticalPassthrough).toHaveBeenLastCalledWith(0);
     expect(harness.status).toHaveBeenLastCalledWith('高清画面已暂停，正在恢复；您可以继续操作。');
     expect(harness.stop.battleActive?.()).toBe(true);
-    expect(view.outOfSight).toBe(true);
-    // The first complete original frame removes the old keyed tail without another half-second delay.
+    expect(view.outOfSight).toBe(false);
+    // The first complete original frame fades over the frozen ghost before hidden preparation resumes.
     harness.nativeFrame(false);
+    expect(harness.hdCanvas.style.display).toBe('block');
+    await advance(300);
     expect(harness.hdCanvas.style.display).toBe('none');
+    expect(view.outOfSight).toBe(true);
     expect(harness.renderer.setTransparentKey).toHaveBeenLastCalledWith(null);
     expect(harness.renderer.setTransparentRect).toHaveBeenLastCalledWith(null);
     await advance(17, 3);
@@ -2736,6 +2741,8 @@ describe('live original to HD transition', () => {
     expect(harness.vm.setTacticalPassthrough).toHaveBeenLastCalledWith(0);
     expect(harness.bridge()!.timeline.transitions.at(-1)?.reason).toBe('state-reader-timeout');
     harness.nativeFrame(false);
+    expect(harness.bridge()!.presentation.fadingOut).toBe(true);
+    await advance(300);
     expect(harness.hdCanvas.style.display).toBe('none');
     const pushes = view.push.mock.calls.length;
     reply(battle(9999));
@@ -2791,24 +2798,62 @@ describe('live original to HD transition', () => {
     },
   });
 
-  it('returns a battle whose capture stopped catching up to the live original after two seconds, with a notice', async () => {
+  it('falls back near one second of shown capture starvation and fades the unkeyed original over its frozen ghost', async () => {
     const harness = setup('?hd=1', 'WebGL2', 'native');
     harness.setFrameSize(1280, 720);
-    await goLive(harness);
+    const view = await goLive(harness);
     const starvedAt = performance.timeOrigin + performance.now();
-    harness.vm.getDiagnostics.mockImplementation(async () => health(starvedAt));
+    const healthReads: number[] = [];
+    harness.vm.getDiagnostics.mockImplementation(async () => {
+      healthReads.push(performance.now());
+      return health(starvedAt);
+    });
     harness.setState(null);
     await advance(17);
     // A truncation that may still catch up (a scroll) keeps the last complete HD scene.
-    await advance(100, 18);
+    await advance(50, 19);
     expect(harness.bridge()!.diagnostics.shown).toBe(true);
-    await advance(100, 7);
+    await advance(50);
     expect(harness.bridge()!.diagnostics.shown).toBe(false);
+    const fallbackAt = harness.bridge()!.timeline.fadeOutStartedAt!;
+    expect(fallbackAt - (starvedAt - performance.timeOrigin)).toBeGreaterThanOrEqual(1000);
+    expect(fallbackAt - (starvedAt - performance.timeOrigin)).toBeLessThan(1250);
+    expect(healthReads.slice(1).map((at, i) => at - healthReads[i]!)).toEqual([250, 250]);
+    const rect = { x: 0, y: 0, width: 1112, height: 688 };
+    expect(harness.bridge()!.presentation).toMatchObject({ mode: 'original', fadingOut: true });
+    expect(harness.hdCanvas.style.display).toBe('block');
+    // Queued keyed frames keep their key over the ghost, so the game's own overlays do not blink out.
+    expect(harness.renderer.setTransparentKey).toHaveBeenLastCalledWith({ rect, rgb565: 0xf81f });
+    expect(harness.renderer.setTransparentRect).toHaveBeenLastCalledWith(null);
+    expect(harness.renderer.setOpacityRegion).toHaveBeenLastCalledWith(null);
+    const draws = view.render.mock.calls.length;
+    const resizes = view.resizePixels.mock.calls.length;
+    harness.nativeFrame(true);
+    await advance(50);
+    expect(harness.renderer.setTransparentKey).toHaveBeenLastCalledWith({ rect, rgb565: 0xf81f });
+    expect(view.render).toHaveBeenCalledTimes(draws);
+    expect(view.resizePixels).toHaveBeenCalledTimes(resizes);
     expect(harness.vm.setTacticalPassthrough).toHaveBeenLastCalledWith(0);
     expect(harness.bridge()!.timeline.transitions.at(-1)?.reason).toBe('capture-starved');
     expect(harness.status).toHaveBeenLastCalledWith(capacity);
     harness.nativeFrame(false);
+    expect(harness.renderer.setOpacityRegion).toHaveBeenLastCalledWith({ rect, opacity: 0 });
+    expect(harness.renderer.setTransparentRect).toHaveBeenLastCalledWith(null);
+    expect(harness.renderer.setTransparentKey).toHaveBeenLastCalledWith(null);
+    await advance(150);
+    expect(harness.renderer.setOpacityRegion).toHaveBeenLastCalledWith({ rect, opacity: 0.5 });
+    harness.nativeFrame(false);
+    await advance(149);
+    expect(harness.renderer.setOpacityRegion).toHaveBeenLastCalledWith({ rect, opacity: 299 / 300 });
+    expect(harness.hdCanvas.style.display).toBe('block');
+    await advance(1);
     expect(harness.hdCanvas.style.display).toBe('none');
+    expect(harness.bridge()!.presentation.fadingOut).toBe(false);
+    expect(harness.bridge()!.timeline.fadeOutFinishedAt! - fallbackAt).toBe(350);
+    expect(harness.renderer.setTransparentKey).toHaveBeenLastCalledWith(null);
+    expect(harness.renderer.setTransparentRect).toHaveBeenLastCalledWith(null);
+    // Clearing the opacity region restores full native opacity (1).
+    expect(harness.renderer.setOpacityRegion).toHaveBeenLastCalledWith(null);
     await advance(17, 3);
     expect(harness.status).toHaveBeenLastCalledWith(capacity);
     // The capture catches up again, but the original stays for the fallback's hold (no flicker on a capture that
@@ -2826,6 +2871,155 @@ describe('live original to HD transition', () => {
     harness.stop();
   });
 
+  /** Enter the fallback just after its one-second shown-view limit, before any unkeyed frame arrives. */
+  const beginStarvedFallback = async (harness: ReturnType<typeof setup>) => {
+    harness.setFrameSize(1280, 720);
+    const view = await goLive(harness);
+    const since = performance.timeOrigin + performance.now();
+    harness.vm.getDiagnostics.mockImplementation(async () => health(since));
+    harness.setState(null);
+    await advance(17);
+    await advance(50, 20);
+    expect(harness.bridge()!.presentation.fadingOut).toBe(true);
+    return view;
+  };
+
+  it('retains the ghost picture while states recover and defers early map hints that could replace its canvas', async () => {
+    const harness = setup('?hd=1&hd-ui=1', 'WebGL2', 'native');
+    const ui = { update: vi.fn(), setEnabled: vi.fn(), dispose: vi.fn() };
+    hdUi.start.mockReturnValue(ui);
+    const view = await beginStarvedFallback(harness);
+    const draws = view.render.mock.calls.length;
+    const resizes = view.resizePixels.mock.calls.length;
+    const hints = harness.vm.getRenderPreparation.mock.calls.length;
+    harness.vm.getRenderPreparation.mockResolvedValue({
+      map: { fileName: 'OTHER.MAP' },
+      theater: null,
+      houses: null,
+      localHouse: null,
+    });
+    await advance(100);
+    expect(harness.vm.getRenderPreparation).toHaveBeenCalledTimes(hints);
+    harness.setState(battle(80));
+    harness.nativeFrame(false);
+    await advance(100);
+    expect(harness.bridge()!.presentation).toMatchObject({ mode: 'original', fadingOut: true });
+    expect(harness.bridge()!.ui.enabled).toBe(false);
+    expect(ui.setEnabled).toHaveBeenLastCalledWith(false);
+    expect(harness.hdCanvas.style.display).toBe('block');
+    expect(view.outOfSight).toBe(false);
+    expect(view.render).toHaveBeenCalledTimes(draws);
+    expect(view.resizePixels).toHaveBeenCalledTimes(resizes);
+    expect(liveView.create).toHaveBeenCalledOnce();
+    await advance(200);
+    expect(harness.bridge()!.presentation.fadingOut).toBe(false);
+    expect(harness.hdCanvas.style.display).toBe('none');
+    expect(view.outOfSight).toBe(true);
+    harness.stop();
+  });
+
+  it.each(['waiting', 'blending'])('makes a native dialog opaque immediately while the ghost is %s', async (phase) => {
+    const harness = setup('?hd=1', 'WebGL2', 'native');
+    await beginStarvedFallback(harness);
+    if (phase === 'blending') {
+      harness.nativeFrame(false);
+      await advance(150);
+    }
+    harness.nativeFrame(true, true);
+    expect(harness.bridge()!.presentation.fadingOut).toBe(false);
+    expect(harness.hdCanvas.style.display).toBe('none');
+    expect(harness.renderer.setTransparentKey).toHaveBeenLastCalledWith(null);
+    expect(harness.renderer.setTransparentRect).toHaveBeenLastCalledWith(null);
+    expect(harness.renderer.setOpacityRegion).toHaveBeenLastCalledWith(null);
+    await advance(500);
+    expect(harness.hdCanvas.style.display).toBe('none');
+    harness.stop();
+  });
+
+  it('cuts the ghost after the passthrough trail deadline if no unkeyed frame arrives', async () => {
+    const harness = setup('?hd=1', 'WebGL2', 'native');
+    await beginStarvedFallback(harness);
+    const began = harness.bridge()!.timeline.fadeOutStartedAt!;
+    harness.nativeFrame(true);
+    await advance(499);
+    expect(harness.hdCanvas.style.display).toBe('block');
+    expect(harness.bridge()!.presentation.fadingOut).toBe(true);
+    await advance(1);
+    expect(harness.bridge()!.timeline.fadeOutFinishedAt! - began).toBe(500);
+    expect(harness.bridge()!.presentation.fadingOut).toBe(false);
+    expect(harness.hdCanvas.style.display).toBe('none');
+    expect(harness.renderer.setTransparentKey).toHaveBeenLastCalledWith(null);
+    expect(harness.renderer.setTransparentRect).toHaveBeenLastCalledWith(null);
+    expect(harness.renderer.setOpacityRegion).toHaveBeenLastCalledWith(null);
+    harness.nativeFrame(false);
+    expect(harness.hdCanvas.style.display).toBe('none');
+    harness.stop();
+  });
+
+  it.each(['menu', 'new-match', 'toggle', 'stop'])('ends a fallback ghost immediately on %s', async (action) => {
+    const harness = setup('?hd=1', 'WebGL2', 'native');
+    await beginStarvedFallback(harness);
+    const bridge = harness.bridge()!;
+    if (action === 'menu') {
+      harness.setFrameSize(800, 600);
+      harness.nativeFrame(false);
+    } else if (action === 'new-match') {
+      harness.setState(battle(1));
+      await advance(17);
+    } else if (action === 'toggle') harness.stop.toggle();
+    else harness.stop();
+    expect(bridge.presentation.fadingOut).toBe(false);
+    if (action === 'stop') expect(harness.hdCanvas.remove).toHaveBeenCalledOnce();
+    else expect(harness.hdCanvas.style.display).toBe('none');
+    expect(harness.renderer.setTransparentKey).toHaveBeenLastCalledWith(null);
+    expect(harness.renderer.setTransparentRect).toHaveBeenLastCalledWith(null);
+    expect(harness.renderer.setOpacityRegion).toHaveBeenLastCalledWith(null);
+    harness.stop();
+  });
+
+  it.each(['clean', 'truncated', 'recent-truncation', 'open-episode', 'no-state'] as const)(
+    'uses the paused capture calm rule after a starved fallback: %s',
+    async (kind) => {
+      const harness = setup('?hd=1', 'WebGL2', 'native');
+      await beginStarvedFallback(harness);
+      const fallbackAt = clock;
+      let mirrors = 100;
+      let truncated = 20;
+      let lastTruncated: number | null = null;
+      harness.vm.getDiagnostics.mockImplementation(async () => ({
+        native: {
+          renderHealth: {
+            unreadableSinceEpochMs: null,
+            incompleteSinceEpochMs: kind === 'open-episode' ? performance.timeOrigin + fallbackAt : null,
+            lastTruncatedAtEpochMs: lastTruncated,
+            mirrors,
+            truncatedMirrors: truncated,
+          },
+        },
+      }));
+      // A new complete state since fallback, followed by the same paused logic frame on every poll.
+      harness.setState(kind === 'no-state' ? null : battle(80));
+      harness.nativeFrame(false);
+      for (let i = 0; i < 64; i++) {
+        if (kind === 'truncated' && clock - fallbackAt === 12_500) {
+          mirrors++;
+          truncated++;
+          lastTruncated = performance.timeOrigin + clock;
+        }
+        if (kind === 'recent-truncation') lastTruncated = performance.timeOrigin + clock;
+        await advance(250);
+        if (clock - fallbackAt < 15_000) expect(harness.bridge()!.diagnostics.shown).toBe(false);
+      }
+      expect(harness.bridge()!.diagnostics.shown).toBe(kind === 'clean');
+      if (kind === 'truncated') {
+        // Once that miss leaves the five-second window, an unchanged paused publication can recover too.
+        await advance(250, 24);
+        expect(harness.bridge()!.diagnostics.shown).toBe(true);
+      }
+      harness.stop();
+    },
+  );
+
   it('replaces the preparation notice when the capture of a battle not yet shown is starved', async () => {
     const harness = setup('?hd=1', 'WebGL2', 'native');
     const view = fakeView();
@@ -2839,7 +3033,9 @@ describe('live original to HD transition', () => {
     await advance(100, 15);
     expect(harness.vm.getDiagnostics).not.toHaveBeenCalled();
     expect(harness.status).toHaveBeenLastCalledWith('Preparing the HD battlefield…');
-    await advance(100, 15);
+    await advance(100, 5);
+    expect(harness.vm.getDiagnostics).not.toHaveBeenCalled();
+    await advance(100);
     expect(harness.status).toHaveBeenLastCalledWith(capacity);
     expect(harness.hdCanvas.style.display).not.toBe('block');
     const asked = harness.vm.getDiagnostics.mock.calls.length;
@@ -3050,6 +3246,77 @@ describe('live original to HD transition', () => {
     for (let i = 0; i < restoredAt.length; i++)
       expect(restoredAt[i]! - fallbackAt[i]!).toBeGreaterThanOrEqual(starvedHoldMs(i + 1));
     harness.stop();
+  });
+
+  /**
+   * After a starved fallback, the capture keeps a given share of its publications truncated while complete states arrive
+   * every `stateEveryMs` in the original picture (100 ms ticks). Returns the reveals and fallbacks after `seconds`.
+   */
+  const afterFallback = async (share: number, stateEveryMs: number, seconds: number) => {
+    const harness = setup('?hd=1', 'WebGL2', 'native');
+    harness.setFrameSize(1280, 720);
+    await goLive(harness);
+    const epochNow = () => performance.timeOrigin + performance.now();
+    let starvedSince: number | null = epochNow();
+    let mirrors = 0;
+    let truncated = 0;
+    let lastTruncated: number | null = null;
+    harness.vm.getDiagnostics.mockImplementation(async () => ({
+      native: {
+        renderHealth: {
+          unreadableSinceEpochMs: null,
+          incompleteSinceEpochMs: starvedSince,
+          incompleteCause: starvedSince === null ? null : 'time-budget',
+          lastTruncatedAtEpochMs: lastTruncated,
+          mirrors,
+          truncatedMirrors: truncated,
+        },
+      },
+    }));
+    harness.setState(null);
+    await advance(100, 30);
+    expect(harness.bridge()!.diagnostics.shown).toBe(false);
+    starvedSince = null;
+    let frame = 3;
+    let missed = 0;
+    for (let tick = 0; tick < seconds * 10; tick++) {
+      // Three publications per tick (30 a second), `share` of them truncated, spread evenly.
+      for (let i = 0; i < 3; i++) {
+        mirrors++;
+        missed += share;
+        if (missed >= 1) {
+          missed -= 1;
+          truncated++;
+          lastTruncated = epochNow();
+        }
+      }
+      frame += 3;
+      if ((tick * 100) % stateEveryMs === 0) harness.setState(crowded(frame, 300));
+      harness.nativeFrame(!!harness.bridge()!.diagnostics.shown);
+      await advance(100);
+    }
+    const transitions = harness.bridge()!.timeline.transitions;
+    const result = {
+      reveals: transitions.filter((entry) => entry.to === 'hd' && entry.reason === 'state-restored').length,
+      fallbacks: transitions.filter((entry) => entry.reason === 'capture-starved').length,
+      shown: !!harness.bridge()!.diagnostics.shown,
+    };
+    harness.stop();
+    return result;
+  };
+
+  it('returns to HD after the hold when only an occasional capture is still truncated', async () => {
+    // 2026-11-13 live (Allied 1, budget squeezed to 4 ms, load 12-17): one capture in 25 kept missing after the load
+    // ended, and the rule "no truncation for five seconds" kept the original picture for good.
+    expect(await afterFallback(0.04, 100, 30)).toEqual({ reveals: 1, fallbacks: 1, shown: true });
+  });
+
+  it('keeps the original while a third of the captures miss, although the original picture gets its states', async () => {
+    expect(await afterFallback(0.33, 100, 60)).toEqual({ reveals: 0, fallbacks: 1, shown: false });
+  });
+
+  it('keeps the original while complete states come with gaps longer than the calm gap', async () => {
+    expect(await afterFallback(0, 1000, 60)).toEqual({ reveals: 0, fallbacks: 1, shown: false });
   });
 
   it('does not let a health report that never answers block the later checks', async () => {

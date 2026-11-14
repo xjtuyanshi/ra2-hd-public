@@ -39,6 +39,16 @@ async function fetchBytes(url: string): Promise<Uint8Array> {
   return new Uint8Array(await response.arrayBuffer());
 }
 
+/**
+ * `?native-capture-budget-us=` (development measurements only): the agent's per-capture time budget, 1000..12000 us,
+ * instead of the negotiated default. A budget below the capture's real cost makes it miss on a fraction of logic frames,
+ * the way a busy computer does, so the HD fallback and its return can be checked live under a controlled condition.
+ */
+function nativeCaptureBudget(value: string | null): { captureBudgetUs?: number } {
+  const us = value === null || value.trim() === '' ? NaN : Number(value);
+  return Number.isInteger(us) && us >= 1000 && us <= 12000 ? { captureBudgetUs: us } : {};
+}
+
 export async function hashRa2Executable(bytes: Uint8Array): Promise<string> {
   const subtle = globalThis.crypto?.subtle;
   if (!subtle) throw new Error('当前环境不支持联机所需的 SHA-256');
@@ -101,6 +111,7 @@ export async function createVmShell(
         token,
         pageCursor: options.nativePageCursor ?? nativeQuery.get('native-cursor') !== 'game',
         ...(nativeQuery.get('native-draw-journal') === '1' ? { drawJournal: true } : {}),
+        ...nativeCaptureBudget(nativeQuery.get('native-capture-budget-us')),
         sessionStatusUrl: new URL('/__native/session', window.location.href).href,
       },
       provider: { kind: 'native' },
