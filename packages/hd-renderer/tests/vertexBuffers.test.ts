@@ -41,7 +41,7 @@ import { buildRa2Terrain } from '../src/ra2/terrain';
 import { buildVoxelGeometry } from '../src/ra2/voxels';
 import { voxelPbrMaterialFor } from '../src/ra2/voxelPbr';
 import { buildSmoothVoxelGeometry, buildStandInVoxelParts } from '../src/ra2/voxelSmoothGeometry';
-import { VoxelWaterMesh, voxelShadowMaterial, voxelWaterMaterial } from '../src/ra2/voxelShadow';
+import { VoxelWaterMesh, VoxelShadowMesh, voxelShadowMaterial, voxelWaterMaterial } from '../src/ra2/voxelShadow';
 import { Ra2NightDressing } from '../src/ra2/nightDressing';
 import { AtmosphereNodes } from '../src/atmosphere';
 import { ObjectLayer } from '../src/objects';
@@ -233,6 +233,7 @@ describe('r186 vertex and uniform binding budget', () => {
       expect(line).toContain('dpdy(');
       expect(fragmentShader).toContain('spriteNeedsHouseRing');
       expect(fragmentShader).toContain('spriteNonGreyFraction');
+      expect(fragmentShader).toContain('spriteTreeProtection');
     }
     const onShader = assertLimits(integrated.mesh).fragmentShader;
     group.ab(false);
@@ -245,6 +246,29 @@ describe('r186 vertex and uniform binding budget', () => {
     expect(onShader).not.toBe(offShader);
     for (const item of [baseline, off, integrated, ab]) dispose(item.mesh);
     source.nodes!.dispose();
+  });
+
+  it('builds the integration shadow vertex displacement without changing its fragment opacity graph', () => {
+    const nodes = new AtmosphereNodes();
+    const off = new VoxelShadowMesh(new Mesh(new PlaneGeometry(), new MeshBasicNodeMaterial()), nodes, 1);
+    const original = assertLimits(off);
+    const integratedNodes = new AtmosphereNodes();
+    configureSpriteIntegration(integratedNodes, true);
+    const group = spriteIntegrationFor(integratedNodes);
+    group.uniforms.shadowSoft.setName('integrationShadowSoft');
+    const mesh = new VoxelShadowMesh(off.source, integratedNodes, 1);
+    const first = assertLimits(mesh);
+    expect(first.vertexShader).toContain('integrationShadowSoft');
+    expect(first.fragmentShader.slice(first.fragmentShader.indexOf('@fragment'))).toBe(
+      original.fragmentShader.slice(original.fragmentShader.indexOf('@fragment')),
+    );
+    group.ab(false);
+    group.set({ shadowSoft: 3 });
+    const second = assertLimits(mesh);
+    expect(second.vertexShader).toBe(first.vertexShader);
+    expect(second.fragmentShader).toBe(first.fragmentShader);
+    nodes.dispose();
+    integratedNodes.dispose();
   });
 
   it('uses supersampled HD alpha alone when on, retaining the old edge for A/B off and the same colour graph', () => {

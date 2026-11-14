@@ -216,3 +216,24 @@ it('the sprite controller keeps uniform identity and edited values across A/B, a
   panel.dispose();
   expect(host.children).toHaveLength(0);
 });
+
+it('loads v2 recommendations instead of v1 and restores every new control', async () => {
+  const { SpriteIntegration, INTEGRATION_KEYS } = await import('../src/spriteIntegration');
+  const { mountSpriteIntegrationTuning } = await import('../src/ra2/spriteIntegrationTuning');
+  vi.stubGlobal('window', new EventTarget());
+  vi.stubGlobal('document', { createElement: (tag: string) => new ElementDouble(tag) });
+  const read = vi.fn(() => null);
+  vi.stubGlobal('localStorage', { getItem: read, setItem: () => {} });
+  const group = new SpriteIntegration();
+  group.set(RECOMMENDED);
+  const host = new ElementDouble();
+  const panel = mountSpriteIntegrationTuning(host as unknown as HTMLElement, group);
+  expect(read).toHaveBeenCalledWith('hd-sprite-v2');
+  expect(SPRITE_INTEGRATION_SCHEMA.map((f) => f.key).sort()).toEqual([...INTEGRATION_KEYS].sort());
+  panel.set({ objSoft: 0, vCut: 0, treeDetail: 0 });
+  const find = (node: ElementDouble): ElementDouble | undefined =>
+    node.textContent === '恢复推荐值' ? node : node.children.map(find).find(Boolean);
+  find(host)!.dispatchEvent(new Event('click'));
+  expect(group.get()).toEqual(RECOMMENDED);
+  panel.dispose();
+});

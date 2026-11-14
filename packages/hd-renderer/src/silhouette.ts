@@ -106,9 +106,15 @@ export function silhouetteOf(material: Material): ShaderNode {
 /**
  * The final pass: `colour` (a texture node holding the finished display picture) with the outlines of `codes` (a
  * texture node whose green and blue channels hold the silhouette codes of the same pixels) smoothed. Pixels away
- * from an outline are returned exactly as loaded. smoothSilhouettes() below is the same arithmetic on arrays.
+ * from an outline are returned exactly as loaded. An optional discrete colour resolver composes a preceding
+ * filter without another full-frame copy. smoothSilhouettes() below twins the default resolver on arrays.
  */
-export function silhouetteSmooth(colour: ShaderNode, codes: ShaderNode, search = SILHOUETTE_SEARCH): ShaderNode {
+export function silhouetteSmooth(
+  colour: ShaderNode,
+  codes: ShaderNode,
+  search = SILHOUETTE_SEARCH,
+  resolve?: (pixel: ShaderNode) => ShaderNode,
+): ShaderNode {
   return Fn(() => {
     const size: ShaderNode = textureSize(colour);
     const target: ShaderNode = uv();
@@ -121,7 +127,8 @@ export function silhouetteSmooth(colour: ShaderNode, codes: ShaderNode, search =
         .add(abs(a.y.sub(b.y)))
         .greaterThan(DIFFERENT);
 
-    const centre: ShaderNode = colour.load(p);
+    const sample = resolve ?? ((q: ShaderNode): ShaderNode => colour.load(q));
+    const centre: ShaderNode = sample(p);
     const result: ShaderNode = vec4(centre).toVar();
     const c: ShaderNode = code(p).toVar();
     const edgeL: ShaderNode = differs(c, code(p.add(ivec2(-1, 0)))).toVar();
@@ -204,8 +211,8 @@ export function silhouetteSmooth(colour: ShaderNode, codes: ShaderNode, search =
         const linear = (value: ShaderNode): ShaderNode =>
           pow(clamp(value.rgb, vec3(0), vec3(1)), vec3(SILHOUETTE_GAMMA));
         const own: ShaderNode = linear(centre).toVar();
-        const sideA: ShaderNode = linear(colour.load(at(p.sub(offset))));
-        const sideB: ShaderNode = linear(colour.load(at(p.add(offset))));
+        const sideA: ShaderNode = linear(sample(at(p.sub(offset))));
+        const sideB: ShaderNode = linear(sample(at(p.add(offset))));
         const mixed: ShaderNode = own
           .add(sideA.sub(own).mul(shareA).mul(shareA).div(total))
           .add(sideB.sub(own).mul(shareB).mul(shareB).div(total));

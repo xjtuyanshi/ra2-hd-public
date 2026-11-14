@@ -193,24 +193,72 @@ filters HD colour separately from encoded house paint, limits local luminance ov
 Narrow coverage bounds protect both thin parts and thin gaps, including non-paint slats. Encoded-paint validity
 uses the weighted fraction of individually non-grey paint samples with a one-code-value sRGB tolerance, so a
 small coloured contribution cannot discard genuine grey shading. Valid grey samples use their HD ramp even at
-low paint coverage. Recommended relight/specular strengths are 0.8/0.6; saved panel settings remain unchanged.
+low paint coverage. Recommended relight/specular strengths are 0.8/0.45. Upright terrain-light cards keep edge reconstruction;
+`treeDetail` removes their sprite-shader soften/de-halo contribution while leaving generic post filtering enabled.
 The 5x5 reconstruction uses separable Gaussian weights. A/B off skips the outer 16 index samples; homogeneous
 opaque inner 3x3 footprints skip outer house sums. Wide opacity still samples that ring when on, because it also
 drives the colour inset and rim relight, even when narrow bounds have fixed alpha/paint at 0 or 1.
 No original assets are changed.
 
 `src/spriteIntegration.ts` contains reusable TSL math and CPU twins. `src/ra2/spriteIntegrationTuning.ts` owns the
-RA2 recommendations, schema, and panel. The panel uses storage `hd-sprite-v1`, the bottom-right corner, and
+RA2 recommendations, schema, and panel. The panel uses storage `hd-sprite-v2`, the bottom-right corner, and
 Backslash for A/B (Shift+Backslash shows/hides); the other panel retains Backquote and the top-right corner.
 The game mounts this panel only in DEV and exposes `window.__hdSprite`; the sandbox exposes `window.__fx.sprite`
 even without the panel. Both provide `get()`, `set(partial)`, and `ab(boolean)`. A mounted panel retains edited
 values while A/B is off; its owner removes the overlay/listener when the view is disposed.
 
-`shadowSoft` is reserved in the uniform/schema contract but currently has no effect. Projected voxel shadows are
-rasterized geometry with constant fragment opacity, not an alpha coverage texture. A fragment derivative cannot
-recover coverage outside the mesh; smoothing individual triangle edges would expose internal seams. Their existing
-multi-copy penumbra stays unchanged pending a silhouette-mask pass or a separately validated geometry expansion.
-CPU tests and node-builder checks do not establish GPU validation, performance, or visual acceptance.
+With painter depth available, nonzero physical-depth silhouette codes identify upright sprites and voxel parts.
+`src/objectPost.ts` performs object-only display filtering after tone/grade: masked clarity, same-code local-contrast
+reduction and small Gaussian softening, masked RCAS, symmetric outline feather, then the existing MLAA (`edges`).
+The mask includes a feathered one-device-pixel dilation. Ground outside that band retains its original clarity/RCAS;
+colour gathers never cross codes except in outline feather. Contrast scales RGB by its luminance ratio. Small/broad
+Gaussian gathers use sigma 0.7/3 view pixels, with offsets following `viewPixelScale`; outline radius uses device pixels.
+The small blur is mixed by `objSoft`. The broad blur pulls luminance by `objContrast * 0.5`.
+Both gathers read one source copy; RCAS masks its resolve in the upstream pass/target. For `edges`, MLAA resolves
+feathered neighbours on demand, avoiding a separate feather target: one extra full-size source copy. The 29-tap
+outline code search gathers colour only near differing codes. This adds code/colour reads, including repeated feather
+resolves at MLAA edges; CPU generation does not establish GPU cost. New copy targets belong to the pipeline lifecycle.
+Without painter depth or in debug views, the object post path is omitted. With compilation disabled, neither the
+post graph key nor sprite/voxel/shadow shader paths change. With compilation enabled, `on=0` disables every new term.
+
+Projected voxel redraws use `vSharpen` to remove negative mip bias, and `vShine` to reduce both camera glints and
+half of contrast power above 1. `vCut` discards projected main fragments below redraw coverage, including their
+physical-depth/silhouette MRT writes. The cutoff uses raw trilinear coverage and is disabled at projection strength 0.
+Native-depth and translucent material clones retain this discard; plain engine meshes and shadow/foam twins do not.
+Water reflections take projection filtering/shine changes but deliberately keep their flattened mesh silhouette.
+No per-type shader is introduced: atlas data and all strengths remain slots/uniforms. A high cutoff can thin or remove
+low-coverage barrels/antennae; reduce `vCut` to 0.2 or 0 if necessary. Rasterized geometry still bounds the redraw.
+
+`shadowSoft` expands the four offset land/air shadow twins' tangent-plane reach in the vertex shader by
+`1 + on * shadowSoft * 0.3`; the central twin, opacity layers, analytic depth, and water twins stay as before.
+At view scale 2.5 the recommendation gives roughly a five-device-pixel penumbra radius. The five-twin ring can still
+show bands; no additional twins are allocated without visual evidence that they are needed.
+
+The panel's restore-recommendations button loads all of these values (the v2 storage key starts fresh):
+
+| Key                                              | Range    | Recommended |
+| ------------------------------------------------ | -------- | ----------- |
+| `on`                                             | 0–1      | 1           |
+| `edgeSigma`                                      | 0.5–1.4  | 0.95        |
+| `edgeSoft`                                       | 0.5–3    | 1           |
+| `thinKeep`                                       | 0.4–0.75 | 0.56        |
+| `paint`, `normalSmooth`, `rimFade`, `treeDetail` | 0–1      | 1           |
+| `deHalo`                                         | 0–1      | 0.7         |
+| `soften`                                         | 0–1      | 0.35        |
+| `highlightRoll`                                  | 0–1      | 0.75        |
+| `relight`                                        | 0–1      | 0.8         |
+| `specular`                                       | 0–1      | 0.45        |
+| `shadowSoft`                                     | 0–3      | 1.5         |
+| `objSharp`, `vSharpen`                           | 0–1      | 1           |
+| `objClarity`                                     | 0–1      | 0.8         |
+| `objSoft`                                        | 0–1      | 0.25        |
+| `objContrast`                                    | 0–1      | 0.12        |
+| `outlineFeather`                                 | 0–3      | 1.2         |
+| `vShine`                                         | 0–1      | 0.7         |
+| `vCut`                                           | 0–0.9    | 0.5         |
+
+CPU twins and WGSL/GLSL node-builder checks establish arithmetic/graph contracts, not GPU validation, performance,
+thin-part preservation in the rendered scene, or at-a-glance visual acceptance.
 
 ## Frame cost: shaders, pipelines and quality tiers
 

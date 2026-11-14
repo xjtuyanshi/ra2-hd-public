@@ -149,7 +149,8 @@ export class VoxelProjectionState {
   /**
    * Negative mip LOD bias (in levels) for the redraw atlases. The redraws are drawn about three times larger than the
    * game shows them, so trilinear filtering lands between mips and softens the invented detail; a half-level bias
-   * keeps edges and highlights crisp at game scale without visible shimmer.
+   * keeps edges and highlights crisp at game scale without visible shimmer. Sprite integration removes this bias
+   * by on * vSharpen in the projected shader; the stored value and engine-look materials stay unchanged.
    */
   readonly sharpen = uniform(VOXEL_PROJECTION_SHARPEN);
   /** Mesh-normal form shading (0..1) and camera glint strength applied to the projected house paint only. */

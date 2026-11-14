@@ -1,3 +1,5 @@
+import { configureSpriteIntegration } from '../src/ra2/spriteIntegrationTuning';
+import { spriteIntegrationFor } from '../src/spriteIntegration';
 import { describe, expect, it, vi } from 'vitest';
 import {
   BackSide,
@@ -41,6 +43,7 @@ import {
   SHADOW_DEPTH_STEPS,
   SHADOW_OPACITY,
   SHADOW_PENUMBRA,
+  SHADOW_INTEGRATION_REACH,
   SHADOW_SHEAR_X,
   SHADOW_SHEAR_Z,
   VoxelShadowMesh,
@@ -1022,10 +1025,7 @@ describe('voxel contact shadow of a grounded unit', () => {
     const height = (x: number) => Math.max(0, 0.4 * (x - 10));
     const slope = new Vector3(-0.4, 1, 0).normalize();
     const body = new BoxGeometry(1, 0.4, 0.6);
-    const u = unit(
-      { height, normal: (x, _z, out) => (x > 10 ? out.copy(slope) : out.set(0, 1, 0)) },
-      body,
-    );
+    const u = unit({ height, normal: (x, _z, out) => (x > 10 ? out.copy(slope) : out.set(0, 1, 0)) }, body);
     try {
       u.root.position.set(10.2, height(10.2), 20);
       setShadowContact(u.root, true);
@@ -1316,4 +1316,43 @@ describe('analytic voxel shadow depth', () => {
       }
     },
   );
+});
+
+it('integration scales only shadow reach with stable uniforms and preserves all five opacity layers', () => {
+  const nodes = new AtmosphereNodes();
+  configureSpriteIntegration(nodes, true);
+  const geometry = new BoxGeometry(0.4, 0.2, 0.4);
+  const source = new Mesh(geometry, new MeshStandardNodeMaterial());
+  const scene = new Group();
+  const root = new Group();
+  scene.add(root);
+  root.add(source);
+  setShadowGround(scene, () => 0);
+  const copies = SHADOW_COPIES.map((_, i) => new VoxelShadowMesh(source, nodes, i));
+  root.add(...copies);
+  scene.updateMatrixWorld(true);
+  const material = copies[0]!.material as MeshBasicNodeMaterial;
+  expect(material.vertexNode).toBeTruthy();
+  const original = material.vertexNode;
+  const matrices = copies.map((c) => c.matrixWorld.clone());
+  spriteIntegrationFor(nodes).set({ shadowSoft: 3, on: 0 });
+  scene.updateMatrixWorld(true);
+  expect(material.vertexNode).toBe(original);
+  copies.forEach((c, i) => expect(c.matrixWorld.equals(matrices[i]!)).toBe(true));
+  expect(copies[0]!.penumbraOffset.length()).toBe(0);
+  expect(copies[1]!.penumbraOffset.length()).toBeCloseTo(SHADOW_PENUMBRA, 14);
+  const iso = new IsoCamera();
+  iso.zoom = 2.5;
+  iso.resize(800, 600);
+  iso.update();
+  const centre = new Vector3().project(iso.camera);
+  const offset = new Vector3(SHADOW_PENUMBRA * (1 + 1.5 * SHADOW_INTEGRATION_REACH), 0, 0)
+    .project(iso.camera)
+    .sub(centre);
+  const radius = Math.hypot(offset.x * 400, offset.y * 300);
+  expect(radius).toBeGreaterThan(3);
+  expect(radius).toBeLessThan(5);
+  expect(1 - (1 - shadowCopyOpacity(SHADOW_OPACITY)) ** 5).toBeCloseTo(SHADOW_OPACITY, 14);
+  nodes.dispose();
+  geometry.dispose();
 });

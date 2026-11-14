@@ -1060,6 +1060,18 @@ class SpriteGraph {
             .div(max(luminance(colour), 1e-4))
             .min(1);
           const fringed: ShaderNode = mix(colour.mul(limit), colour, solid).toVar('spriteFringedColour');
+          // Upright terrain-light cards share the existing instance class; decals and self-lit art are excluded.
+          const treeProtection: ShaderNode = integration
+            ? float(1)
+                .sub(
+                  max(isFull, isNone.sub(isUnlit))
+                    .mul(float(1).sub(step(0.5, aFlat)))
+                    .mul(tune.treeDetail)
+                    .mul(tune.on),
+                )
+                .toVar('spriteTreeProtection')
+            : null;
+          const objectSoften: ShaderNode = integration ? tune.soften.mul(treeProtection) : null;
           const newAlpha: ShaderNode = integration ? hdArt.a.mul(edge).toVar() : null;
           const shadePaint: ShaderNode = integration ? float(paint).toVar() : paint;
           if (integration) {
@@ -1087,8 +1099,8 @@ class SpriteGraph {
                   // Rect clipping also excludes adjacent packed frames when filtering near the outer edge.
                   const original: ShaderNode = k.add(vec2(ox, oy)).add(0.5).div(this.hdScale);
                   const inside: ShaderNode = step(lo, original).mul(float(1).sub(step(hi, original)));
-                  const wa: ShaderNode = colourFilterWeightNode(t.x, ox, tune.soften)
-                    .mul(colourFilterWeightNode(t.y, oy, tune.soften))
+                  const wa: ShaderNode = colourFilterWeightNode(t.x, ox, objectSoften)
+                    .mul(colourFilterWeightNode(t.y, oy, objectSoften))
                     .mul(tap.a)
                     .mul(inside.x)
                     .mul(inside.y);
@@ -1128,7 +1140,13 @@ class SpriteGraph {
                 high: ShaderNode = mu.add(spread);
               const l: ShaderNode = luminance(cnp);
               // Do not clamp house fallback: its hue and luminance belong to the palette ramp.
-              cnp.mulAssign(mix(1, softRangeNode(l, low, high).div(max(l, 1e-4)), tune.deHalo.mul(step(1e-4, snp))));
+              cnp.mulAssign(
+                mix(
+                  1,
+                  softRangeNode(l, low, high).div(max(l, 1e-4)),
+                  tune.deHalo.mul(treeProtection).mul(step(1e-4, snp)),
+                ),
+              );
               const after: ShaderNode = luminance(cnp);
               cnp.mulAssign(
                 mix(

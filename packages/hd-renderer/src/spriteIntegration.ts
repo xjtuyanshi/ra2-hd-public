@@ -15,6 +15,15 @@ export const INTEGRATION_KEYS = [
   'normalSmooth',
   'rimFade',
   'shadowSoft',
+  'objSharp',
+  'objClarity',
+  'objSoft',
+  'objContrast',
+  'outlineFeather',
+  'vSharpen',
+  'vShine',
+  'vCut',
+  'treeDetail',
 ] as const;
 export type IntegrationKey = (typeof INTEGRATION_KEYS)[number];
 export type IntegrationValues = Record<IntegrationKey, number>;
