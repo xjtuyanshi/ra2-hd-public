@@ -2041,8 +2041,8 @@ describe('HD bridge match start', () => {
     await advance(17);
     await vi.waitFor(() => expect(harness.bridge()?.live).toBe(view));
     await advance(17, 2);
-    // A stateless loading screen: unpaced builds, four in-match upload strips per frame (no GPU burst into play).
-    expect([view.newArtPerFrame, view.hiddenUploadPixels]).toEqual([Infinity, 4 * (8 << 20)]);
+    // A stateless loading screen: unpaced builds and uploads, as behind an empty prematch state.
+    expect([view.newArtPerFrame, view.hiddenUploadPixels]).toEqual([Infinity, Infinity]);
     expect(view.hiddenWarmPace).toEqual({ budgetMs: 100, maxGroups: 64, maxNew: 8 });
     expect(harness.bridge()!.timeline.firstStateAt).toBeNull();
     // No state has arrived, but the larger native picture is already playable.

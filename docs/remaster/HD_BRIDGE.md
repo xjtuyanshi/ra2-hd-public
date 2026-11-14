@@ -340,9 +340,9 @@ about 0.6 s uploading 8192 px atlas pages, while objects appeared as their pages
   (`packages/hd-renderer/src/pageUpload.ts`) instead of 253 MiB in one call: 8 M pixels per frame while the view is
   shown (up to twice that when a frame comes late). Out of sight the bridge sets the pace every preparation tick:
   a fresh view with no state for its map can build everything as it arrives while the native picture is still the
-  loading/menu surface, and uploads four in-match strips (32 M pixels) per frame, so whole pages queued in the GPU
-  process cannot spill into the first battle frames. Empty prematch states build the same way and upload everything
-  as it arrives. Warm slices then allow 100 ms, 64 total
+  loading/menu surface, and uploads everything as it arrives (a 32 M pixel per-frame cap was tried on 2026-11-14:
+  it did not reduce the undelivered frames at match start and made SOV07TMD's HD view arrive about 6 s later).
+  Empty prematch states build the same way. Warm slices then allow 100 ms, 64 total
   groups and eight unseen groups (`LiveView.hiddenWarmPace`). The first battle-size native picture or a state with
   objects immediately restores 12 ms / eight total / one unseen group, one new kind of art per frame (`LiveView.newArtPerFrame`:
   each brings shaders that are built in the frame that first draws it, and a whole opening in one frame froze the
