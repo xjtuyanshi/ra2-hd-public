@@ -5,7 +5,7 @@
 
 /* Scratch pages live for one logic boundary only. All cache fills retain the
  * caller's validated read operation; neither missing nor failed pages survive.
- * The caller can reuse snapshot scratch before the final sorted capture. */
+ * Scratch is separate from the committed and candidate page-slot storage. */
 struct nh_read_cache {
     uint32_t addresses[NH_MIRROR_HASH_SIZE], indices[NH_MIRROR_HASH_SIZE], count;
 };

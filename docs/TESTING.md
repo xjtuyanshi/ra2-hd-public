@@ -95,7 +95,7 @@ node --test scripts/remaster/native/mirror-*.test.mjs
 bash packages/native-host/build.sh
 ```
 
-The C tests cover deadline backoff, complete-image cadence, membership/removals, ACK generations, page equality, read caching and exact protected reads. The native build needs the configured MinGW tools and vendored sources. Cadence tests model a fast consumer at 16 ms boundaries and verify immediate reset/revision/rewind eligibility, clock rounding and reconnect cleanup. They do not establish live logic FPS, HD smoothness or original-executable behavior. Measure same-scene HD/original windows at slider 5 after minute 10 separately.
+The C tests cover deadline backoff, complete-image cadence, membership/removals, ACK generations, page equality, read caching, exact protected reads and slot-pool commit/rollback ownership. Slot tests check randomized membership/byte changes, unchanged sharing, full-capacity resets, rejected/partial attempts, reconnect cleanup and committed-image integrity without game resources. The native build needs the configured MinGW tools and vendored sources. Cadence tests model a fast consumer at 16 ms boundaries and verify immediate reset/revision/rewind eligibility, clock rounding and reconnect cleanup. They do not establish live logic FPS, HD smoothness or original-executable behavior. Measure same-scene HD/original windows at slider 5 after minute 10 separately.
 
 ## Save and cold-load regression
 
