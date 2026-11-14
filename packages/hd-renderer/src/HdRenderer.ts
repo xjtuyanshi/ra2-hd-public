@@ -1217,7 +1217,7 @@ export class HdRenderer {
     if (this.world && debugView === 'none') key.push('unlit');
     if (this.topEffectsPass) key.push('top-effects');
     if (this.mistWanted()) key.push('mist');
-    if (this.settings.tone) key.push('tone', this.settings.tone.grain > 0);
+    if (this.settings.tone) key.push('tone', this.settings.tone.grain > 0, this.settings.tone.keyRadius > 0);
     return JSON.stringify(key);
   }
 
@@ -1381,8 +1381,23 @@ export class HdRenderer {
         : linear;
       toneLook = graded;
       const share: ShaderNode = hasCinematicGrade(this.settings) ? this.gradeShare : float(0);
+      // The tone's patch key: the scene around the pixel, exposed and tone mapped like `linear` (mist, shroud and
+      // bloom left out; they only shift the classification, never the pixel's own colour).
+      let toneKey: ShaderNode | null = null;
+      if (this.settings.tone.keyRadius > 0) {
+        const keyComposite: ShaderNode = vec3(this.finalTone.keyTaps((at) => hdr.sample(at).rgb))
+          .mul(this.exposure)
+          .mul(vignette)
+          .toVar();
+        const keyFaithful: ShaderNode = faithfulToneMap(keyComposite);
+        const keyNeutral: ShaderNode = neutralToneMapping(keyComposite, float(1));
+        toneKey =
+          toneMapper === 'faithful'
+            ? mix(keyFaithful, keyNeutral, this.nightDisplay)
+            : toneMapping(TONE_MAPPERS[toneMapper], float(1), vec4(keyComposite, 1)).rgb;
+      }
       output = renderOutput(
-        vec4(addEmission(this.finalTone.node(linear, graded, share, this.nightDisplay, toneCode)), 1),
+        vec4(addEmission(this.finalTone.node(linear, graded, share, this.nightDisplay, toneCode, toneKey)), 1),
         NoToneMapping,
       );
     } else if (hasCinematicGrade(this.settings)) {

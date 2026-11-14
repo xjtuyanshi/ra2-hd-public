@@ -33,6 +33,7 @@ const params = (): FinalToneParams => ({
   foliage: null,
   grain: 0.5,
   night: { colour: 0.35, grain: 1 },
+  keyRadius: 0,
 });
 const opts = { object: false, gradeShare: 0, night: 0 };
 const encoded = (rgb: Rgb) => rgb.map((x) => x ** (1 / 2.2)) as [number, number, number];
@@ -92,6 +93,27 @@ describe('final tone colour', () => {
     }
     const grey: Rgb = [0.2, 0.2, 0.2];
     finalToneRgb(grey, grey, p, opts).forEach((v, i) => expect(v).toBeCloseTo(grey[i]!, 14));
+  });
+  it('classifies shifts by the key: pixel noise does not split the shift, foreign hues are gated out', () => {
+    const sun = { centre: 88, width: 40, minChroma: 0.04, minLuma: 0.55, shift: -6 };
+    const p = { ...params(), hueShifts: [sun] };
+    // A dark grass pixel inside a sunlit patch takes the patch's shift (the per-pixel minLuma would skip it).
+    const dark = colour(92, 0.12).map((v) => v * 0.5) as [number, number, number];
+    const lit = colour(92, 0.12).map((v) => Math.min(1, v * 2.2)) as [number, number, number];
+    expect(hue(finalToneRgb(dark, dark, p, opts))).toBeCloseTo(hue(dark), 10);
+    expect(hue(finalToneRgb(dark, dark, p, { ...opts, key: lit }))).toBeCloseTo(hue(dark) - 6, 6);
+    // Violet team colour inside the same patch is outside twice the window width: untouched.
+    const violet = colour(300, 0.12);
+    finalToneRgb(violet, violet, p, { ...opts, key: lit }).forEach((v, i) => expect(v).toBeCloseTo(violet[i]!, 14));
+  });
+  it('deepens the shade class by its exposure and raises nothing outside the luma window', () => {
+    const shade = { centre: 105, width: 40, minChroma: 0.04, maxLuma: 0.64, shift: 0, exposure: -0.2 };
+    const p = { ...params(), hueShifts: [shade] };
+    const lum = (rgb: Rgb) => encoded(rgb).reduce((s, x, i) => s + x * [0.2126, 0.7152, 0.0722][i]!, 0);
+    const c = colour(105, 0.12).map((v) => v * 0.6) as [number, number, number];
+    expect(lum(finalToneRgb(c, c, p, opts)) / lum(c)).toBeCloseTo(0.8, 6);
+    const bright = colour(105, 0.12).map((v) => Math.min(1, v * 1.9)) as [number, number, number];
+    expect(lum(finalToneRgb(bright, bright, p, opts))).toBeCloseTo(lum(bright), 6);
   });
   it('protects the look water exactly, even when the alternate grade would recolour it', () => {
     const p = moistTone('temperate', 'moist2', LOOK_PRESETS.cinematic.settings)!;
@@ -200,29 +222,42 @@ describe('TSL / JS agreement', () => {
   it('matches across grade, protection, two hue shifts, night and object uniforms without rebuilding', () => {
     const tone = new FinalTone();
     const p = moistTone('temperate', 'moist2', LOOK_PRESETS.cinematic.settings)!;
-    p.hueShifts.push({ centre: 359, width: 25, minChroma: 0.04, shift: -8 });
+    p.hueShifts[2] = { centre: 359, width: 25, minChroma: 0.04, minLuma: 0.3, shift: -8, exposure: 0.1 };
     for (const grade of [p.grade, null])
       for (const night of [0, 0.4, 1])
-        for (const object of [false, true]) {
-          const configured = { ...p, grade };
-          tone.set(configured);
-          for (const lin of [
-            [0, 0, 0],
-            [1, 1, 1],
-            colour(112),
-            colour(215, 0.2),
-            colour(359),
-            colour(72),
-            [0.8, 0.02, 0.3],
-          ] as Rgb[]) {
-            const look = cinematicGradeRgb(lin, LOOK_PRESETS.cinematic.settings);
-            const actual = evaluate(
-              tone.node(vec3(...lin), vec3(...look), float(0.7), float(night), object ? vec2(0.1, 0.2) : null),
-            );
-            const expected = finalToneRgb(look, lin, configured, { object, gradeShare: 0.7, night });
-            actual.forEach((v, i) => expect(v).toBeCloseTo(expected[i]!, 11));
+        for (const object of [false, true])
+          for (const key of [null, colour(100, 0.15), colour(350, 0.2)] as (Rgb | null)[]) {
+            const configured = { ...p, grade };
+            tone.set(configured);
+            for (const lin of [
+              [0, 0, 0],
+              [1, 1, 1],
+              colour(112),
+              colour(215, 0.2),
+              colour(359),
+              colour(72),
+              [0.8, 0.02, 0.3],
+            ] as Rgb[]) {
+              const look = cinematicGradeRgb(lin, LOOK_PRESETS.cinematic.settings);
+              const actual = evaluate(
+                tone.node(
+                  vec3(...lin),
+                  vec3(...look),
+                  float(0.7),
+                  float(night),
+                  object ? vec2(0.1, 0.2) : null,
+                  key ? vec3(...key) : null,
+                ),
+              );
+              const expected = finalToneRgb(look, lin, configured, {
+                object,
+                gradeShare: 0.7,
+                night,
+                ...(key && { key }),
+              });
+              actual.forEach((v, i) => expect(v).toBeCloseTo(expected[i]!, 11));
+            }
           }
-        }
     tone.set({ ...params(), foliage: { centre: 112, width: 30, minChroma: 0.05 } });
     expect(evaluate(tone.grainMask(vec3(...colour(112)), vec2(0.1, 0.2)))[0]).toBe(1);
     expect(evaluate(tone.grainMask(vec3(...colour(0)), vec2(0.1, 0.2)))[0]).toBe(0);
@@ -262,7 +297,7 @@ describe('tone pipeline lifecycle', () => {
       applyLookPreset(hd.settings, 'cinematic');
       expect(hd.settings.tone).toBe(p);
       hd.applySettings();
-      expect(JSON.parse(state.pipelineKey).slice(-2)).toEqual(['tone', false]);
+      expect(JSON.parse(state.pipelineKey).slice(-3)).toEqual(['tone', false, true]);
       const pipeline = state.pipeline;
       p.density = 0.2;
       p.grade = null;
@@ -282,7 +317,7 @@ describe('tone pipeline lifecycle', () => {
       expect(state.finalTone.gradeUniforms.gradeBalance.value.toArray()).toEqual(p.grade.gradeBalance);
       p.grain = 0.5;
       hd.applySettings();
-      expect(JSON.parse(state.pipelineKey).slice(-2)).toEqual(['tone', true]);
+      expect(JSON.parse(state.pipelineKey).slice(-3)).toEqual(['tone', true, true]);
       hd.settings.tone = null;
       applyLookPreset(hd.settings, 'faithful');
       hd.applySettings();

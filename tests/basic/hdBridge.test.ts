@@ -1034,7 +1034,7 @@ describe('HD bridge look parameters', () => {
     const view = fakeLookView();
     Object.assign(view.hd.settings, neutralGrade());
     await goLive(harness, view);
-    expect(view.hd.settings).toMatchObject({ tone: { density: 0.12, grade: null, grain: 0.12 } });
+    expect(view.hd.settings).toMatchObject({ tone: { density: 0.08, grade: null, grain: 0.12 } });
     expect(hdRenderer.applyLookPreset).not.toHaveBeenCalled();
     expect(view.hd.applySettings).toHaveBeenCalledTimes(1);
     expect(view.hd.applySettings.mock.invocationCallOrder[0]).toBeLessThan(view.push.mock.invocationCallOrder[0]!);

@@ -968,7 +968,8 @@ single-sampled, so layers should copy at most once per frame and only while they
 `hd-tone=off|moist1|moist2|moist3` selects a theatre-aware final colour stage in the game bridge;
 unknown or missing values mean `off`. All look presets leave `tone` alone and default settings use `null`.
 The FX sandbox uses `&tone=moist1|moist2|moist3` after `look` and all `set=` overrides. Sandbox-only
-`&toneset=density:0.16,grain:0.45,chroma:1.3/1.2/1.07` overrides top-level numeric tone values and the chroma triple.
+`&toneset=density:0.16,grain:0.45,chroma:1.3/1.2/1.07,shift1:8,exposure1:-0.05` overrides top-level numeric tone
+values (including `keyRadius`), the chroma triple and the angle/exposure of hue shifts 0-3.
 
 Stage order: scene lighting (real lights / normals from other pilots, scene pass) -> bloom -> tone map ->
 cinematic grade -> moist tone (last colour stage) -> emission/unlit add -> output encode + night toe ->
@@ -980,9 +981,17 @@ mid-tones, and so grass blades, clumps and light/dark patches, keep their contra
 `y^6` shoulder pins white. Rejected alternatives: a cubic high-key compression flattened sunlit grass (mid-scale L*
 contrast -25%); a gamma crushed dark scenes (jungle median L* 42 -> 27); fading the change out on dark pixels flattened
 the patches of darker maps (jungle patch contrast -28%). `contrast` then adds a sun/shade S-curve around `pivot`.
-Three luma bands set chroma gain (a gain below 1 in highlights tames bleached flecks) and at most two hue windows
-rotate colour without changing geometry. Hue windows may carry `maxLuma`, so snow whites (tone hue ~203,
-luma > 0.85) are told from water of the same hue.
+Three luma bands set chroma gain and at most four hue windows rotate colour without changing geometry; a window may
+also carry an `exposure`, a relative change of encoded luma inside it, so sun and shade are separated by their colour
+class instead of darkening a whole map. Hue windows may carry `maxLuma` (snow whites, tone hue ~203 and luma > 0.85,
+told from water of the same hue), `minLuma` (sunlit ground told from shade of the same hue) and `maxChroma` (muted
+ground told from vivid grass). With `keyRadius` > 0 the shift windows classify a key instead of the pixel: four
+bilinear taps of the scene texture at +-(keyRadius + 0.5) output pixels, exposed and tone mapped like the pixel (mist,
+shroud and bloom left out), graded by the tone's grade. Per-pixel classification of a luma-keyed shift split grass
+texture into pale and dark specks (1-px Lab a* noise 0.91 -> 1.82 on XMP27T8 base); with the key it stays at the
+current look's level. The pixel's own hue only gates a keyed shift (full within the window width, none beyond twice
+it), so units and roofs inside a grass patch keep their colour. The key adds four scene-texture taps to the colour
+pass and changes the pipeline key only when it is switched on or off.
 On object pixels (silhouette code != 0) `objectShare` of the colour change and `objectDensity` of the luma change
 apply. Units must deepen with the ground: with a low `objectDensity` they stayed bright while the grass around them
 darkened, and the unit/ground L* gap fell from 22 to 8 (tanks sank into the grass). Green foliage takes all of it.
@@ -992,11 +1001,18 @@ faithful ignores replacement grading. Airless scenes neutralize its balance/tint
 
 RA2 data (`src/ra2/moistTone.ts`): direction from the owner's choice on 2026-11-14 of reference A of the moist
 diagnosis boards (warm sunlit light, strong sun/shade contrast, deep saturated greens in shade, golden highlights),
-over B's uniformly deep green; only colour and tone, never A's redrawn ground or shapes. moist1 is 0.6 of the theatre
+over B's uniformly deep green; only colour and tone, never A's redrawn ground or shapes. Temperate and urban lawns use
+four keyed windows: vivid lit grass a little towards gold and deeper, vivid mid-dark grass towards deep green and
+deeper, the look's teal jungle shade back towards the original's olive, and muted lit ground (the wet band beside
+clear water, the jungle's lighter patches) warmer and a little lighter. Measured on XMP27T8 base (quartiles of the
+blurred grass L*): sun/shade L* difference 16.6 (current) -> 19.8 (moist2; A 20.4), shade/sun Lab hue split 4.5 ->
+12.9 (A 10.7), sunlit hue 104 -> 99. A highlight chroma gain below 1 or a larger warm shift made the sunlit grass pale
+straw, which reads dry; a stronger shade exposure outlined the map's tile-variant patches as hard camouflage blots. moist1 is 0.6 of the theatre
 data, moist2 1, moist3 1.4 (tints saturate at 1). Snow keeps the same spirit cold and crisp: no darkening, blue
 shadows, whites back to the original's cyan ice (Lab hue about 217), never violet or warm. Review limits per level:
 units at least 16 L* from the ground around them on day maps, mid-scale contrast not below the current look, clear
-water unchanged; moist1 within about 7 L* of the current look.
+water and the wet band beside it unchanged; whole-frame L* within about 8 of the current look at moist2 (XMP27T8 base
+-6.0, AMAZON01 jungle -4.6).
 
 The display grain cut removes only the finest luminance residual with an edge guard. It shares clarity's single
 picture copy, using scratch alpha for the pre-tone ground/foliage mask so classification does not resample the scene.

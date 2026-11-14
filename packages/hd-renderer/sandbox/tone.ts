@@ -4,7 +4,7 @@ const TRIPLES = ['chroma', 'gradeBalance', 'gradeShadowTint', 'gradeHighlightTin
 
 /**
  * Sandbox-only numeric tuning, applied after the look and its setting overrides: numericKey:value, a triple a/b/c for
- * chroma or the grade's balance and tints, and shift0 / shift1 for the hue-shift angles.
+ * chroma or the grade's balance and tints, shift0-3 for the hue-shift angles and exposure0-3 for their exposures.
  */
 export function applyToneOverrides(tone: FinalToneParams | null, overrides: string | null): void {
   if (!tone) return;
@@ -21,15 +21,18 @@ export function applyToneOverrides(tone: FinalToneParams | null, overrides: stri
       continue;
     }
     const value = Number(raw);
-    const shift = /^shift([01])$/.exec(key ?? '');
+    const shift = /^(shift|exposure)([0-3])$/.exec(key ?? '');
     if (shift && raw !== undefined && Number.isFinite(value)) {
-      const window = tone.hueShifts[Number(shift[1])];
-      if (!window) throw new Error(`Invalid tone override: ${item}; this theatre has no hue shift ${shift[1]}`);
-      window.shift = value;
+      const window = tone.hueShifts[Number(shift[2])];
+      if (!window) throw new Error(`Invalid tone override: ${item}; this theatre has no hue shift ${shift[2]}`);
+      if (shift[1] === 'shift') window.shift = value;
+      else window.exposure = value;
       continue;
     }
     if (!key || typeof target[key] !== 'number' || raw === undefined || !Number.isFinite(value))
-      throw new Error(`Invalid tone override: ${item}; expected numericKey:value, ${TRIPLES.join('|')}:a/b/c or shiftN`);
+      throw new Error(
+        `Invalid tone override: ${item}; expected numericKey:value, ${TRIPLES.join('|')}:a/b/c or shiftN`,
+      );
     target[key] = value;
   }
 }

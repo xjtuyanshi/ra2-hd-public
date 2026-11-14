@@ -27,34 +27,54 @@ export interface MoistTheatre {
   hueShifts: ToneHueShift[];
   grain: number;
 }
-// Tone-space hues measured on Build 13 sandbox frames (FinalToneParams): sunlit grass 75-102 (median 93), jungle 127,
-// sand 62, snow whites 185-218 (median 203), shallow water 208, deep water 222.
-/** Sunlit grass a little towards green: the dry look is yellow-olive grass with bleached flecks. Sand (62) stays out. */
-const green: ToneHueShift = { centre: 95, width: 30, minChroma: 0.04, shift: 6 };
+// Tone-space hues and encoded luma measured on Build 13 sandbox frames (quartiles of the blurred ground L*):
+// XMP27T8 sunlit grass hue 89 / luma 0.69 / chroma 0.39, its shade grass 96 / 0.52 / 0.34; AMAZON01 jungle shade
+// 128 / 0.31 / 0.18 and its lighter patches 97 / 0.49 / 0.16; sand 62-70; the wet band beside clear water 89 / 0.58 /
+// 0.19; snow whites 185-218, shallow water 208, deep water 222.
+/**
+ * Reference A's look, classified by patch (FinalToneParams.keyRadius), not by pixel:
+ * - sun: vivid lit yellow-green ground a little towards gold and a little deeper (Lab hue of base sunlit grass
+ *   104 -> 99; a highlight gain below 1 or a larger shift turned it pale straw, which reads dry);
+ * - shade: vivid mid-dark green (chroma gate 0.18: not the muted jungle, nor the wet band beside the water) towards
+ *   deep green and deeper. Sun/shade patch L* difference ends near A's 20; more (exposure -0.16) outlined the map's
+ *   tile-variant patches as hard camouflage blots;
+ * - teal: the look's blue-green jungle shade back towards the original's olive (Lab hue 128 -> 123; original 122);
+ * - muted: low-chroma lit ground (the wet band beside clear water, the jungle's lighter patches) warmer and a little
+ *   lighter, so the band beside the water is not muddied and the jungle reads sunlit rather than dusk.
+ */
+const temperateShifts: ToneHueShift[] = [
+  { centre: 88, width: 40, minChroma: 0.15, minLuma: 0.45, shift: -3, exposure: -0.06 },
+  { centre: 105, width: 40, minChroma: 0.18, maxLuma: 0.64, shift: 10, exposure: -0.08 },
+  { centre: 135, width: 40, minChroma: 0.06, shift: -8 },
+  { centre: 88, width: 44, minChroma: 0.06, maxChroma: 0.22, minLuma: 0.45, maxLuma: 0.75, shift: -5, exposure: 0.1 },
+];
 const urban: MoistTheatre = {
-  // Warm brick and lawn: neutral shadows keep their colour (the look's cool shadows turned them grey).
-  balance: [1, 1, 0.99],
-  shadowTint: [1.06, 1, 0.88],
-  highlightTint: [1.15, 1, 0.82],
+  // Neutral pavement stays near the original's warmth (Lab b* about 5); lawns follow the temperate shifts.
+  balance: [1, 1, 1],
+  shadowTint: [1.02, 1, 0.97],
+  highlightTint: [1.08, 1, 0.92],
   // City ground is mostly dark: a low pivot lifts lit facades and deepens shade instead of flattening the blocks.
-  density: 0.12,
+  density: 0.08,
   contrast: 0.25,
   pivot: 0.35,
   chroma: [1.3, 1.2, 1.05],
-  hueShifts: [green],
+  hueShifts: temperateShifts,
   grain: 0.12,
 };
 export const MOIST_THEATRES: Record<Theater, MoistTheatre> = {
   temperate: {
-    // Deep green shade and warm golden sunlight instead of the look's grey-cool shade and bleached highlights.
+    // Deep green shade and warm golden sunlight instead of the look's grey-cool shade and bleached highlights. Part of
+    // the depth comes from the sun/shade exposures (vivid grass only); the global density stays low so dark maps
+    // (jungle) stay sunlit.
     balance: [0.99, 1, 1],
     shadowTint: [0.85, 1.1, 0.85],
-    highlightTint: [1.2, 1, 0.75],
-    density: 0.2,
-    contrast: 0.25,
-    pivot: 0.45,
-    chroma: [1.3, 1.08, 0.95],
-    hueShifts: [green],
+    highlightTint: [1.25, 1.02, 0.7],
+    density: 0.1,
+    contrast: 0.2,
+    pivot: 0.42,
+    // Golden light needs its chroma: a highlight gain below 1 turned the warmed sunlit grass pale straw.
+    chroma: [1.35, 1.18, 1.12],
+    hueShifts: temperateShifts,
     grain: 0.25,
   },
   snow: {
@@ -126,7 +146,14 @@ export function moistTone(
     contrast: Math.min(contrastLimit(t.pivot), t.contrast * k),
     pivot: t.pivot,
     chroma: t.chroma.map((g) => 1 + (g - 1) * k) as [number, number, number],
-    hueShifts: t.hueShifts.map((shift) => ({ ...shift, shift: shift.shift * k })),
+    hueShifts: t.hueShifts.map((shift) => ({
+      ...shift,
+      shift: shift.shift * k,
+      ...(shift.exposure === undefined ? {} : { exposure: shift.exposure * k }),
+    })),
+    // About two engine pixels at the owner's 2.5 device pixels per engine pixel: grass texture is averaged out, light
+    // and shade patches (tens of pixels) are not.
+    keyRadius: 4,
     // The approved clear water (and shallows): saturated blue below near-white luma, left as the look draws it.
     protect: { centre: 215, width: 40, minChroma: 0.1, maxLuma: 0.75 },
     // Units and buildings take most of the colour and all of the depth, so they keep their separation from the deeper
