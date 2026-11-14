@@ -282,6 +282,7 @@ const HIDDEN_NEW_ART_PER_FRAME = 1;
 const HIDDEN_UPLOAD_PIXELS = 8 << 20;
 const HIDDEN_WARM_PACE = { budgetMs: 12, maxGroups: 8, maxNew: 1 };
 const LOADING_WARM_PACE = { budgetMs: 100, maxGroups: 64, maxNew: 8 };
+const LOADING_UPLOAD_PIXELS = HIDDEN_UPLOAD_PIXELS * 4;
 /** Out of sight and complete, the view only needs an occasional frame until the match starts (every Nth tick). */
 const HIDDEN_IDLE_TICKS = 12;
 /**
@@ -601,7 +602,10 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
     const emptyState = stateMap === liveMap && latestState?.objects.length === 0 && !viewHadObjects;
     const loadingPace = live.outOfSight && !nativeBattleSurface && (!viewHadState || emptyState);
     live.newArtPerFrame = loadingPace ? Infinity : HIDDEN_NEW_ART_PER_FRAME;
-    live.hiddenUploadPixels = loadingPace ? Infinity : HIDDEN_UPLOAD_PIXELS;
+    // Uploads: as fast as they come only behind an actual empty state (as before); a campaign's stateless loading
+    // screen takes four in-match strips per frame, so a burst of whole pages queued in the GPU process cannot spill
+    // into the first battle frames (those frames were seen undelivered for 0.5-3 s at ALL01UMD's start, both builds).
+    live.hiddenUploadPixels = !loadingPace ? HIDDEN_UPLOAD_PIXELS : emptyState ? Infinity : LOADING_UPLOAD_PIXELS;
     live.hiddenWarmPace = loadingPace ? LOADING_WARM_PACE : HIDDEN_WARM_PACE;
   };
   /** Whether the view of the current match was handed its remembered list (once per match). */

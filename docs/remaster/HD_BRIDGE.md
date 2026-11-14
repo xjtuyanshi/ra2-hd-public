@@ -339,8 +339,10 @@ about 0.6 s uploading 8192 px atlas pages, while objects appeared as their pages
   page instead of being built twice. Decoded atlas pages are copied to the GPU in strips
   (`packages/hd-renderer/src/pageUpload.ts`) instead of 253 MiB in one call: 8 M pixels per frame while the view is
   shown (up to twice that when a frame comes late). Out of sight the bridge sets the pace every preparation tick:
-  a fresh view with no state for its map can build and upload everything as it arrives while the native picture is
-  still the loading/menu surface. Empty prematch states use the same pace. Warm slices then allow 100 ms, 64 total
+  a fresh view with no state for its map can build everything as it arrives while the native picture is still the
+  loading/menu surface, and uploads four in-match strips (32 M pixels) per frame, so whole pages queued in the GPU
+  process cannot spill into the first battle frames. Empty prematch states build the same way and upload everything
+  as it arrives. Warm slices then allow 100 ms, 64 total
   groups and eight unseen groups (`LiveView.hiddenWarmPace`). The first battle-size native picture or a state with
   objects immediately restores 12 ms / eight total / one unseen group, one new kind of art per frame (`LiveView.newArtPerFrame`:
   each brings shaders that are built in the frame that first draws it, and a whole opening in one frame froze the
@@ -436,7 +438,9 @@ about 0.6 s uploading 8192 px atlas pages, while objects appeared as their pages
   builds still need drawing in each form. Measured time limits total groups; a separate unseen-group cap prevents
   cheap cached groups from admitting a burst of new builds. Build 13 SOV07TMD (2026-11-14) measured 344-489 ms for
   eight new groups (20-28 shader modules) and 235-350 ms for the unsliced second form. `setWarmPace` updates an active
-  warm-up as well as later forms; `finishWarm` disables slices for all remaining forms. Render pipelines are compiled asynchronously (`HdRenderer.enableAsyncPipelines`; `?hd-pipelines=sync`
+  warm-up as well as later forms; `finishWarm` disables slices for all remaining forms. A warm frame also runs the
+  depth capture for captured meshes without instances (the hidden stand-in layers), so a slice builds their capture
+  graphs instead of leaving them to the full frame (28 shader modules, 0.34-0.51 s there before). Render pipelines are compiled asynchronously (`HdRenderer.enableAsyncPipelines`; `?hd-pipelines=sync`
   keeps three's own behaviour), and the view counts as complete only when no warm frame is due and no pipeline is
   still compiling (`LiveView.settledFrames`). In a shown view a pipeline that is new after all (a unit type's first
   appearance, a blend state not met before) delays that object by the time its compile takes (0.3 s typical), not
