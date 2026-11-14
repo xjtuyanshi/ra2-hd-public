@@ -1345,7 +1345,13 @@ documentation/naming of those generated assets, not shader restrictions. `ra2-as
   different levels compare by coverage alone; on anchor planes the faint fringe of a higher tree's shadow used to block
   a lower tree's dense one (light gaps with straight edges on slopes). The same ground lets a shadow reach up a slope
   as the engine draws it (on the anchor's plane the rising terrain hid it along its cell edges); terrain beyond the
-  search (a cliff more than four levels up) still hides it. The faithful look keeps the single pass.
+  search (a cliff more than four levels up) still hides it, and a ray that meets a cliff face (a vertical wall between
+  cells) keeps the anchor's plane, so shadows follow ramps but do not climb cliff faces. Cost: a flat-ground shortcut
+  (the square where the ray meets the anchor's plane is flat at that level and `surfaceSquares.front`, the highest
+  ground within the search's reach towards the camera, is not above it) answers with two loads, bit-identical to the
+  search; elsewhere the search runs as real shader loops. Live XMP27T8 busy save at 3036x1846: the shadow passes cost
+  about 2.6-3.9 ms per frame against 2.3-3.5 ms without the search (unrolled, they cost 6-8 ms). The faithful look
+  keeps the single pass.
 - Voxels (`voxels.ts`, `vpl.ts`, `voxelShadow.ts`): geometry is built once per model (palette indices, normals, corner
   occlusion) and shared by every house colour; each palette gets a small lookup texture and material. Every section is
   decoded with its own normal table (`ra2-assets` `voxelNormals.ts`). Colour comes from the engine's `voxels.vpl` table
