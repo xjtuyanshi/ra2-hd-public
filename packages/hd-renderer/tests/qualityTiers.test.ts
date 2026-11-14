@@ -36,6 +36,8 @@ function renderer(settings: Record<string, unknown> = {}) {
     warmQueue: null,
     warmMist: null,
     warmSlicer: null,
+    warmSeen: new Set<string>(),
+    warmPace: null,
     warmClock: () => performance.now(),
     mistInPipeline: false,
     mist: { amount: { value: 0 } },
@@ -254,11 +256,11 @@ describe('quality tiers of the frame-time safeguard', () => {
     expect(internal.drawnTier).toBe(1);
     warmThrough();
     expect(hd.warming).toBe(false);
-    // The slices (see the slicing test) draw in the first form, then come the two full frames.
-    const full = drawn.slice(-2);
-    const slices = drawn.slice(0, -2);
-    expect(slices.length).toBeGreaterThan(0);
-    for (const frame of slices) expect(frame.mist).toBe(true);
+    // Every form has slices before its full frame (the last draw of that form).
+    const full = [drawn.filter((frame) => frame.mist).at(-1)!, drawn.at(-1)!];
+    const slices = drawn.filter((frame) => !full.includes(frame));
+    expect(slices.some((frame) => frame.mist)).toBe(true);
+    expect(slices.some((frame) => !frame.mist)).toBe(true);
     expect(full.map((frame) => frame.mist)).toEqual([true, false]);
     expect(full[0]!.pipeline).not.toBe(clear);
     expect(full[0]!.pipeline).toBe(slices[0]!.pipeline);
@@ -364,21 +366,60 @@ describe('quality tiers of the frame-time safeguard', () => {
     expect(drawn[0]!.visible.filter(Boolean).length).toBe(1);
     for (let i = 0; hd.warming && i < 100; i++) internal.renderWarmFrame();
     expect(hd.warming).toBe(false);
-    const slices = drawn.slice(0, -2);
-    const full = drawn.slice(-2);
-    // 31 groups (30 own materials, 1 shared by three) at 12 ms: about four groups a frame, each object in one slice.
-    expect(slices.length).toBeGreaterThanOrEqual(8);
-    expect(slices.length).toBeLessThanOrEqual(12);
-    for (const frame of slices) expect(frame.visible.filter(Boolean).length * 3).toBeLessThanOrEqual(18);
-    for (let m = 0; m < meshes.length; m++) expect(slices.filter((frame) => frame.visible[m]).length).toBe(1);
-    // The three objects of the shared material were drawn in the same slice.
-    const sharedSlice = slices.findIndex((frame) => frame.visible[30]);
-    expect(slices[sharedSlice]!.visible.slice(30)).toEqual([true, true, true]);
+    const full = [drawn.filter((frame) => frame.mist).at(-1)!, drawn.at(-1)!];
+    for (const mist of [true, false]) {
+      const slices = drawn.filter((frame) => frame.mist === mist && !full.includes(frame));
+      // New materials are limited to one per frame in the first form. The second form reuses that history and
+      // follows the measured time budget instead, so its pass-specific node builds are sliced too.
+      if (mist) expect(slices).toHaveLength(31);
+      else {
+        expect(slices.length).toBeGreaterThanOrEqual(8);
+        expect(slices.length).toBeLessThanOrEqual(12);
+      }
+      for (const frame of slices) expect(frame.visible.filter(Boolean).length * 3).toBeLessThanOrEqual(18);
+      for (let m = 0; m < meshes.length; m++) expect(slices.filter((frame) => frame.visible[m]).length).toBe(1);
+      const sharedSlice = slices.find((frame) => frame.visible[30])!;
+      expect(sharedSlice.visible.slice(30)).toEqual([true, true, true]);
+    }
     // The full frames still draw everything, as before, and the scene is left as it was.
     for (const frame of full) expect(frame.visible.every(Boolean)).toBe(true);
     expect(meshes.map((mesh) => mesh.visible)).toEqual(before);
     expect(hiddenGroup.visible).toBe(false);
-    expect(state.terrainDepth.warm).toHaveBeenCalledTimes(slices.length + 2);
+    expect(state.terrainDepth.warm).toHaveBeenCalledTimes(drawn.length);
+  });
+
+  it('updates the active and later forms pace, retaining seen keys across warm-ups', () => {
+    const { hd, internal, drawn, watched, scene, warmThrough } = renderer();
+    for (let i = 0; i < 40; i++) {
+      const mesh = new Mesh();
+      scene.add(mesh);
+      watched.push(mesh);
+    }
+    // A deterministic inexpensive frame: only the explicit group limits bind here.
+    internal.warmClock = () => 0;
+    hd.warm({ budgetMs: 100, maxGroups: 64, maxNew: 8 });
+    internal.renderWarmFrame();
+    internal.renderWarmFrame();
+    internal.renderWarmFrame();
+    expect(drawn.map((frame) => frame.visible.filter(Boolean).length)).toEqual([1, 2, 4]);
+    hd.setWarmPace({ budgetMs: 12, maxGroups: 2, maxNew: 1 });
+    internal.renderWarmFrame();
+    expect(drawn.at(-1)!.visible.filter(Boolean)).toHaveLength(1);
+    warmThrough();
+    const clear = drawn.filter((frame) => !frame.mist);
+    expect(clear.length).toBeGreaterThan(2);
+    for (const frame of clear.slice(0, -1)) expect(frame.visible.filter(Boolean).length).toBeLessThanOrEqual(2);
+    drawn.length = 0;
+    hd.warm();
+    internal.renderWarmFrame();
+    internal.renderWarmFrame();
+    // First warm-up handed out every key: the default new-group cap no longer limits their slices.
+    expect(drawn.map((frame) => frame.visible.filter(Boolean).length)).toEqual([1, 2]);
+    hd.finishWarm();
+    // Changing pace must not re-enable slicing after finishWarm.
+    hd.setWarmPace({ maxGroups: 1 });
+    warmThrough();
+    expect(drawn.slice(2).map((frame) => frame.visible.filter(Boolean).length)).toEqual([40, 40]);
   });
 
   it('draws the rest of a warm-up in full frames once the host asks it to finish', () => {

@@ -43,6 +43,8 @@ function presentation(interpolating: boolean) {
     seconds: () => 1,
     frame: vi.fn(),
     warm: vi.fn(),
+    setWarmPace: vi.fn(),
+    finishWarm: vi.fn(),
     warming: false,
     quality: 0,
     pendingPipelines: 0,
@@ -81,6 +83,7 @@ function presentation(interpolating: boolean) {
     applyPainterOrder: vi.fn(),
     // The hidden layers of the stand-in shader graphs (liveStandInWarm.test.ts): made before each warm-up.
     warmStandIns,
+    hiddenWarmPace: { budgetMs: 12, maxGroups: 8, maxNew: 1 },
   }) as unknown as LiveView;
   return {
     view,
@@ -441,7 +444,71 @@ describe('live preparation pace', () => {
   });
 });
 
+describe('GPU backlog out of sight', () => {
+  it('skips hidden frames while the GPU queue is behind, never a shown frame, and resumes once it catches up', async () => {
+    const p = presentation(false);
+    let release!: () => void;
+    const onSubmittedWorkDone = vi.fn(() => new Promise<void>((resolve) => (release = resolve)));
+    const fields = p.view as unknown as {
+      outOfSight: boolean;
+      hiddenGpuBacklogMs: number;
+      gpuWaits: number;
+      gpuFenceAt: number | null;
+      pageUploads: { step: ReturnType<typeof vi.fn> };
+    };
+    Object.assign(p.hd, { renderer: { backend: { device: { queue: { onSubmittedWorkDone } } } } });
+    Object.assign(fields, { outOfSight: true, hiddenGpuBacklogMs: 50, gpuWaits: 0, gpuFenceAt: null });
+    p.view.render(100);
+    expect(p.hd.frame).toHaveBeenCalledTimes(1);
+    expect(onSubmittedWorkDone).toHaveBeenCalledTimes(1);
+    // 40 ms behind: within the limit, drawn; the fence already waiting is not doubled.
+    p.view.render(140);
+    expect(p.hd.frame).toHaveBeenCalledTimes(2);
+    expect(onSubmittedWorkDone).toHaveBeenCalledTimes(1);
+    expect(p.view.gpuBacklogMs(140)).toBe(40);
+    // 60 ms behind: nothing is uploaded or drawn.
+    p.view.render(160);
+    expect(p.hd.frame).toHaveBeenCalledTimes(2);
+    expect(fields.pageUploads.step).toHaveBeenCalledTimes(2);
+    expect(fields.gpuWaits).toBe(1);
+    // A shown view draws whatever the backlog.
+    fields.outOfSight = false;
+    p.view.render(170);
+    expect(p.hd.frame).toHaveBeenCalledTimes(3);
+    fields.outOfSight = true;
+    release();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(p.view.gpuBacklogMs(400)).toBe(0);
+    p.view.render(400);
+    expect(p.hd.frame).toHaveBeenCalledTimes(4);
+    expect(onSubmittedWorkDone).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe('warm-up out of sight', () => {
+  it('passes the host pace to warm and updates an active warm-up before its next frame', () => {
+    const p = presentation(false);
+    p.view.outOfSight = true;
+    p.view.hiddenWarmPace = { budgetMs: 100, maxGroups: 64, maxNew: 8 };
+    p.view.render(20);
+    expect(p.hd.warm).toHaveBeenCalledWith({ budgetMs: 100, maxGroups: 64, maxNew: 8 });
+    p.hd.warming = true;
+    p.view.hiddenWarmPace = { budgetMs: 12, maxGroups: 8, maxNew: 1 };
+    p.view.render(30);
+    expect(p.hd.setWarmPace).toHaveBeenCalledExactlyOnceWith({ budgetMs: 12, maxGroups: 8, maxNew: 1 });
+    expect(p.hd.setWarmPace.mock.invocationCallOrder[0]).toBeLessThan(p.hd.frame.mock.invocationCallOrder.at(-1)!);
+    p.view.render(40);
+    expect(p.hd.setWarmPace).toHaveBeenCalledTimes(1);
+    // Changes to the existing value are detected too, not only replacement objects.
+    p.view.hiddenWarmPace.maxNew = 2;
+    p.view.render(50);
+    expect(p.hd.setWarmPace).toHaveBeenCalledTimes(2);
+    p.view.outOfSight = false;
+    p.view.render(60);
+    expect(p.hd.finishWarm).toHaveBeenCalledOnce();
+  });
+
   it('prepares shared scene pipelines with an empty warm scene but still warms the real opening later', () => {
     const p = presentation(false);
     const fields = p.view as unknown as {

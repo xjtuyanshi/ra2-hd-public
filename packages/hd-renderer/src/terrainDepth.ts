@@ -357,10 +357,16 @@ export class TerrainDepth {
       renderer.clear(true, true, false);
       this.captureActive = true;
       for (const [mesh] of this.meshes) {
-        // Nothing to draw: an instanced mesh without instances (the count is the mesh's or its geometry's).
+        // Nothing to draw: an instanced mesh without instances (the count is the mesh's or its geometry's). A warm frame
+        // still captures for it: three builds a mesh's capture-pass graph when the pass meets it, instances or not, and
+        // a warm slice that shows only empty captured meshes (the hidden stand-in layers) would otherwise leave their
+        // builds to the full warm frame (Build 13 campaign start SOV07TMD, 2026-11-14: 28 shader modules, 0.34-0.51 s
+        // in that one frame while the original picture was on screen).
         const instanced = mesh.geometry as { isInstancedBufferGeometry?: boolean; instanceCount?: number };
-        if (instanced.isInstancedBufferGeometry ? instanced.instanceCount === 0 : 'count' in mesh && mesh.count === 0)
-          continue;
+        const empty = instanced.isInstancedBufferGeometry
+          ? instanced.instanceCount === 0
+          : 'count' in mesh && mesh.count === 0;
+        if (empty && !warm) continue;
         let object: import('three/webgpu').Object3D | null = mesh;
         while (object?.visible) object = object.parent;
         if (object !== null) continue;

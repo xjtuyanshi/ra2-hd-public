@@ -234,6 +234,13 @@ describe('single capture/reduction ownership and mirror gate', () => {
       depth.render(renderer, scene, new OrthographicCamera());
       expect(render).toHaveBeenCalledTimes(2);
       expect(clear).toHaveBeenCalledTimes(2);
+      // A warm frame captures for an empty mesh too (its capture-pass graph is built then, not in a later frame).
+      depth.warm();
+      depth.render(renderer, scene, new OrthographicCamera());
+      expect(render).toHaveBeenCalledTimes(4);
+      expect(clear).toHaveBeenCalledTimes(3);
+      depth.render(renderer, scene, new OrthographicCamera());
+      expect(render).toHaveBeenCalledTimes(5);
       vi.mocked(renderer.getDrawingBufferSize).mockImplementation((out) => out.set(640, 360));
       depth.resize(renderer);
       expect(depth.target.width).toBe(640);

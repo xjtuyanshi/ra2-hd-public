@@ -856,6 +856,24 @@ export class LiveView {
    * page in the frame after it was decoded, for a host that knows nothing moves on screen (see newArtPerFrame).
    */
   hiddenUploadPixels = UPLOAD_PIXELS_PER_FRAME;
+  /**
+   * Warm slice limits while hidden: measured milliseconds, total groups and previously unseen groups per frame.
+   * The host may raise these behind a loading screen and lower them during a warm-up once play starts.
+   */
+  hiddenWarmPace = { budgetMs: 12, maxGroups: 8, maxNew: 1 };
+  private appliedWarmPace: typeof this.hiddenWarmPace | null = null;
+  /**
+   * Out of sight, render() skips its frame (no uploads, warm slices or draws) while the GPU has not finished the work
+   * submitted more than this many milliseconds ago (`gpuBacklogMs`; Infinity, the default: never skips). The page's
+   * other picture (the game's own, drawn by another context of the same GPU process) is presented behind that
+   * work: at campaign starts the hidden view's uploads and frames queued 0.5-2.5 s of it, and the shown picture
+   * froze for as long with the page's thread idle (Build 13, ALL01UMD, 2026-11-14). A shown view never skips.
+   */
+  hiddenGpuBacklogMs = Infinity;
+  /** Frames skipped by hiddenGpuBacklogMs (diagnostics). */
+  gpuWaits = 0;
+  /** When the outstanding queue fence was set (see fenceGpu); null while none is outstanding. */
+  private gpuFenceAt: number | null = null;
   /** Requests more of the library's voxel model files; null once every one has been requested (see render). */
   private fetchAhead: (() => boolean) | null = null;
   /** New kinds added in the frame being drawn, and kinds that had to wait for a later frame. */
@@ -1802,7 +1820,35 @@ export class LiveView {
     this.sourceLightsActive = true;
   }
 
+  /**
+   * How long the GPU has been behind: the age of the outstanding queue fence, 0 when it has caught up (or the
+   * backend has no queue to ask). One fence at a time, set after a frame's submissions, so this grows by the time
+   * the GPU takes beyond the frames and returns to 0 when it is through them.
+   */
+  gpuBacklogMs(now = performance.now()): number {
+    return this.gpuFenceAt == null ? 0 : Math.max(0, now - this.gpuFenceAt);
+  }
+
+  private fenceGpu(now: number): void {
+    if (this.gpuFenceAt != null) return;
+    // Optional: test stand-ins of the renderer have no backend.
+    const backend = this.hd.renderer?.backend as
+      | { device?: { queue?: { onSubmittedWorkDone?(): Promise<void> } } }
+      | undefined;
+    const queue = backend?.device?.queue;
+    if (typeof queue?.onSubmittedWorkDone !== 'function') return;
+    this.gpuFenceAt = now;
+    const done = () => {
+      this.gpuFenceAt = null;
+    };
+    queue.onSubmittedWorkDone().then(done, done);
+  }
+
   render(now = performance.now()): void {
+    if (this.outOfSight && this.gpuBacklogMs(now) > this.hiddenGpuBacklogMs) {
+      this.gpuWaits++;
+      return;
+    }
     const dt = Math.min(0.1, Math.max(0, (now - this.lastRender) / 1000));
     // The upload budget is a rate: a frame that comes late (a display at 30 Hz, a busy GPU) gets the share of the
     // frame that did not come, but no more than two frames' worth. Per frame alone, a view at 8 frames a second
@@ -1913,12 +1959,23 @@ export class LiveView {
         this.warmStage = stage;
         this.effectSprites?.warm();
         this.warmStandIns();
-        this.hd.warm();
+        this.hd.warm(this.hiddenWarmPace);
+        this.appliedWarmPace = { ...this.hiddenWarmPace };
       }
+    }
+    if (
+      this.hd.warming &&
+      (this.appliedWarmPace?.budgetMs !== this.hiddenWarmPace.budgetMs ||
+        this.appliedWarmPace?.maxGroups !== this.hiddenWarmPace.maxGroups ||
+        this.appliedWarmPace?.maxNew !== this.hiddenWarmPace.maxNew)
+    ) {
+      this.hd.setWarmPace(this.hiddenWarmPace);
+      this.appliedWarmPace = { ...this.hiddenWarmPace };
     }
     // A view shown while it still warms draws the rest in full warm frames: a slice frame has only some objects in it.
     if (!this.hiddenFromSight && this.hd.warming) this.hd.finishWarm();
     this.hd.frame(dt);
+    this.fenceGpu(now);
     // Loads settle between frames, never inside one: what is still on its way now was missing from this frame. A
     // warm frame (HdRenderer.warm) is not a frame of the match either: it draws what is hidden and builds shaders.
     // Nor is one whose objects still wait for their pipelines (compiled off the frame: see asyncPipelines.ts).

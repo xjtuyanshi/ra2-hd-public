@@ -14,6 +14,10 @@
  * exactly those groups (and what leads to them) visible for one frame and gives back the visibility it changed.
  * The groups are taken again every frame: a view out of sight keeps adding objects while their art arrives (a few
  * new kinds a frame), and a plan made once left those to the full frame (sandbox: 0.9 s in it after 50 slices).
+ * Cheap cached groups do not predict new graph costs: Build 13 campaign start SOV07TMD (2026-11-14) grew to eight
+ * new groups after cheap slices, taking 344-489 ms and building 20-28 shader modules. Cap previously unseen groups
+ * separately from the measured size. Share that history across forms and warm-ups; each form still needs slices
+ * for its pass-specific node builds (the unsliced second form took 235-350 ms).
  * Nothing here knows about any game: the host decides which roots, which budget and when a frame is out of sight.
  */
 import type { Object3D } from 'three';
@@ -68,15 +72,22 @@ export function warmGroups(roots: readonly Object3D[]): WarmGroup[] {
   return [...groups].map(([key, objects]) => ({ key, objects }));
 }
 
-export interface WarmSlicerOptions {
+export interface WarmSliceLimits {
   /** Time a slice frame should take, in milliseconds. */
   budgetMs?: number;
+  /** Groups in one slice at most. */
+  maxGroups?: number;
+  /** Previously unseen groups in one slice at most; defaults to one. */
+  maxNew?: number;
+}
+
+export interface WarmSlicerOptions extends WarmSliceLimits {
+  /** Group keys handed out by earlier slices, shared across forms and warm-ups by the owner. */
+  seen?: Set<string>;
   /** Groups in the first slice, before anything was measured. */
   first?: number;
   /** A slice holds at most this many times the groups of the one before it. */
   maxGrowth?: number;
-  /** Groups in one slice at most. */
-  maxGroups?: number;
   /** Slices at most; the rest is left to the full frames. */
   maxSlices?: number;
 }
@@ -85,8 +96,9 @@ export interface WarmSlicerOptions {
  * Hands out the groups of a warm-up a slice at a time. A slice's size follows the cost per group measured in the
  * frames before it (`report`; the estimate falls by half a frame at most, since a run of groups whose graphs exist
  * says nothing about the next group: sandbox, 16 groups after four cheap ones took 393 ms), so cheap groups go through
- * in a few frames and expensive ones a few at a time. A single group is never split: one material's graph is built in one go. A group is handed out
- * once by its key; objects that join it later build nothing new.
+ * in a few frames. Independently, at most maxNew previously unseen keys are admitted per slice. A single group is
+ * never split: one material's graph is built in one go. A group is handed out once per slicer by its key; objects
+ * that join it later build nothing new.
  */
 export class WarmSlicer {
   private readonly done = new Set<string>();
@@ -94,9 +106,11 @@ export class WarmSlicer {
   private last = 0;
   private perGroup = 0;
   private slices = 0;
-  private readonly budget: number;
+  private budget: number;
   private readonly growth: number;
-  private readonly maxGroups: number;
+  private maxGroups: number;
+  private maxNew: number;
+  private readonly seen: Set<string>;
   private readonly maxSlices: number;
 
   constructor(options: WarmSlicerOptions = {}) {
@@ -104,8 +118,21 @@ export class WarmSlicer {
     this.size = Math.max(1, Math.floor(options.first ?? 4));
     this.growth = Math.max(1, options.maxGrowth ?? 2);
     this.maxGroups = Math.max(1, Math.floor(options.maxGroups ?? 8));
+    this.maxNew = Math.max(1, Math.floor(options.maxNew ?? 1));
+    this.seen = options.seen ?? new Set();
     this.size = Math.min(this.size, this.maxGroups);
     this.maxSlices = Math.max(1, options.maxSlices ?? 600);
+  }
+
+  /** Update an in-progress plan when the host's available frame time changes. */
+  setLimits(options: WarmSliceLimits): void {
+    if (options.budgetMs !== undefined) this.budget = options.budgetMs;
+    if (options.maxGroups !== undefined) this.maxGroups = Math.max(1, Math.floor(options.maxGroups));
+    if (options.maxNew !== undefined) this.maxNew = Math.max(1, Math.floor(options.maxNew));
+    this.size = Math.max(
+      1,
+      Math.min(this.size, this.maxGroups, this.perGroup > 0 ? Math.floor(this.budget / this.perGroup) : Infinity),
+    );
   }
 
   /**
@@ -115,10 +142,15 @@ export class WarmSlicer {
   next(groups: readonly WarmGroup[]): readonly WarmGroup[] | null {
     if (this.slices >= this.maxSlices) return null;
     const slice: WarmGroup[] = [];
+    let added = 0;
     for (const group of groups) {
       if (slice.length >= this.size) break;
       if (this.done.has(group.key)) continue;
+      const unseen = !this.seen.has(group.key);
+      if (unseen && added >= this.maxNew) continue;
+      if (unseen) added++;
       this.done.add(group.key);
+      this.seen.add(group.key);
       slice.push(group);
     }
     if (!slice.length) return null;

@@ -38,7 +38,13 @@ describe('warm-up slices', () => {
 
   it('sizes each slice from the cost measured before it, never below one group, and slowly after a cheap run', () => {
     const groups = groupsOf(60);
-    const slicer = new WarmSlicer({ budgetMs: 12, first: 4, maxGrowth: 2, maxGroups: 8 });
+    const slicer = new WarmSlicer({
+      budgetMs: 12,
+      first: 4,
+      maxGrowth: 2,
+      maxGroups: 8,
+      seen: new Set(groups.map((group) => group.key)),
+    });
     expect(slicer.next(groups)!.length).toBe(4);
     // 40 ms for four groups: one group fits.
     slicer.report(40);
@@ -66,7 +72,7 @@ describe('warm-up slices', () => {
   });
 
   it('takes the scene as it is each frame, hands out each group once and ends when nothing is new', () => {
-    const slicer = new WarmSlicer({ first: 2, maxGroups: 2 });
+    const slicer = new WarmSlicer({ first: 2, maxGroups: 2, maxNew: 2 });
     const [a, b, c] = groupsOf(3);
     expect(slicer.next([a!, b!])).toEqual([a, b]);
     slicer.report(1);
@@ -78,6 +84,55 @@ describe('warm-up slices', () => {
     expect(limited.next(groupsOf(5).slice(1))).toHaveLength(1);
     // A scene that keeps gaining kinds is left to the full frames after the slice limit.
     expect(limited.next(groupsOf(5).slice(2))).toBeNull();
+  });
+
+  it('caps new groups independently and shares first-build history across slicers', () => {
+    const groups = groupsOf(8);
+    const seen = new Set<string>(['1', '3']);
+    const first = new WarmSlicer({ first: 8, maxGroups: 8, maxNew: 2, seen });
+    expect(first.next(groups)?.map((group) => group.key)).toEqual(['0', '1', '2', '3']);
+    expect([...seen].sort()).toEqual(['0', '1', '2', '3']);
+    const second = new WarmSlicer({ first: 8, maxGroups: 8, seen });
+    // Earlier forms' groups still need drawing, but only one previously unseen group may join them.
+    expect(second.next(groups)?.map((group) => group.key)).toEqual(['0', '1', '2', '3', '4']);
+    expect(second.next(groups)?.map((group) => group.key)).toEqual(['5']);
+    expect(first.next(groups)?.map((group) => group.key)).toEqual(['4', '5', '6', '7']);
+    expect(first.next(groups)).toBeNull();
+  });
+
+  it('re-clamps an in-progress slice when the host lowers its budget, total or new-group limits', () => {
+    const groups = groupsOf(50);
+    const slicer = new WarmSlicer({ budgetMs: 100, first: 8, maxGroups: 64, maxNew: 8 });
+    expect(slicer.next(groups)).toHaveLength(8);
+    slicer.report(32);
+    slicer.setLimits({ budgetMs: 12 });
+    expect(slicer.next(groups)).toHaveLength(3);
+    slicer.setLimits({ maxGroups: 2 });
+    expect(slicer.next(groups)).toHaveLength(2);
+    slicer.setLimits({ maxNew: 1 });
+    expect(slicer.next(groups)).toHaveLength(1);
+    slicer.setLimits({ budgetMs: 100, maxGroups: 64, maxNew: 8 });
+    slicer.report(1);
+    expect(slicer.next(groups)).toHaveLength(2);
+  });
+
+  it('never admits eight new groups after cheap cached slices shrink the estimate', () => {
+    const groups = groupsOf(40);
+    const seen = new Set(groups.slice(0, 24).map((group) => group.key));
+    const slicer = new WarmSlicer({ budgetMs: 12, first: 1, seen });
+    let cached = 0;
+    while (cached < 24) {
+      const before = new Set(seen);
+      const slice = slicer.next(groups)!;
+      expect(slice.filter((group) => !before.has(group.key)).length).toBeLessThanOrEqual(1);
+      cached += slice.filter((group) => Number(group.key) < 24).length;
+      slicer.report(0.5);
+    }
+    // The estimate now permits maxGroups, but the next eight kinds have unpredictable first builds.
+    for (let i = 0; i < 8; i++) {
+      expect(slicer.next(groups)).toHaveLength(1);
+      slicer.report(0.5);
+    }
   });
 
   it('shows exactly one slice and the way to it for a frame, then puts every visibility back', () => {

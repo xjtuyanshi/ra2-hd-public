@@ -95,6 +95,8 @@ function fakeView() {
     outOfSight: false,
     newArtPerFrame: 1,
     hiddenUploadPixels: 0,
+    hiddenGpuBacklogMs: Infinity,
+    hiddenWarmPace: { budgetMs: 12, maxGroups: 8, maxNew: 1 },
     theater: 'urban',
     warm: vi.fn(),
     warmTypes: vi.fn((): unknown[] => []),
@@ -2025,6 +2027,71 @@ describe('HD bridge match start', () => {
     harness.stop();
   });
 
+  it('uses loading pace for a fresh campaign hint, then follows the battle surface without a state', async () => {
+    const harness = setup('?hd=1', 'WebGL2', 'native');
+    const view = fakeView();
+    view.settledFrames = 0;
+    liveView.create.mockResolvedValue(view);
+    harness.vm.getRenderPreparation.mockResolvedValue({
+      map: { fileName: 'SOV07TMD.MAP' },
+      theater: null,
+      houses: null,
+      localHouse: null,
+    });
+    harness.nativeFrame(false);
+    await advance(17);
+    await vi.waitFor(() => expect(harness.bridge()?.live).toBe(view));
+    await advance(17, 2);
+    // A stateless loading screen: unpaced builds and two upload strips per frame, as behind an empty prematch state.
+    expect([view.newArtPerFrame, view.hiddenUploadPixels, view.hiddenGpuBacklogMs]).toEqual([Infinity, 2 * (8 << 20), 50]);
+    expect(view.hiddenWarmPace).toEqual({ budgetMs: 100, maxGroups: 64, maxNew: 8 });
+    expect(harness.bridge()!.timeline.firstStateAt).toBeNull();
+    // No state has arrived, but the larger native picture is already playable.
+    harness.setFrameSize(1728, 1080);
+    harness.nativeFrame(false);
+    await advance(17);
+    expect([view.newArtPerFrame, view.hiddenUploadPixels]).toEqual([1, 8 << 20]);
+    expect(view.hiddenWarmPace).toEqual({ budgetMs: 12, maxGroups: 8, maxNew: 1 });
+    expect(view.outOfSight).toBe(true);
+    expect(harness.hdCanvas.style.display).toBe('none');
+    expect(harness.vm.setTacticalPassthrough).not.toHaveBeenCalled();
+    harness.stop();
+  });
+
+  it('keeps a used view at in-match pace in menus and on a same-map restart', async () => {
+    const harness = setup('?hd=1', 'WebGL2', 'native');
+    const view = fakeView();
+    view.settledFrames = 0;
+    liveView.create.mockResolvedValue(view);
+    harness.setFrameSize(1728, 1080);
+    harness.nativeFrame(false);
+    harness.setState(battle(1));
+    await advance(17);
+    await vi.waitFor(() => expect(harness.bridge()?.live).toBe(view));
+    await advance(17, 2);
+    harness.setState(null);
+    harness.vm.getRenderPreparation.mockResolvedValue({
+      map: { fileName: 'XMP29U2.MAP' },
+      theater: null,
+      houses: null,
+      localHouse: null,
+    });
+    harness.setFrameSize(800, 600);
+    harness.nativeFrame(false);
+    await advance(600, 2);
+    expect(harness.bridge()?.live).toBe(view);
+    expect(view.render).toHaveBeenCalled();
+    expect([view.newArtPerFrame, view.hiddenUploadPixels]).toEqual([1, 8 << 20]);
+    expect(view.hiddenWarmPace).toEqual({ budgetMs: 12, maxGroups: 8, maxNew: 1 });
+    // Restart on the same installed view: even an empty state must not restore the fast loading pace.
+    harness.setState(loadingScreen());
+    await advance(17, 2);
+    expect(liveView.create).toHaveBeenCalledTimes(1);
+    expect([view.newArtPerFrame, view.hiddenUploadPixels]).toEqual([1, 8 << 20]);
+    expect(view.hiddenWarmPace).toEqual({ budgetMs: 12, maxGroups: 8, maxNew: 1 });
+    harness.stop();
+  });
+
   const WARM_MAP = 'ra2-hd-warm:1:map:xmp29u2';
   const WARM_THEATER = 'ra2-hd-warm:1:theater:urban';
 
@@ -2105,8 +2172,9 @@ describe('HD bridge match start', () => {
     const view = await loadBehindLoadingScreen(harness);
     // Complete (there is nothing to draw yet), but the match has not started.
     expect(view.outOfSight).toBe(true);
-    // Nothing moves behind the loading screen: no pacing of builds and uploads.
-    expect([view.newArtPerFrame, view.hiddenUploadPixels]).toEqual([Infinity, Infinity]);
+    // Nothing moves behind the loading screen: no pacing of builds; uploads two strips per frame, GPU-paced.
+    expect([view.newArtPerFrame, view.hiddenUploadPixels, view.hiddenGpuBacklogMs]).toEqual([Infinity, 2 * (8 << 20), 50]);
+    expect(view.hiddenWarmPace).toEqual({ budgetMs: 100, maxGroups: 64, maxNew: 8 });
     expect(harness.hdCanvas.style.display).toBe('none');
     expect(harness.vm.setTacticalPassthrough).not.toHaveBeenCalled();
     expect(view.warm).toHaveBeenCalledWith([]);
@@ -2122,6 +2190,7 @@ describe('HD bridge match start', () => {
     expect(harness.hdCanvas.style.display).toBe('none');
     // From here on the game's own picture may be on screen at any moment: one kind and 8 M pixels per frame.
     expect([view.newArtPerFrame, view.hiddenUploadPixels]).toEqual([1, 8 << 20]);
+    expect(view.hiddenWarmPace).toEqual({ budgetMs: 12, maxGroups: 8, maxNew: 1 });
     expect(harness.bridge()!.timeline.matchAt).toBeNull();
     harness.setState(battle(1));
     await advance(16, 3);
