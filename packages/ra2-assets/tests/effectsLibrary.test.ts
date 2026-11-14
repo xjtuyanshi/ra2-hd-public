@@ -10,6 +10,7 @@ import {
   effectRulesTable,
   ENGINE_ANIM_ART,
   HD_AS_PAINTED,
+  HD_SCENE_LIT,
   renderEffectTable,
   shpStats,
 } from '../src/node/effectsLibrary.ts';
@@ -334,10 +335,32 @@ describe('classifyAnim', () => {
     expect({ ...nuke, asPainted: undefined }).toEqual({ ...other, asPainted: undefined });
     const source = renderEffectTable({ CDGAS: gas, NUKEBALL: other });
     expect(source).toContain(
-      `  CDGAS: { c: '${gas.c}', fx: '${gas.fx}', s: ${gas.s}, life: ${gas.life}, asPainted: 1 },`,
+      `  CDGAS: { c: '${gas.c}', fx: '${gas.fx}', s: ${gas.s}, life: ${gas.life}, asPainted: 1, sceneLit: 1 },`,
     );
     expect(source).toContain('  asPainted?: 1;');
     expect(source.split('\n').find((line) => line.startsWith('  NUKEBALL:'))).not.toContain('asPainted');
+  });
+
+  it('marks the Chaos Drone gas, a cloud whose red passes the fire test, as lit by the scene only', () => {
+    expect([...HD_SCENE_LIT]).toEqual(['CDGAS']);
+    const gas = classifyAnim({ id: 'cdgas', refs: [], combat: false, art: base, stats: stats(0.5, 0, 0, 60), flags });
+    expect(gas.sceneLit).toBe(1);
+    // The nuclear mushroom is shown as painted but stays self-lit.
+    const nuke = classifyAnim({
+      id: 'NUKEANIM',
+      refs: [{ ctx: 'warhead.AnimList', from: 'NUKE' }],
+      combat: true,
+      art: base,
+      stats: stats(0.6, 0.15, 120, 150),
+      flags,
+    });
+    expect(nuke).not.toHaveProperty('sceneLit');
+    const plain = classifyAnim({ id: 'X', refs: [], combat: false, art: base, stats: stats(0.5, 0, 0, 60), flags });
+    expect({ ...gas, asPainted: undefined, sceneLit: undefined }).toEqual({ ...plain });
+    const source = renderEffectTable({ CDGAS: gas, NUKEANIM: nuke });
+    expect(source).toContain('  sceneLit?: 1;');
+    expect(source.split('\n').find((line) => line.startsWith('  CDGAS:'))).toContain('sceneLit: 1');
+    expect(source.split('\n').find((line) => line.startsWith('  NUKEANIM:'))).not.toContain('sceneLit');
   });
 
   it('gives trail puffs one smoke puff and keeps super-weapon rows the only shaking ones', () => {

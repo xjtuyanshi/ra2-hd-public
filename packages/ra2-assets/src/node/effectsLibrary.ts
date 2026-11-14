@@ -104,6 +104,8 @@ export interface EffectTableRow {
   shake?: 1;
   /** Redrawn (HD) frames of this anim are shown as painted, see HD_AS_PAINTED. */
   asPainted?: 1;
+  /** Redrawn (HD) frames of this anim take the scene's light and never glow, see HD_SCENE_LIT. */
+  sceneLit?: 1;
 }
 
 /**
@@ -120,6 +122,19 @@ export interface EffectTableRow {
  * A fact about these two pieces of art, not a rule derived from the rules files, hence a list.
  */
 export const HD_AS_PAINTED: ReadonlySet<string> = new Set(['NUKEANIM', 'CDGAS']);
+
+/**
+ * Anims whose redrawn (HD) frames are lit like the rest of the scene and never self-lit. The HD flipbook path treats
+ * bright red-over-blue texels as flame and draws them at their painted colour regardless of the scene's light (fire
+ * gives light). The engine draws these anims through the scene's light like any other anim art (no UseNormalLight):
+ *
+ *   - CDGAS, the Chaos Drone's gas, is a cloud, not a flame. Self-lit it came out as a light salmon-pink ring that
+ *     stood out over the base (live ALL01UMD, 2026-11-14, mean gas colour (211, 99, 83) in HD against the original's
+ *     (163, 70, 54) over the same pavement). Scene-lit it keeps the original's deep red against the ground.
+ *
+ * A fact about this piece of art, not a rule derived from the rules files, hence a list.
+ */
+export const HD_SCENE_LIT: ReadonlySet<string> = new Set(['CDGAS']);
 
 /**
  * Rules facts the live renderer needs besides the garnish rows (generated into the same table; ids and numbers only).
@@ -275,7 +290,12 @@ const PSYCHIC_LIGHT: [number, number, number] = [0.75, 0.35, 1];
  */
 export function classifyAnim(f: AnimFacts): EffectTableRow {
   const row = classifyAnimKind(f);
-  return HD_AS_PAINTED.has(f.id.toUpperCase()) ? { ...row, asPainted: 1 } : row;
+  const id = f.id.toUpperCase();
+  return {
+    ...row,
+    ...(HD_AS_PAINTED.has(id) ? { asPainted: 1 as const } : {}),
+    ...(HD_SCENE_LIT.has(id) ? { sceneLit: 1 as const } : {}),
+  };
 }
 
 function classifyAnimKind(f: AnimFacts): EffectTableRow {
@@ -528,6 +548,7 @@ export function renderEffectTable(rows: Record<string, EffectTableRow>, rules?: 
     if (r.light) parts.push(`light: [${r.light.join(', ')}]`);
     if (r.shake) parts.push('shake: 1');
     if (r.asPainted) parts.push('asPainted: 1');
+    if (r.sceneLit) parts.push('sceneLit: 1');
     const key = /^[A-Za-z_$][\w$]*$/.test(id) ? id : `'${id}'`;
     const line = `  ${key}: { ${parts.join(', ')} },`;
     // The repository's Prettier style (print width 120): long rows break one property per line.
@@ -580,6 +601,8 @@ export function renderEffectTable(rows: Record<string, EffectTableRow>, rules?: 
     '  shake?: 1;',
     '  /** HD frames keep the original size and the art colours: no enlargement, no flame grade (HD_AS_PAINTED). */',
     '  asPainted?: 1;',
+    '  /** HD frames take the scene light and never glow: a cloud, not a flame (HD_SCENE_LIT). */',
+    '  sceneLit?: 1;',
     '}',
     '',
     'export const EFFECT_TABLE: Record<string, EffectTableRow> = {',

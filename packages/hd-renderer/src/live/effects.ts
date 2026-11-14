@@ -722,6 +722,7 @@ export class LiveEffectsDriver {
               scale: hd.scale,
               size,
               ...(tracked.row.asPainted ? { asPainted: true } : {}),
+              ...(tracked.row.sceneLit ? { sceneLit: true } : {}),
               blend0,
               t0: this.pushedAt,
               stageSeconds: rate / this.logicFps,

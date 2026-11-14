@@ -110,6 +110,11 @@ export interface EffectInstance {
      * still self-lit at its painted colour and smoke still takes the scene's light.
      */
     asPainted?: boolean;
+    /**
+     * Light the frames by the scene like the engine's own anim art and never self-light them (effect table
+     * `sceneLit`): a cloud whose colour passes the fire test (the Chaos Drone's red gas) gives no light.
+     */
+    sceneLit?: boolean;
     blend0: number;
     t0: number;
     stageSeconds: number;
@@ -125,6 +130,21 @@ export interface EffectInstance {
 export function packHdSize(size: number, asPainted: boolean): number {
   const magnitude = size > 0 ? size : 1;
   return asPainted ? -magnitude : magnitude;
+}
+
+/**
+ * The fourth component of an HD card's style attribute: the page's scale (redrawn pixels per native pixel), negative
+ * for a card lit by the scene only (EffectInstance.hd.sceneLit). Same reason as packHdSize: no room for another
+ * attribute, and a scale is never 0 or negative.
+ */
+export function packHdScale(scale: number, sceneLit: boolean): number {
+  const magnitude = scale > 0 ? scale : 1;
+  return sceneLit ? -magnitude : magnitude;
+}
+
+/** CPU twin of the shader's read of packHdScale. */
+export function unpackHdScale(packed: number): { scale: number; sceneLit: boolean } {
+  return { scale: Math.abs(packed), sceneLit: packed < 0 };
 }
 
 /** CPU twin of the shader's read of packHdSize. */
@@ -905,7 +925,9 @@ class HdPageMesh {
     const aStyle: ShaderNode = attribute('fxStyle', 'vec4');
     const { draw, radius, engineZ } = unpackEffectDrawRadiusNode(aStyle.x);
     const aTiming: ShaderNode = attribute('fxTiming', 'vec4');
-    const scale: ShaderNode = aStyle.w;
+    // packHdScale: the magnitude is the page scale, a negative sign marks a card lit by the scene only.
+    const scale: ShaderNode = abs(aStyle.w);
+    const sceneLit: ShaderNode = step(aStyle.w, float(0));
     // Union of the current and next frame rects in native pixels (top-left, size).
     const lo: ShaderNode = min(aOffsets.xy, aOffsets.zw);
     const hi: ShaderNode = max(aOffsets.xy.add(aRect.zw.div(scale)), aOffsets.zw.add(aNextRect.zw.div(scale)));
@@ -994,7 +1016,9 @@ class HdPageMesh {
       // White-hot cores (every display channel near 1) carry no red-over-blue excess, so the fire test above misses
       // them; scene-lit they turned grey by day and moonlit blue at night. Lit smoke tops stay below this threshold.
       const whiteHot = smoothstep(0.86, 0.96, min(s0.r, min(s0.g, s0.b)));
-      const e = max(max(fire, glow), whiteHot);
+      // A card lit by the scene only (the Chaos Drone's gas) is never emissive: the engine lights that art like any
+      // other, and self-lit at its painted colour it read as a pale pink glow over the darker, scene-lit ground.
+      const e = max(max(fire, glow), whiteHot).mul(float(1).sub(sceneLit));
       // Flame grade: the redrawn fireballs (like the original's) spend their first frames as a pale yellow-white blob.
       // Re-map flame pixels through a temperature ramp with a gamma on their heat, so only the hottest texels stay
       // white-yellow and the rest spread over yellow, orange and red while keeping the drawn texture. Pixels with
@@ -1048,7 +1072,7 @@ class HdPageMesh {
         packEffectDrawRadius(s.draw === 'flat' ? 1 : 0, effectSphereRadius(s), s.engineZ),
         s.push,
         cardPainterBias(s) + (s.depthBias ?? 0),
-        hd.scale,
+        packHdScale(hd.scale, hd.sceneLit === true),
       );
       this.timing.setXYZW(i, hd.blend0, hd.t0, hd.stageSeconds, packHdSize(hd.size ?? 1, hd.asPainted === true));
     }

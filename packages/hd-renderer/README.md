@@ -839,7 +839,11 @@ empty.
   code: `HD_AS_PAINTED` in `packages/ra2-assets/src/node/effectsLibrary.ts` lists NUKEANIM (the nuclear mushroom: a
   pure yellow stem and a pale cap that the ramp turns orange) and CDGAS (the Chaos Drone's red-pink gas, 89 % of
   whose coverage passes the fire test), and the generator writes it into the table. On the card it travels in the
-  sign of the size (`packHdSize`), so no vertex buffer is added; `hdFlameGradeDisplay` is the grade's CPU twin. HD cards of the ground and air layers are
+  sign of the size (`packHdSize`), so no vertex buffer is added; `hdFlameGradeDisplay` is the grade's CPU twin.
+  A row that also says `sceneLit: 1` (`HD_SCENE_LIT`: CDGAS only) is never self-lit: fire, coloured glow and
+  white-hot all take the scene's light, as the engine lights that anim like any other art. Self-lit, the gas showed
+  as a pale salmon-pink ring over a darker scene-lit base (live ALL01UMD: HD gas mean (211, 99, 83) against the
+  original's (163, 70, 54) over the same pavement). The flag travels in the sign of the page scale (`packHdScale`). HD cards of the ground and air layers are
   depth-tested like the native cards (only Top is untested). Native `Layer=air` draws over the ground layer. The final P-L5H-3b policy is per **(fire, object)**:
   `front=objectCode-fireCode`; less than **FRONT_DISTANCE=1.5 horizontal cells** covers the complete owner;
   at least 1.5 keeps it completely in front. Rhino 5009 is 1.83848 cells ahead of EXPLOLRG but 0.84853

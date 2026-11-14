@@ -27,7 +27,9 @@ import {
   engineDepth,
   hdFlameGradeDisplay,
   MESH_IDLE_SECONDS,
+  packHdScale,
   packHdSize,
+  unpackHdScale,
   unpackHdSize,
   type EffectInstance,
   type EffectPage,
@@ -224,6 +226,31 @@ describe('live HD flipbook selection', () => {
     const f = fixture();
     f.push({ type: 'TWLT070', frame: 2 });
     expect(f.cards().out[0]!.hd).not.toHaveProperty('asPainted');
+  });
+
+  it('lights the Chaos Drone gas by the scene only, and says so on the card', () => {
+    // Only the gas: the mushroom is shown as painted but stays self-lit, fire everywhere else glows.
+    expect(
+      Object.entries(EFFECT_TABLE)
+        .filter(([, row]) => row.sceneLit)
+        .map(([id]) => id),
+    ).toEqual(['CDGAS']);
+    const gas = fixture();
+    gas.driver.artWidth = () => 2;
+    gas.push({ type: 'CDGAS', frame: 2 });
+    expect(gas.cards().out[0]!.hd).toMatchObject({ size: 1, asPainted: true, sceneLit: true });
+    for (const type of ['NUKEANIM', 'TWLT070']) {
+      const f = fixture();
+      f.driver.artWidth = () => 2;
+      f.push({ type, frame: 2 });
+      expect(f.cards().out[0]!.hd).not.toHaveProperty('sceneLit');
+    }
+    // The scale attribute carries the flag in its sign.
+    expect(packHdScale(2, false)).toBe(2);
+    expect(packHdScale(2, true)).toBe(-2);
+    expect(packHdScale(0, true)).toBe(-1);
+    expect(unpackHdScale(packHdScale(4, true))).toEqual({ scale: 4, sceneLit: true });
+    expect(unpackHdScale(packHdScale(2, false))).toEqual({ scale: 2, sceneLit: false });
   });
 
   it('keeps the colours of a card shown as painted and grades every other flame', () => {
@@ -552,7 +579,7 @@ describe('HD page routing and placement buffers', () => {
     const y = page.offsets.getY(0);
     const nextX = page.offsets.getZ(0);
     const nextY = page.offsets.getW(0);
-    const scale = page.style.getW(0);
+    const scale = Math.abs(page.style.getW(0));
     const left = Math.min(x, nextX);
     const top = Math.min(y, nextY);
     const right = Math.max(x + page.rect.getZ(0) / scale, nextX + page.nextRect.getZ(0) / scale);
@@ -668,6 +695,15 @@ describe('HD page routing and placement buffers', () => {
     expect(Array.from(page.timing.array.slice(0, 3))).toEqual(
       Array.from(Float32Array.from([instance.hd!.blend0, instance.hd!.t0, instance.hd!.stageSeconds])),
     );
+    // A card lit by the scene only: the sign of the scale; the native-pixel bounds stay the same.
+    const bounds = nativeBounds(page);
+    instance.hd!.sceneLit = true;
+    layer.setInstances([instance], 2.8);
+    expect(page.style.getW(0)).toBe(-instance.hd!.scale);
+    expect(nativeBounds(page)).toEqual(bounds);
+    instance.hd!.sceneLit = false;
+    layer.setInstances([instance], 2.9);
+    expect(page.style.getW(0)).toBe(instance.hd!.scale);
     instance.hd!.next = { ...instance.hd!.next!, page: 7 };
     layer.setInstances([instance], 3);
     expect(page.nextRect.array.slice(0, 4)).toEqual(page.rect.array.slice(0, 4));
