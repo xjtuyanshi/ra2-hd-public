@@ -321,8 +321,12 @@ describe('r186 vertex and uniform binding budget', () => {
           expect(enhanced, mesh.name).toBeGreaterThan(alpha);
           if (mesh === layer.groundPasses[1]) {
             // Infantry keeps its five ranks and solid-core pull; ordinary shadows take the exclusive margin.
-            expect(fragmentShader).toMatch(/= mix\( \( 0\.019 \+ \( floor\([^\n]+\* 0\.002 \) \), 0\.028, step\( 0\.22,/);
-            expect(fragmentShader).toMatch(/clamp\( spriteShadowRankCoverage, 0\.0, 1\.0 \) \* 32\.0 \) \+ 0\.5 \) \) \* 0\.00025 \) \) \+ 0\.000125 \)/);
+            expect(fragmentShader).toMatch(
+              /= mix\( \( 0\.019 \+ \( floor\([^\n]+\* 0\.002 \) \), 0\.028, step\( 0\.22,/,
+            );
+            expect(fragmentShader).toMatch(
+              /clamp\( spriteShadowRankCoverage, 0\.0, 1\.0 \) \* 32\.0 \) \+ 0\.5 \) \) \* 0\.00025 \) \) \+ 0\.000125 \)/,
+            );
           }
         }
       } finally {
@@ -373,7 +377,9 @@ describe('r186 vertex and uniform binding budget', () => {
         const { fragmentShader } = assertLimits(pre);
         // The pre-pass ranks by the same softened coverage, without the colour pass's exclusive margin...
         expect(fragmentShader).toContain('spriteShadowRankCoverage = mix(');
-        expect(fragmentShader).toMatch(/clamp\( spriteShadowRankCoverage, 0\.0, 1\.0 \) \* 32\.0 \) \+ 0\.5 \) \) \* 0\.00025 \) \) \+ 0\.0 \)/);
+        expect(fragmentShader).toMatch(
+          /clamp\( spriteShadowRankCoverage, 0\.0, 1\.0 \) \* 32\.0 \) \+ 0\.5 \) \) \* 0\.00025 \) \) \+ 0\.0 \)/,
+        );
         // ...writes only where the colour pass's alpha test keeps the shadow, and skips the colour graph.
         expect(fragmentShader).toMatch(/clamp\( spriteShadowRankCoverage, 0\.0, 1\.0 \) \* min\([^\n]+\) >= 0\.04/);
         expect(fragmentShader).toContain('+ ( 0.05 / ( render.cameraFar - render.cameraNear ) )');

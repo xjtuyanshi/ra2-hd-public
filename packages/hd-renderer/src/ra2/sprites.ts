@@ -1297,65 +1297,65 @@ class SpriteGraph {
     // 'overDepth' (pre-pass, no colour) and 'over' share this code, so both compute the same pull for one fragment.
     const planeDepth = (pass: 'overDepth' | 'over'): ShaderNode =>
       Fn(() => {
-      // The anchor's height, snapped to 1/64 level so interpolation rounding can never split one plane in two.
-      const level: ShaderNode = round(aAnchor.y.div(LEVEL_HEIGHT).mul(64)).div(64).mul(LEVEL_HEIGHT);
-      const c: ShaderNode = planeCoefficients;
-      const ground: ShaderNode = c.x
-        .add(c.y.mul(screenCoordinate.x))
-        .add(c.z.mul(screenCoordinate.y))
-        .add(c.w.mul(level));
-      const texel = vec2(aRect.x.add(u.mul(aRect.z)), aRect.y.add(vCard.mul(aRect.w)));
-      const indexedCoverage = frameCoverage(atlasPage, atlasSize, texel, aRect);
-      const coverage = features.hd
-        ? mix(indexedCoverage, max(indexedCoverage, texture(hdColour, texel.div(atlasSize)).a), isInfantryShadow)
-        : indexedCoverage;
-      const rankCoverage: ShaderNode = coverage.toVar('spriteShadowRankCoverage');
-      // Ranking the unsoftened mask lets faint blurred leaves reject a denser later shadow, cutting light holes.
-      // Keep taps inside the same branch as colour, so crisp shadows and infantry do not pay for the penumbra.
-      If(softened(), () => {
-        const px: ShaderNode = aParams.x.add(u.mul(aRect.z));
-        const py: ShaderNode = aParams.y.add(vCard.mul(aRect.w));
-        rankCoverage.assign(penumbraCoverage(texel, indexedCoverage, px, py));
-      });
-      // Ordinary shadows: pulled by the coverage actually drawn, in SHADOW_PULL_LEVELS steps (shadowGroundPull). The
-      // pre-pass writes that pull for the densest one; the colour pass adds SHADOW_EXCLUSIVE_PULL, so only the first
-      // shadow of the densest step darkens the pixel. Infantry retains its existing five coverage ranks, HD alpha and
-      // solid-core ramp (it may darken a shadow).
-      const ordinary: ShaderNode = float(GROUND_PULL.shadow[0])
-        .add(
-          floor(clamp(rankCoverage, 0, 1).mul(SHADOW_PULL_LEVELS).add(0.5)).mul(
-            (GROUND_PULL.shadow[1] - GROUND_PULL.shadow[0]) / SHADOW_PULL_LEVELS,
+        // The anchor's height, snapped to 1/64 level so interpolation rounding can never split one plane in two.
+        const level: ShaderNode = round(aAnchor.y.div(LEVEL_HEIGHT).mul(64)).div(64).mul(LEVEL_HEIGHT);
+        const c: ShaderNode = planeCoefficients;
+        const ground: ShaderNode = c.x
+          .add(c.y.mul(screenCoordinate.x))
+          .add(c.z.mul(screenCoordinate.y))
+          .add(c.w.mul(level));
+        const texel = vec2(aRect.x.add(u.mul(aRect.z)), aRect.y.add(vCard.mul(aRect.w)));
+        const indexedCoverage = frameCoverage(atlasPage, atlasSize, texel, aRect);
+        const coverage = features.hd
+          ? mix(indexedCoverage, max(indexedCoverage, texture(hdColour, texel.div(atlasSize)).a), isInfantryShadow)
+          : indexedCoverage;
+        const rankCoverage: ShaderNode = coverage.toVar('spriteShadowRankCoverage');
+        // Ranking the unsoftened mask lets faint blurred leaves reject a denser later shadow, cutting light holes.
+        // Keep taps inside the same branch as colour, so crisp shadows and infantry do not pay for the penumbra.
+        If(softened(), () => {
+          const px: ShaderNode = aParams.x.add(u.mul(aRect.z));
+          const py: ShaderNode = aParams.y.add(vCard.mul(aRect.w));
+          rankCoverage.assign(penumbraCoverage(texel, indexedCoverage, px, py));
+        });
+        // Ordinary shadows: pulled by the coverage actually drawn, in SHADOW_PULL_LEVELS steps (shadowGroundPull). The
+        // pre-pass writes that pull for the densest one; the colour pass adds SHADOW_EXCLUSIVE_PULL, so only the first
+        // shadow of the densest step darkens the pixel. Infantry retains its existing five coverage ranks, HD alpha and
+        // solid-core ramp (it may darken a shadow).
+        const ordinary: ShaderNode = float(GROUND_PULL.shadow[0])
+          .add(
+            floor(clamp(rankCoverage, 0, 1).mul(SHADOW_PULL_LEVELS).add(0.5)).mul(
+              (GROUND_PULL.shadow[1] - GROUND_PULL.shadow[0]) / SHADOW_PULL_LEVELS,
+            ),
+          )
+          .add(pass === 'over' ? SHADOW_EXCLUSIVE_PULL : 0);
+        // A solid infantry core must pass an earlier half-colour shadow, even when its filtered coverage is only .22.
+        // Keep this ahead of ordinary shadow coverage ranks and behind both wet reflections and upright card feet.
+        const shadowPull: ShaderNode = select(
+          isInfantryShadow.greaterThan(0.5),
+          mix(
+            float(GROUND_PULL.shadow[0]).add(
+              floor(clamp(coverage, 0, 1).mul(4).add(0.5)).mul((GROUND_PULL.shadow[1] - GROUND_PULL.shadow[0]) / 4),
+            ),
+            GROUND_PULL.infantryCore,
+            step(INFANTRY_SHADOW_RAMP.to, coverage),
           ),
-        )
-        .add(pass === 'over' ? SHADOW_EXCLUSIVE_PULL : 0);
-      // A solid infantry core must pass an earlier half-colour shadow, even when its filtered coverage is only .22.
-      // Keep this ahead of ordinary shadow coverage ranks and behind both wet reflections and upright card feet.
-      const shadowPull: ShaderNode = select(
-        isInfantryShadow.greaterThan(0.5),
-        mix(
-          float(GROUND_PULL.shadow[0]).add(
-            floor(clamp(coverage, 0, 1).mul(4).add(0.5)).mul((GROUND_PULL.shadow[1] - GROUND_PULL.shadow[0]) / 4),
-          ),
-          GROUND_PULL.infantryCore,
-          step(INFANTRY_SHADOW_RAMP.to, coverage),
-        ),
-        ordinary,
-      ).toVar('spriteInfantryShadowPull');
-      const range: ShaderNode = cameraFar.sub(cameraNear);
-      if (pass === 'over') {
-        const pull: ShaderNode = select(isReflection.greaterThan(0.5), float(GROUND_PULL.reflection), shadowPull);
-        return ground.sub(pull.div(range));
-      }
-      // Pre-pass: only ordinary shadows the colour pass will draw (alpha test) write; everything else (reflections,
-      // infantry footprints, transparent texels of the padded quad) lies behind the ground and fails the depth test,
-      // so the pass leaves no depth where the colour pass leaves none.
-      const opacity: ShaderNode = look.shadowDarkness.mul(SHADOW_OPACITY).min(0.9);
-      const writes: ShaderNode = isShadow
-        .greaterThan(0.5)
-        .and(isInfantryShadow.lessThan(0.5))
-        .and(clamp(rankCoverage, 0, 1).mul(opacity).greaterThanEqual(material.alphaTest));
-      return select(writes, ground.sub(shadowPull.div(range)), ground.add(float(0.05).div(range)));
-    })();
+          ordinary,
+        ).toVar('spriteInfantryShadowPull');
+        const range: ShaderNode = cameraFar.sub(cameraNear);
+        if (pass === 'over') {
+          const pull: ShaderNode = select(isReflection.greaterThan(0.5), float(GROUND_PULL.reflection), shadowPull);
+          return ground.sub(pull.div(range));
+        }
+        // Pre-pass: only ordinary shadows the colour pass will draw (alpha test) write; everything else (reflections,
+        // infantry footprints, transparent texels of the padded quad) lies behind the ground and fails the depth test,
+        // so the pass leaves no depth where the colour pass leaves none.
+        const opacity: ShaderNode = look.shadowDarkness.mul(SHADOW_OPACITY).min(0.9);
+        const writes: ShaderNode = isShadow
+          .greaterThan(0.5)
+          .and(isInfantryShadow.lessThan(0.5))
+          .and(clamp(rankCoverage, 0, 1).mul(opacity).greaterThanEqual(material.alphaTest));
+        return select(writes, ground.sub(shadowPull.div(range)), ground.add(float(0.05).div(range)));
+      })();
     const passMaterial = (pass: GroundPass): MeshBasicNodeMaterial => {
       const m = new MeshBasicNodeMaterial();
       m.name = `ra2-sprites-${pass}`;
