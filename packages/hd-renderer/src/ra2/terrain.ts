@@ -92,6 +92,13 @@ import {
   waterPreset,
   wetShore,
 } from './waterLook';
+import {
+  GROUND_FRONT_REACH_LEVELS,
+  frontMaxFromSquares,
+  frontMaxTexture,
+  frontReachSquares,
+  surfaceSquaresTexture,
+} from '../groundRay';
 import { groupWaterCells, selectWaterMirrorLevels, type WaterCell, type WaterLevel } from './waterLevels';
 
 /**
@@ -184,6 +191,10 @@ export function buildRa2Terrain(cache: Ra2Cache): Ra2TerrainBuild {
   const rects2: number[] = [];
   const indices: number[] = [];
   const hGrid = new Float32Array((W * SUB + 1) * (H * SUB + 1)).fill(50);
+  // The drawn surface per square (groundRay.ts): every cell writes only its own squares, so a cliff keeps the upper
+  // cell's level up to the shared edge. hGrid's shared nodes take the last cell's level there, which ramps the grid
+  // down over the last half cell before every camera-facing cliff rim (the lower cell comes later in this loop).
+  const squares = new Float32Array(W * SUB * H * SUB * 4).fill(50);
   const waterCells: WaterCell[] = [];
 
   type Rect = [number, number, number, number];
@@ -268,6 +279,10 @@ export function buildRa2Terrain(cache: Ra2Cache): Ra2TerrainBuild {
           const d = a + SUB + 1;
           const e = d + 1;
           indices.push(a, d, b, b, d, e);
+          squares.set(
+            [positions[a * 3 + 1]!, positions[b * 3 + 1]!, positions[d * 3 + 1]!, positions[e * 3 + 1]!],
+            ((y * SUB + j) * W * SUB + (x * SUB + i)) * 4,
+          );
         }
       }
 
@@ -399,6 +414,15 @@ export function buildRa2Terrain(cache: Ra2Cache): Ra2TerrainBuild {
   heightTexture.minFilter = LinearFilter;
   heightTexture.magFilter = LinearFilter;
   heightTexture.needsUpdate = true;
+  const surfaceSquares = {
+    texture: surfaceSquaresTexture(squares, W * SUB, H * SUB),
+    sub: SUB,
+    front: frontMaxTexture(
+      frontMaxFromSquares(squares, W * SUB, H * SUB, frontReachSquares(GROUND_FRONT_REACH_LEVELS * LEVEL_HEIGHT, SUB)),
+      W * SUB,
+      H * SUB,
+    ),
+  };
 
   const wetness = uniform(0);
   const water = createWaterUniforms();
@@ -466,6 +490,7 @@ export function buildRa2Terrain(cache: Ra2Cache): Ra2TerrainBuild {
   return {
     mesh,
     heightTexture,
+    surfaceSquares,
     heightAt,
     surfaceHeightAt,
     waterHeightAt,

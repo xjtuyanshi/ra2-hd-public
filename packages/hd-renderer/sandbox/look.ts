@@ -92,6 +92,7 @@ export function applyLookParams(hd: HdRenderer, params: URLSearchParams, state: 
     ['glass', 'glass'],
     ['ao', 'occlusion'],
     ['shfollow', 'shadowFollow'],
+    ['tshfollow', 'terrainShadowFollow'],
     ['shsoft', 'shadowSoftness'],
     ['wetrefl', 'wetReflections'],
     ['adapt', 'adaptExposure'],

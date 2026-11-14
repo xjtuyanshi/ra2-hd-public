@@ -77,10 +77,9 @@ export function relightFactorUpper(sunGain: number): number {
 export const MAX_SHADOW_STRETCH = 2;
 
 /**
- * Longest sun-following stretch of a terrain object's (tree's) SHP shadow, relative to the art's own, whatever the
- * look's shadowLength. Tree shadows are stippled art with holes between the leaves; at the cinematic look's 1.6x
- * (hour 16.5, shadowLength 1.4) the holes became long light streaks and the shadows read as smears beside the
- * original's compact tree shadows (Seattle ALL03UMD, stage8 v2s1 A/B). Shorter stretches (high sun) are kept.
+ * Longest sun-following stretch of a terrain object's (tree's) or map overlay's SHP shadow when the look turns them
+ * at all (HdSettings.terrainShadowFollow > 0; Build 12 behaviour). At the cinematic look's 1.6x the stippled tree
+ * shadows read as smears beside the original's compact ones (Seattle ALL03UMD, stage8 v2s1 A/B).
  */
 export const TERRAIN_SHADOW_MAX_STRETCH = 1.3;
 
@@ -158,7 +157,7 @@ export class SpriteLookState {
    * art's shadow direction to the current one, times a stretch along the art's direction.
    */
   readonly shadowMatrix = uniform(new Vector4(1, 0, 0, 1));
-  /** The same transform for terrain objects' (trees') shadows, stretched at most TERRAIN_SHADOW_MAX_STRETCH. */
+  /** Identity keeps terrain/map-overlay art shapes (except high decks), with the look's darkness and softness. */
   readonly terrainShadowMatrix = uniform(new Vector4(1, 0, 0, 1));
   /**
    * CPU side: the ground passes of every sprite layer on this context (SpriteLayer.groundPasses). HdRenderer shows them
@@ -586,17 +585,27 @@ export function followedShadowNode(p: ShaderNode, m: ShaderNode): ShaderNode {
 }
 
 /**
- * Uploads both SHP shadow transforms for the current sun: `shadowMatrix` with the full stretch, and
- * `terrainShadowMatrix` with the same turn and the stretch capped at TERRAIN_SHADOW_MAX_STRETCH.
+ * Uploads the sun transform, and the one for terrain objects/map overlays (except high decks). By default
+ * (`terrainFollow` 0, owner rule 2026-11-13: no shape changes) theirs is the identity: their shadows keep the art's
+ * own shape, length and direction like buildings, while still taking the look's darkness and penumbra softness.
+ * `terrainFollow` > 0 turns them with the sun again, stretched at most TERRAIN_SHADOW_MAX_STRETCH (Build 12).
  */
 export function setShadowTransforms(
   look: Pick<SpriteLookState, 'shadowMatrix' | 'terrainShadowMatrix'>,
   current: Vector3,
   stretch: number,
   follow: number,
+  terrainFollow = 0,
 ): void {
   shadowTransform(current, stretch, follow, look.shadowMatrix.value);
-  shadowTransform(current, Math.min(stretch, TERRAIN_SHADOW_MAX_STRETCH), follow, look.terrainShadowMatrix.value);
+  if (terrainFollow > 0 && follow > 0)
+    shadowTransform(
+      current,
+      Math.min(stretch, TERRAIN_SHADOW_MAX_STRETCH),
+      follow * Math.min(1, terrainFollow),
+      look.terrainShadowMatrix.value,
+    );
+  else look.terrainShadowMatrix.value.set(1, 0, 0, 1);
 }
 
 /** Degrees -> unit ground vector helper for CPU-side updates (see HdRenderer). */

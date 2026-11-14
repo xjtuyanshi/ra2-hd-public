@@ -263,7 +263,7 @@ export async function loadRa2World(
         shadow: true,
         flat: true,
         painter,
-        terrainShadow: object.kind === 'tree' || undefined,
+        terrainShadow: object.kind === 'tree' || (object.kind === 'overlay' && !isHighBridge(object.type)) || undefined,
       });
     if (object.kind === 'building' && entry.foundation) {
       const [w, h] = entry.foundation;

@@ -126,6 +126,7 @@ export function buildOverlayInstances(
         palette: paletteKey,
         push: 0,
         shadow: true,
+        terrainShadow: (!type.highBridge && !isHighBridge(id)) || undefined,
         flat: isRubble ? type.flat : true,
         lighting: type.lighting,
       });

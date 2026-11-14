@@ -2,12 +2,28 @@ import { describe, expect, it } from 'vitest';
 import {
   SHADOW_PENUMBRA_TEXELS,
   SHADOW_QUAD_PAD_TEXELS,
+  TERRAIN_SHADOW_PENUMBRA_TEXELS,
   shadowPenumbraCoverage,
   shadowPenumbraRadius,
   shadowQuadPad,
 } from '../src/ra2/sprites';
 
 describe('enhanced shadow penumbra', () => {
+  it('caps terrain shadows at 1.25 texels while preserving other shadows and near-base softness', () => {
+    const softness = 1.62; // Cinematic look at 16.5 h, including sun stretch.
+    expect(shadowPenumbraRadius([0.8, 0], softness, undefined, true)).toBe(1.25);
+    expect(shadowPenumbraRadius([0.8, 0], softness)).toBeCloseTo(2.8512, 12);
+    expect(TERRAIN_SHADOW_PENUMBRA_TEXELS).toBe(1.25);
+    for (const distance of [0, 0.1, 0.3, 0.8, 3]) {
+      const originalRadius = Math.min(SHADOW_PENUMBRA_TEXELS, softness * distance * 2.2);
+      expect(shadowPenumbraRadius([distance, 0], softness, undefined, true)).toBe(
+        Math.min(TERRAIN_SHADOW_PENUMBRA_TEXELS, originalRadius),
+      );
+      expect(shadowPenumbraRadius([distance, 0], softness)).toBe(originalRadius);
+      expect(shadowPenumbraRadius([distance, 0], softness, undefined, false)).toBe(originalRadius);
+    }
+  });
+
   it("grows from a building's walls, not from its foundation centre", () => {
     // A 4 x 4 yard whose foundation starts at the draw point; the cinematic softness at 16.5 h (1 x stretch 1.62).
     const yard = { centre: [2, 2] as const, half: [2, 2] as const };

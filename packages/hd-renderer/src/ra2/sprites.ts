@@ -10,6 +10,7 @@ import {
   InterleavedBufferAttribute,
   LessDepth,
   MeshBasicNodeMaterial,
+  NoBlending,
   NormalBlending,
   type OrthographicCamera,
   type Texture,
@@ -81,6 +82,7 @@ import { mapLightAt, srgbScale } from './mapLighting';
 import { ENGINE_SHADOW_OPACITY } from './voxelShadow';
 import { cardDepthNode, SPRITE_DECAL_LIFT, SPRITE_DECAL_LIFT_ROWS } from './cardDepth';
 import { NATIVE_UNIT_RENDER_ORDER, type NativeSpriteDepth } from './nativeDepth';
+import { GROUND_FRONT_REACH_LEVELS, groundRayHitNode, type GroundRaySearch } from '../groundRay';
 import { comparePainterOrder, spritePainterBias, type PainterObject } from './painterOrder';
 import {
   GLASS_REFLECTANCE,
@@ -127,8 +129,8 @@ export interface SpriteInstance {
    */
   infantryBare?: boolean;
   /**
-   * A terrain object's (tree's) SHP shadow: the enhanced look turns it with the sun like other shadows without a
-   * foundation, but stretches it at most TERRAIN_SHADOW_MAX_STRETCH (spriteLook.ts terrainShadowMatrix).
+   * Terrain objects and map overlays (except high decks) keep the art's own shadow shape, like buildings,
+   * with the enhanced look's darkness and softness (spriteLook.ts terrainShadowMatrix).
    */
   terrainShadow?: boolean;
   /** Lay the art on the ground as a decal (ore, smudges, flat overlays) instead of a camera-facing card. */
@@ -205,13 +207,16 @@ function instanceRank(s: SpriteInstance): number {
 }
 
 /** Draw passes of a sprite layer: the main one, and the enhanced look's ground passes (SpriteLayer.groundPasses). */
-type GroundPass = 'main' | 'under' | 'over' | 'readOnly' | 'unit' | 'translucent';
+type GroundPass = 'main' | 'under' | 'overDepth' | 'over' | 'readOnly' | 'unit' | 'translucent';
 
 /**
  * Largest penumbra radius (1x texels) of the enhanced look's shadow softness. Six texels laid the shadows of thin parts
  * (a crane jib, a chimney) out as faint smears; three keeps a soft golden-hour edge on a still solid shadow.
+ * Terrain-object and map-overlay shadows use the narrower terrain cap so art-shaped tree/rock shadows stay readable.
  */
 export const SHADOW_PENUMBRA_TEXELS = 3;
+/** Largest penumbra radius (1x texels) for shadows marked terrainShadow, including those on clear water. */
+export const TERRAIN_SHADOW_PENUMBRA_TEXELS = 1.25;
 /**
  * Margin (1x texels) by which the enhanced look widens the quad of a softened SHP shadow on every side. A frame's rect
  * is trimmed to its art, so the art touches all four edges; the filtered coverage reaches 1.5 texels past the art and
@@ -243,15 +248,18 @@ const PENUMBRA_TAPS: readonly (readonly [number, number])[] = Array.from({ lengt
 /**
  * Penumbra radius (1x texels) of a shadow point `offset` (world x/z from the draw point) under softness `softness`: it
  * grows with the distance from the object's base, a building's foundation (`centre`, `half`) or the draw point.
+ * Terrain shadows use the narrower cap to preserve the art's shape; other callers retain the full radius.
  */
 export function shadowPenumbraRadius(
   offset: readonly [number, number],
   softness: number,
   foundation?: { centre: readonly [number, number]; half: readonly [number, number] },
+  terrain = false,
 ): number {
   const dx = Math.max(0, Math.abs(offset[0] - (foundation?.centre[0] ?? 0)) - (foundation?.half[0] ?? 0));
   const dz = Math.max(0, Math.abs(offset[1] - (foundation?.centre[1] ?? 0)) - (foundation?.half[1] ?? 0));
-  return Math.min(SHADOW_PENUMBRA_TEXELS, softness * Math.hypot(dx, dz) * 2.2);
+  const cap = terrain ? TERRAIN_SHADOW_PENUMBRA_TEXELS : SHADOW_PENUMBRA_TEXELS;
+  return Math.min(cap, softness * Math.hypot(dx, dz) * 2.2);
 }
 
 /**
@@ -287,10 +295,71 @@ export function shadowPenumbraCoverage(
  * How far (world units along the view) the enhanced look's 'over' pass pulls SHP shadows and wet reflections in front
  * of their ground plane. Everything stays behind an upright card's base (CARD_CLEARANCE) and ahead of the ground
  * at every sample of 4x MSAA down to 1 engine px per pixel (the farthest sample, 0.375 px from the pixel centre, sees
- * ground 0.0153 nearer); zoomed further out, the nearest samples of a pixel can miss its shadow. Shadows step up with
- * their coverage (five levels): a later, denser shadow still darkens an earlier fringe.
+ * ground 0.0153 nearer); zoomed further out, the nearest samples of a pixel can miss its shadow. Ordinary SHP
+ * shadows are pulled by their drawn (softened) coverage in SHADOW_PULL_LEVELS steps (shadowGroundPull); infantry
+ * footprints keep five coverage levels and their solid-core pull.
  */
 export const GROUND_PULL = { shadow: [0.019, 0.027], infantryCore: 0.028, reflection: 0.0285 } as const;
+/**
+ * Coverage steps of an ordinary shadow's pull. Shadows in the same step tie exactly, so the first one to draw blocks
+ * the others (see SHADOW_EXCLUSIVE_PULL); a continuous pull let two nearly equal dense shadows both pass along the
+ * line where their coverages cross (near-black specks in the willow overlap, XMP27T8 sandbox). With 32 steps the
+ * drawn shadow is within 1/32 coverage of the densest (about 2% of the ground's brightness at most).
+ */
+export const SHADOW_PULL_LEVELS = 32;
+/**
+ * Extra pull of an ordinary shadow's colour fragment over the depth the 'overDepth' pre-pass wrote for it: half a
+ * coverage step. The pre-pass leaves the pull of the densest step at each sample; in the 'over' pass only a fragment
+ * of that step passes LessDepth, and the first one to draw moves the depth on by the margin, so every later shadow
+ * there fails: overlapping shadows darken a pixel once, by the densest one (max, not A over B). Pre-pass and colour
+ * pass run the same coverage code; half a step (1.25e-4 of a 400-unit view range) is several depth-buffer steps.
+ */
+export const SHADOW_EXCLUSIVE_PULL = (GROUND_PULL.shadow[1] - GROUND_PULL.shadow[0]) / SHADOW_PULL_LEVELS / 2;
+
+/**
+ * Search of the ground under an SHP shadow's pixel (groundRay.ts, on the terrain's own surface squares, so a cliff top
+ * keeps its level up to the rim) in the enhanced look's 'over' pass: from four and a half levels above the object's
+ * anchor down to two below it in half-level steps, refined to 1/128 level (well inside the smallest pull). Ramps rise one level per cell, so this covers a tree shadow's reach of three to four cells up or
+ * down a slope. Ground further below (under a bridge deck, at the foot of a cliff) keeps the anchor's plane. Overlapping
+ * shadows over one pixel are ordered on the ground found here, so they compare by coverage alone.
+ */
+export const SHADOW_GROUND_SEARCH: GroundRaySearch = { step: LEVEL_HEIGHT / 2, above: 9, below: 4, refine: 6 };
+// The flat-ground shortcut (groundRayHitNode's `front`) is only exact while the search stays inside the front box.
+if (SHADOW_GROUND_SEARCH.step * SHADOW_GROUND_SEARCH.above > GROUND_FRONT_REACH_LEVELS * LEVEL_HEIGHT)
+  throw new Error('SHADOW_GROUND_SEARCH reaches beyond GROUND_FRONT_REACH_LEVELS');
+
+/** Coverage step (0..SHADOW_PULL_LEVELS) of an ordinary shadow's drawn (softened) coverage. */
+export function shadowPullRank(coverage: number): number {
+  return Math.floor(Math.min(1, Math.max(0, coverage)) * SHADOW_PULL_LEVELS + 0.5);
+}
+
+/** CPU twin of the over pass's ordinary-shadow pull: `coverage` is the drawn (softened) one; `drawn`: colour pass. */
+export function shadowGroundPull(coverage: number, drawn = false): number {
+  const step = (GROUND_PULL.shadow[1] - GROUND_PULL.shadow[0]) / SHADOW_PULL_LEVELS;
+  return GROUND_PULL.shadow[0] + shadowPullRank(coverage) * step + (drawn ? SHADOW_EXCLUSIVE_PULL : 0);
+}
+
+/**
+ * CPU model of one sample of the enhanced look's ordinary SHP shadows, drawn in `order` over the ground, each with its
+ * drawn coverage and opacity: the pre-pass keeps the largest pull, then the colour pass draws the first fragment
+ * within SHADOW_EXCLUSIVE_PULL of it. Returns the ground's remaining brightness (1 = unshadowed).
+ */
+export function overPassSample(order: readonly { coverage: number; opacity: number }[], alphaTest = 0.04): number {
+  const alpha = (s: { coverage: number; opacity: number }): number => Math.min(1, Math.max(0, s.coverage)) * s.opacity;
+  const drawn = order.filter((s) => alpha(s) >= alphaTest);
+  let depth = 0;
+  for (const s of drawn) depth = Math.min(depth, -shadowGroundPull(s.coverage));
+  let light = 1;
+  for (const s of drawn) {
+    const d = -shadowGroundPull(s.coverage, true);
+    if (d < depth) {
+      depth = d;
+      light *= 1 - alpha(s);
+    }
+  }
+  return light;
+}
+
 /**
  * The original infantry blob is solid palette index 12 (black) inside the body frames, not the half-colour shadow
  * blitter used by buildings and voxels: frozen same-frame pairs show the ground under it at 0.00 of the ground beside
@@ -475,6 +544,8 @@ class SpriteGraph {
   readonly toCamera = uniform(new Vector3(0, 1, 0));
   /** Ground-plane depth coefficients of the 'over' pass (see groundPlaneDepth), set per draw. */
   readonly planeCoefficients = uniform(new Vector4());
+  /** World direction towards the camera of the 'over' pass's draw (set with planeCoefficients). */
+  readonly planeRay = uniform(new Vector3(0, 1, 0));
   /** Slots: the indexed page and its size in texels, the HD pair with its scale to the indexed page, the sidecars. */
   readonly atlasPage: ShaderNode;
   readonly atlasSize = uniform(new Vector2(1, 1));
@@ -485,7 +556,10 @@ class SpriteGraph {
   readonly materialPage: ShaderNode;
   /** Per-instance anchor code of capture-enabled layers, for the materials that are captured. */
   captureCode: ShaderNode | null = null;
-  readonly materials: Record<'main' | 'readOnly' | 'unit' | 'translucent' | 'under' | 'over', MeshBasicNodeMaterial>;
+  readonly materials: Record<
+    'main' | 'readOnly' | 'unit' | 'translucent' | 'under' | 'overDepth' | 'over',
+    MeshBasicNodeMaterial
+  >;
 
   constructor(cache: Ra2Cache, features: SpriteGraphFeatures) {
     const nodes = cache.nodes ?? DEFAULT_ATMOSPHERE_NODES;
@@ -531,6 +605,7 @@ class SpriteGraph {
       .greaterThanEqual(3)
       .select(aNativeOffset.w.sub(3), 1)
       .toVar('spriteBodyOpacity');
+    const isShadow: ShaderNode = step(1.5, aFlat).mul(float(1).sub(step(2.5, aFlat)));
     const isInfantryShadow: ShaderNode = step(1.5, aFlat)
       .mul(float(1).sub(step(2.5, aFlat)))
       .mul(step(0.5, aFlags.w));
@@ -619,9 +694,58 @@ class SpriteGraph {
     const foundationHalf: ShaderNode = select(hasFoundation, aOcclusion.xy.mul(0.5), vec2(0, 0));
     const baseCentre: ShaderNode = select(hasFoundation, foundationOrigin.add(foundationHalf), vec2(0, 0));
     // Sun-following shadow transform (spriteLook.ts followedShadowPoint): turned and stretched about the draw point.
-    // Terrain objects' shadows take the transform with the capped stretch (spriteLook.ts setShadowTransforms).
+    // Terrain objects and non-high-bridge overlays keep the art's shape (spriteLook.ts setShadowTransforms).
     const followed2d = (offset: ShaderNode): ShaderNode =>
       followedShadowNode(offset, select(isTerrainShadow.greaterThan(0.5), look.terrainShadowMatrix, look.shadowMatrix));
+    const softened = (): ShaderNode =>
+      isShadow
+        .greaterThan(0.5)
+        .and(isInfantryShadow.lessThan(0.5))
+        .and(look.shadowSoftness.greaterThan(1e-4).or(shadowOnClearWater(positionWorld.xz, nodes).greaterThan(0.01)));
+    // Shadows grow a penumbra with distance from their object's base (golden-hour softness): CPU twin
+    // shadowPenumbraRadius / shadowPenumbraCoverage. The base is a building's foundation (its walls) or the
+    // draw point; measured from the foundation centre, a yard's shadow was blurred to the maximum right at its
+    // walls. The filtered coverage is averaged with eight taps on two rings, each tap reading the 1x mask
+    // bilinearly: nearest-texel taps laid eight hard copies of the mask over each other, which showed as
+    // stair-stepped bands along every edge (live construction yards on XMP27T8). (Turning the rings per pixel
+    // traded the bands for visible grain at 1:1.)
+    const penumbraCoverage = (texel: ShaderNode, coverage: ShaderNode, px: ShaderNode, py: ShaderNode): ShaderNode => {
+      const offset: ShaderNode = vec2(px.div(60).add(py.div(30)), py.div(30).sub(px.div(60)));
+      const reach: ShaderNode = length(max(offset.sub(baseCentre).abs().sub(foundationHalf), vec2(0, 0)));
+      const cap: ShaderNode = select(
+        isTerrainShadow.greaterThan(0.5),
+        TERRAIN_SHADOW_PENUMBRA_TEXELS,
+        SHADOW_PENUMBRA_TEXELS,
+      );
+      // Clear water: a shadow on open water has a soft edge of the full penumbra (the light scatters in the
+      // water column), so a bridge's shadow is not a hard black frame. Terrain shadows still obey their narrower cap.
+      const radius: ShaderNode = max(
+        look.shadowSoftness.mul(reach).mul(2.2),
+        shadowOnClearWater(positionWorld.xz, nodes).mul(SHADOW_PENUMBRA_TEXELS),
+      ).min(cap);
+      const lo: ShaderNode = aRect.xy;
+      const hi: ShaderNode = aRect.xy.add(aRect.zw);
+      const occupiedAt = (k: ShaderNode): ShaderNode => {
+        const inside: ShaderNode = step(lo, k).mul(float(1).sub(step(hi, k)));
+        const index: ShaderNode = texture(atlasPage, k.add(0.5).div(atlasSize)).r.mul(255);
+        return step(0.5, index).mul(inside.x).mul(inside.y);
+      };
+      const soft: ShaderNode = clamp(coverage, 0, 1).toVar();
+      for (const [dx, dy] of PENUMBRA_TAPS) {
+        const at: ShaderNode = texel.add(vec2(dx, dy).mul(radius)).sub(0.5);
+        const k0: ShaderNode = floor(at);
+        const f: ShaderNode = at.sub(k0);
+        const top: ShaderNode = mix(occupiedAt(k0), occupiedAt(k0.add(vec2(1, 0))), f.x);
+        const bottom: ShaderNode = mix(occupiedAt(k0.add(vec2(0, 1))), occupiedAt(k0.add(vec2(1, 1))), f.x);
+        soft.addAssign(mix(top, bottom, f.y));
+      }
+      const blended: ShaderNode = mix(
+        clamp(coverage, 0, 1),
+        soft.div(PENUMBRA_TAPS.length + 1),
+        smoothstep(0.3, 1.5, radius),
+      );
+      return blended;
+    };
     // A reflection's quad spans the rows from the base line down to the mirror image of the frame's top.
     const reflectionRows = (): ShaderNode => {
       const top: ShaderNode = aParams.y;
@@ -746,7 +870,6 @@ class SpriteGraph {
         const atlasUv = texel.div(atlasSize);
         const paletteColour = (i: ShaderNode): ShaderNode =>
           texture(cache.paletteAtlas, vec2(i.add(0.5).div(256), aParams.z.add(0.5).div(paletteRows))).rgb;
-        const isShadow: ShaderNode = step(1.5, aFlat).mul(float(1).sub(step(2.5, aFlat)));
 
         // Coverage of the 1x indexed mask, filtered with a quadratic B-spline (the average of four bilinear taps half a
         // texel apart) over the 3x3 texels around this point, texels outside the frame's rect counting as empty. Its
@@ -1049,51 +1172,9 @@ class SpriteGraph {
             const alpha: ShaderNode = shadowCoverage.mul(shadowOpacity);
             result.assign(vec4(0, 0, 0, alpha));
           });
-          // Shadows grow a penumbra with distance from their object's base (golden-hour softness): CPU twin
-          // shadowPenumbraRadius / shadowPenumbraCoverage. The base is a building's foundation (its walls) or the
-          // draw point; measured from the foundation centre, a yard's shadow was blurred to the maximum right at its
-          // walls. The filtered coverage is averaged with eight taps on two rings, each tap reading the 1x mask
-          // bilinearly: nearest-texel taps laid eight hard copies of the mask over each other, which showed as
-          // stair-stepped bands along every edge (live construction yards on XMP27T8). (Turning the rings per pixel
-          // traded the bands for visible grain at 1:1.)
-          If(
-            isShadow
-              .greaterThan(0.5)
-              .and(isInfantryShadow.lessThan(0.5))
-              .and(
-                look.shadowSoftness.greaterThan(1e-4).or(shadowOnClearWater(positionWorld.xz, nodes).greaterThan(0.01)),
-              ),
-            () => {
-              const offset: ShaderNode = vec2(px.div(60).add(py.div(30)), py.div(30).sub(px.div(60)));
-              const reach: ShaderNode = length(max(offset.sub(baseCentre).abs().sub(foundationHalf), vec2(0, 0)));
-              // Clear water: a shadow on open water has a soft edge of the full penumbra (the light scatters in the
-              // water column), so a bridge's shadow is not a hard black frame.
-              const radius: ShaderNode = max(
-                look.shadowSoftness.mul(reach).mul(2.2),
-                shadowOnClearWater(positionWorld.xz, nodes).mul(SHADOW_PENUMBRA_TEXELS),
-              ).min(SHADOW_PENUMBRA_TEXELS);
-              const occupiedAt = (k: ShaderNode): ShaderNode => {
-                const inside: ShaderNode = step(lo, k).mul(float(1).sub(step(hi, k)));
-                const index: ShaderNode = texture(atlasPage, k.add(0.5).div(atlasSize)).r.mul(255);
-                return step(0.5, index).mul(inside.x).mul(inside.y);
-              };
-              const soft: ShaderNode = clamp(coverage, 0, 1).toVar();
-              for (const [dx, dy] of PENUMBRA_TAPS) {
-                const at: ShaderNode = texel.add(vec2(dx, dy).mul(radius)).sub(0.5);
-                const k0: ShaderNode = floor(at);
-                const f: ShaderNode = at.sub(k0);
-                const top: ShaderNode = mix(occupiedAt(k0), occupiedAt(k0.add(vec2(1, 0))), f.x);
-                const bottom: ShaderNode = mix(occupiedAt(k0.add(vec2(0, 1))), occupiedAt(k0.add(vec2(1, 1))), f.x);
-                soft.addAssign(mix(top, bottom, f.y));
-              }
-              const blended: ShaderNode = mix(
-                clamp(coverage, 0, 1),
-                soft.div(PENUMBRA_TAPS.length + 1),
-                smoothstep(0.3, 1.5, radius),
-              );
-              result.assign(vec4(0, 0, 0, blended.mul(shadowOpacity)));
-            },
-          );
+          If(softened(), () => {
+            result.assign(vec4(0, 0, 0, penumbraCoverage(texel, coverage, px, py).mul(shadowOpacity)));
+          });
           // Contact shade: soft darkening of the ground around a foundation.
           If(isContact.greaterThan(0.5), () => {
             const local: ShaderNode = vec2(px.div(60).add(py.div(30)), py.div(30).sub(px.div(60))).sub(
@@ -1228,30 +1309,90 @@ class SpriteGraph {
     // camera and target actually rendering (onBeforeRender below), so a pass with another camera (a reflection's
     // mirrored one) gets its own.
     const planeCoefficients = this.planeCoefficients;
-    const planeDepth = Fn(() => {
-      // The anchor's height, snapped to 1/64 level so interpolation rounding can never split one plane in two.
-      const level: ShaderNode = round(aAnchor.y.div(LEVEL_HEIGHT).mul(64)).div(64).mul(LEVEL_HEIGHT);
-      const c: ShaderNode = planeCoefficients;
-      const ground: ShaderNode = c.x
-        .add(c.y.mul(screenCoordinate.x))
-        .add(c.z.mul(screenCoordinate.y))
-        .add(c.w.mul(level));
-      const texel = vec2(aRect.x.add(u.mul(aRect.z)), aRect.y.add(vCard.mul(aRect.w)));
-      const indexedCoverage = frameCoverage(atlasPage, atlasSize, texel, aRect);
-      const coverage = features.hd
-        ? mix(indexedCoverage, max(indexedCoverage, texture(hdColour, texel.div(atlasSize)).a), isInfantryShadow)
-        : indexedCoverage;
-      const level5: ShaderNode = floor(clamp(coverage, 0, 1).mul(4).add(0.5));
-      // A solid infantry core must pass an earlier half-colour shadow, even when its filtered coverage is only .22.
-      // Keep this ahead of ordinary shadow coverage ranks and behind both wet reflections and upright card feet.
-      const shadowPull: ShaderNode = mix(
-        float(GROUND_PULL.shadow[0]).add(level5.mul((GROUND_PULL.shadow[1] - GROUND_PULL.shadow[0]) / 4)),
-        GROUND_PULL.infantryCore,
-        isInfantryShadow.mul(step(INFANTRY_SHADOW_RAMP.to, coverage)),
-      ).toVar('spriteInfantryShadowPull');
-      const pull: ShaderNode = select(isReflection.greaterThan(0.5), float(GROUND_PULL.reflection), shadowPull);
-      return ground.sub(pull.div(cameraFar.sub(cameraNear)));
-    })();
+    // 'overDepth' (pre-pass, no colour) and 'over' share this code, so both compute the same pull for one fragment.
+    const planeDepth = (pass: 'overDepth' | 'over'): ShaderNode =>
+      Fn(() => {
+        // The anchor's height, snapped to 1/64 level so interpolation rounding can never split one plane in two.
+        const level: ShaderNode = round(aAnchor.y.div(LEVEL_HEIGHT).mul(64)).div(64).mul(LEVEL_HEIGHT).toVar();
+        // Shadows are ordered on the drawn ground under their pixel, not on their anchor's plane (SHADOW_GROUND_SEARCH):
+        // every shadow over one pixel shares one ground depth and only its coverage step orders it ("darken once" keeps
+        // the densest). On their anchors' planes two overlapping shadows of objects one level apart (trees on a slope)
+        // were ordered by height instead: the faint penumbra fringe of the higher one won and blocked the dense shadow
+        // of the lower one, which showed light gaps with straight edges (the fringe's frame rect; live XMP27T8 by day).
+        // The same ground lets a shadow reach up a slope: on the anchor's plane, ground rising in front of it hid the
+        // shadow along the terrain's cell edges (a 2:1 staircase; the engine draws it there, live XMP27T8 by day).
+        // Ground beyond the search (a cliff far above the anchor) keeps the anchor's plane and still hides it.
+        If(isShadow.greaterThan(0.5), () => {
+          level.assign(
+            groundRayHitNode(
+              nodes.groundHeightGrid,
+              nodes.groundHeightInfo,
+              positionWorld,
+              this.planeRay,
+              level,
+              SHADOW_GROUND_SEARCH,
+              nodes.groundFrontMax,
+            ),
+          );
+        });
+        const c: ShaderNode = planeCoefficients;
+        const ground: ShaderNode = c.x
+          .add(c.y.mul(screenCoordinate.x))
+          .add(c.z.mul(screenCoordinate.y))
+          .add(c.w.mul(level));
+        const texel = vec2(aRect.x.add(u.mul(aRect.z)), aRect.y.add(vCard.mul(aRect.w)));
+        const indexedCoverage = frameCoverage(atlasPage, atlasSize, texel, aRect);
+        const coverage = features.hd
+          ? mix(indexedCoverage, max(indexedCoverage, texture(hdColour, texel.div(atlasSize)).a), isInfantryShadow)
+          : indexedCoverage;
+        const rankCoverage: ShaderNode = coverage.toVar('spriteShadowRankCoverage');
+        // Ranking the unsoftened mask lets faint blurred leaves reject a denser later shadow, cutting light holes.
+        // Keep taps inside the same branch as colour, so crisp shadows and infantry do not pay for the penumbra.
+        If(softened(), () => {
+          const px: ShaderNode = aParams.x.add(u.mul(aRect.z));
+          const py: ShaderNode = aParams.y.add(vCard.mul(aRect.w));
+          rankCoverage.assign(penumbraCoverage(texel, indexedCoverage, px, py));
+        });
+        // Ordinary shadows: pulled by the coverage actually drawn, in SHADOW_PULL_LEVELS steps (shadowGroundPull). The
+        // pre-pass writes that pull for the densest one; the colour pass adds SHADOW_EXCLUSIVE_PULL, so only the first
+        // shadow of the densest step darkens the pixel. Infantry retains its existing five coverage ranks, HD alpha and
+        // solid-core ramp (it may darken a shadow).
+        const ordinary: ShaderNode = float(GROUND_PULL.shadow[0])
+          .add(
+            floor(clamp(rankCoverage, 0, 1).mul(SHADOW_PULL_LEVELS).add(0.5)).mul(
+              (GROUND_PULL.shadow[1] - GROUND_PULL.shadow[0]) / SHADOW_PULL_LEVELS,
+            ),
+          )
+          .add(pass === 'over' ? SHADOW_EXCLUSIVE_PULL : 0);
+        // A solid infantry core must pass an earlier half-colour shadow, even when its filtered coverage is only .22.
+        // Keep this ahead of ordinary shadow coverage ranks and behind both wet reflections and upright card feet.
+        const shadowPull: ShaderNode = select(
+          isInfantryShadow.greaterThan(0.5),
+          mix(
+            float(GROUND_PULL.shadow[0]).add(
+              floor(clamp(coverage, 0, 1).mul(4).add(0.5)).mul((GROUND_PULL.shadow[1] - GROUND_PULL.shadow[0]) / 4),
+            ),
+            GROUND_PULL.infantryCore,
+            step(INFANTRY_SHADOW_RAMP.to, coverage),
+          ),
+          ordinary,
+        ).toVar('spriteInfantryShadowPull');
+        const range: ShaderNode = cameraFar.sub(cameraNear);
+        const behind: ShaderNode = ground.add(float(0.05).div(range));
+        if (pass === 'over') {
+          const pull: ShaderNode = select(isReflection.greaterThan(0.5), float(GROUND_PULL.reflection), shadowPull);
+          return ground.sub(pull.div(range));
+        }
+        // Pre-pass: only ordinary shadows the colour pass will draw (alpha test) write; everything else (reflections,
+        // infantry footprints, transparent texels of the padded quad) lies behind the ground and fails the depth test,
+        // so the pass leaves no depth where the colour pass leaves none.
+        const opacity: ShaderNode = look.shadowDarkness.mul(SHADOW_OPACITY).min(0.9);
+        const writes: ShaderNode = isShadow
+          .greaterThan(0.5)
+          .and(isInfantryShadow.lessThan(0.5))
+          .and(clamp(rankCoverage, 0, 1).mul(opacity).greaterThanEqual(material.alphaTest));
+        return select(writes, ground.sub(shadowPull.div(range)), behind);
+      })();
     const passMaterial = (pass: GroundPass): MeshBasicNodeMaterial => {
       const m = new MeshBasicNodeMaterial();
       m.name = `ra2-sprites-${pass}`;
@@ -1265,8 +1406,16 @@ class SpriteGraph {
         m.depthNode = cardDepth();
         m.depthWrite = false;
       } else {
-        m.depthNode = planeDepth;
+        m.depthNode = planeDepth(pass === 'overDepth' ? 'overDepth' : 'over');
         m.depthFunc = LessDepth;
+      }
+      if (pass === 'overDepth') {
+        // Depth only: the depth node itself rejects what the colour pass's alpha test would (see planeDepth), so the
+        // pass skips the colour graph (and its penumbra taps) altogether.
+        m.colorNode = vec4(0, 0, 0, 1);
+        m.alphaTest = 0;
+        m.colorWrite = false;
+        m.blending = NoBlending;
       }
       return m;
     };
@@ -1276,6 +1425,7 @@ class SpriteGraph {
       unit: unitMaterial,
       translucent: translucentMaterial,
       under: passMaterial('under'),
+      overDepth: passMaterial('overDepth'),
       over: passMaterial('over'),
     };
     // Upright cards have an outline of their own for the frame's outline pass (silhouette.ts), one per draw point:
@@ -1343,6 +1493,11 @@ export class SpriteLayer {
    * on). They share this layer's instance buffers.
    */
   readonly groundPasses: InstancedQuad[];
+  /**
+   * The enhanced look's depth-only pre-pass of ordinary SHP shadows ('overDepth', between 'under' and 'over'; shown
+   * with the ground passes): it leaves the densest shadow's pull at every sample so the 'over' pass darkens once.
+   */
+  readonly shadowDepthPass: InstancedQuad;
   /**
    * Palette sprites' scene light level (display-referred instances bypass it) and the camera basis the cards face:
    * the uniforms of this layer's shader graph, shared by every layer of the same cache and features.
@@ -1499,18 +1654,21 @@ export class SpriteLayer {
     this.translucentMesh.renderOrder = NATIVE_UNIT_RENDER_ORDER + 0.001;
     this.mesh.add(this.translucentMesh);
 
-    this.groundPasses = (['under', 'over'] as const).map((pass, i) => {
+    // Just before this layer's own pass, whatever renderOrder its owner gives the layer later. Layers that share a
+    // renderOrder (the object and cell layers of every atlas page) draw all their 'under' passes, then all their
+    // shadow depth pre-passes, then all their 'over' passes: overlapping shadows of different pages darken once too.
+    const passOrder = { under: -0.02, overDepth: -0.015, over: -0.01 } as const;
+    const [under, shadowDepth, over] = (['under', 'overDepth', 'over'] as const).map((pass) => {
       const passMesh = quad(material[pass], `ra2-sprites-${pass}`);
       passMesh.visible = false;
-      // Just before this layer's own pass, whatever renderOrder its owner gives the layer later.
       Object.defineProperty(passMesh, 'renderOrder', {
-        get: () => main.renderOrder - 0.02 + i * 0.01,
+        get: () => main.renderOrder + passOrder[pass],
         set: () => {},
         configurable: true,
       });
       this.mesh.add(passMesh);
       look.groundPasses.add(passMesh);
-      if (pass === 'over')
+      if (pass !== 'under')
         // The ground plane's depth coefficients are set per draw from the camera and target actually rendering
         // (see SpriteGraph), so a pass with another camera (a reflection's mirrored one) gets its own.
         passMesh.onBeforeRender = (renderer, _scene, camera, _geometry, drawn) => {
@@ -1519,10 +1677,14 @@ export class SpriteLayer {
           if (target) planeSize.set(target.width, target.height);
           else renderer.getDrawingBufferSize(planeSize);
           groundPlaneDepth(camera as OrthographicCamera, planeSize.x, planeSize.y, graph.planeCoefficients.value);
+          graph.planeRay.value.setFromMatrixColumn(camera.matrixWorld, 2).normalize();
         };
       return passMesh;
     });
-    const passes = [this.readOnlyMesh, this.unitMesh, this.translucentMesh, ...this.groundPasses];
+    this.groundPasses = [under!, over!];
+    this.shadowDepthPass = shadowDepth!;
+    const lookPasses = [under!, shadowDepth!, over!];
+    const passes = [this.readOnlyMesh, this.unitMesh, this.translucentMesh, ...lookPasses];
     this.mesh.material.addEventListener('dispose', () => {
       for (const passMesh of passes) passMesh.material.dispose();
     });
@@ -1532,7 +1694,7 @@ export class SpriteLayer {
       this.translucentMesh.dispose();
       capture?.setCaptured(this.mesh, false);
       capture?.setCaptured(this.unitMesh, false);
-      for (const passMesh of this.groundPasses) {
+      for (const passMesh of lookPasses) {
         look.groundPasses.delete(passMesh);
         passMesh.dispose();
       }

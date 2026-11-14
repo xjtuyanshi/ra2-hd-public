@@ -5,9 +5,10 @@ import {
   RGBAFormat,
   RGFormat,
   type Scene,
+  type Texture,
   UnsignedByteType,
   Vector2,
-  type Vector3,
+  Vector3,
 } from 'three/webgpu';
 import {
   clamp,
@@ -26,6 +27,7 @@ import type { EmitterLayer } from './emitters';
 import type { LightField } from './lightField';
 import { SceneLightingUniforms } from './lighting';
 import type { ShaderNode } from './tsl';
+import { emptyHeightGrid, frontMaxTexture } from './groundRay';
 
 /** Shader inputs owned by one renderer/world. Legacy exports below remain for standalone material callers. */
 export class AtmosphereNodes extends SceneLightingUniforms {
@@ -62,6 +64,31 @@ export class AtmosphereNodes extends SceneLightingUniforms {
   readonly faithfulDisplay = uniform(1);
   /** 1 while the terrain draws the clear water look: shadows on open water are softened and lightened. */
   readonly clearWater = uniform(0);
+  private readonly noHeights = emptyHeightGrid();
+  private readonly noFront = frontMaxTexture(new Float32Array([1e4]), 1, 1);
+  /**
+   * The world's drawn terrain surface as a square grid (TerrainBuild.surfaceSquares, read with loads; see groundRay.ts)
+   * and its (columns, rows, squares per world unit). Ground-lying sprite art finds the drawn surface under its pixels
+   * with it. Set through setGroundSurface; the empty grid means no ground anywhere.
+   */
+  readonly groundHeightGrid = texture(this.noHeights);
+  readonly groundHeightInfo = uniform(new Vector3(1, 1, 1));
+  /** Per square, the highest ground in front of it (towards the camera; groundRay.ts frontMaxFromSquares). */
+  readonly groundFrontMax = texture(this.noFront);
+
+  /** Bind a world's surface square grid (TerrainBuild.surfaceSquares), or none (null). */
+  setGroundSurface(surface: { texture: Texture; sub: number; front: Texture } | null): void {
+    if (!surface) {
+      this.groundHeightGrid.value = this.noHeights;
+      this.groundFrontMax.value = this.noFront;
+      this.groundHeightInfo.value.set(1, 1, 1);
+      return;
+    }
+    const { width, height } = surface.texture.image as { width: number; height: number };
+    this.groundHeightGrid.value = surface.texture;
+    this.groundFrontMax.value = surface.front;
+    this.groundHeightInfo.value.set(width, height, surface.sub);
+  }
 
   constructor() {
     super();
@@ -94,6 +121,9 @@ export class AtmosphereNodes extends SceneLightingUniforms {
     this.moonNeutral.value.copy(source.moonNeutral.value);
     this.faithfulDisplay.value = source.faithfulDisplay.value;
     this.clearWater.value = source.clearWater.value;
+    this.groundHeightGrid.value = source.groundHeightGrid.value;
+    this.groundFrontMax.value = source.groundFrontMax.value;
+    this.groundHeightInfo.value.copy(source.groundHeightInfo.value);
   }
 
   /** Only the fallback textures belong here; worlds and light fields own the textures they bind. */
@@ -104,6 +134,8 @@ export class AtmosphereNodes extends SceneLightingUniforms {
     this.resources.clear();
     this.black.dispose();
     this.noSurface.dispose();
+    this.noHeights.dispose();
+    this.noFront.dispose();
   }
 }
 

@@ -4208,13 +4208,21 @@ export class LiveView {
         const anchor = objectAnchor(object, this.cellPool.anchor());
         // Overlays are drawn by the native cell pass, not inserted into the object layer vectors.
         this.cellPool.painter = undefined;
-        this.cellPool.deckHeight = isHighBridge(object.type) ? HIGH_BRIDGE_HEIGHT : undefined;
+        // A high deck by its stock name or the live library's rule flag (live/overlays.ts decides the same way).
+        const highDeck =
+          object.kind === 'overlay' &&
+          (isHighBridge(object.type) || this.library?.library.overlays?.[object.type]?.highBridge === true);
+        this.cellPool.deckHeight = highDeck ? HIGH_BRIDGE_HEIGHT : undefined;
         const palette = paletteFor(this.cache, entry.palette, entry.remap, object.owner);
         // The map object's lighting class (smudges take the full terrain light, ore none), as the static world
         // passes it (ra2/world.ts): absent means 'full'.
         const lighting = object.lighting ?? 'full';
         const shadow = entry.shadows?.[index];
-        if (shadow) instances.push(this.cellPool.take(anchor, shadow, palette, 0, true, true, undefined, lighting));
+        if (shadow) {
+          const instance = this.cellPool.take(anchor, shadow, palette, 0, true, true, undefined, lighting);
+          instance.terrainShadow = (object.kind === 'overlay' && !highDeck) || undefined;
+          instances.push(instance);
+        }
         const body = this.cellPool.take(
           anchor,
           frame,
