@@ -66,6 +66,20 @@ export interface CloudToneParams {
   wetSheen: number;
   wetSheenGain: number;
   wetSheenStart: number;
+  /** Wet-band share (0..1 of the shore mask) where wet sand begins; 0 darkens across the whole band. */
+  wetSandStart: number;
+  /** Painted shallow water over sand inside the band takes wetShallowTint instead of becoming wet sand. */
+  wetShallow: number;
+  wetShallowTint: [number, number, number];
+  wetShallowLight: number;
+  /** Source-pixel water classification on (b - r / 2) / luma: [sand edge, water edge]. */
+  wetPaintQ: [number, number];
+  /** Pale swash line where wet sand meets the painted shallows: desaturate, then lift by wetLipLift. */
+  wetLip: number;
+  wetLipLift: number;
+  /** Pale water film over the last stretch of wet sand before the waterline (from wetFilmStart), times wetLip. */
+  wetFilm: number;
+  wetFilmStart: number;
   treeBlend: number;
   treeReference: [number, number, number];
   treeContact: number;
@@ -120,6 +134,15 @@ export class CloudToneUniforms {
   readonly wetSheen = uniform(0);
   readonly wetSheenGain = uniform(0);
   readonly wetSheenStart = uniform(0);
+  readonly wetSandStart = uniform(0);
+  readonly wetShallow = uniform(0);
+  readonly wetShallowTint = uniform(new Vector3(1, 1, 1));
+  readonly wetShallowLight = uniform(1);
+  readonly wetPaintQ = uniform(new Vector2(0, 1));
+  readonly wetLip = uniform(0);
+  readonly wetLipLift = uniform(0);
+  readonly wetFilm = uniform(0);
+  readonly wetFilmStart = uniform(0);
   readonly treeBlend = uniform(0);
   readonly treeReference = uniform(new Vector3(1, 1, 1));
   readonly treeContact = uniform(0);
@@ -297,16 +320,33 @@ export function cloudToneRgb(
     detailed[i] = wetY + (v - wetY) * blend(1, p.wetChroma, wetShare);
   });
   if (p.wetSand > 0 && wet > 0) {
-    const ramp = smooth(0, 1, wet);
+    const ramp = smooth(p.wetSandStart, 1, wet);
     const share = ramp * Math.min(1, p.wet) * (1 - night);
     // Contract distance from a luminance floor: dim rim art cannot be multiplied into an olive-black strip.
     const targetY = p.wetSandFloor + Math.max(0, y - p.wetSandFloor) * (1 - p.wetSandDepth);
     const sandY = blend(y, targetY, ramp);
     const sandTintY = Math.max(luma(p.wetSandTint), 1e-6);
-    detailed.forEach((v, i) => {
+    // Shore tiles paint translucent shallows over the sand: those pixels keep reading as water (turquoise, from the
+    // source luminance) and the crossing becomes a pale swash line, so tan and turquoise never mix into olive.
+    const band = wetGate * Math.min(1, p.wet) * (1 - night);
+    const water = smooth(p.wetPaintQ[0], p.wetPaintQ[1], (rgb[2] - 0.5 * rgb[0]) / Math.max(y, 1e-6));
+    const shallow = water * band * p.wetShallow;
+    const shallowTintY = Math.max(luma(p.wetShallowTint), 1e-6);
+    const out = bandSource.map((b, i) =>
       // The new path starts before the r3 chroma expansion: partial replacement never boosts source green.
-      const sand = blend(bandSource[i]!, (sandY * p.wetSandTint[i]!) / sandTintY, share);
-      detailed[i] = blend(v, sand, p.wetSand);
+      blend(
+        blend(b, (sandY * p.wetSandTint[i]!) / sandTintY, share),
+        (y * p.wetShallowLight * p.wetShallowTint[i]!) / shallowTintY,
+        shallow,
+      ),
+    );
+    const lip = 4 * water * (1 - water) * band * p.wetLip * lit;
+    const film = smooth(p.wetFilmStart, 1, wet) * band * p.wetLip * p.wetFilm;
+    const outY = luma(out) * (1 + p.wetLipLift);
+    detailed.forEach((v, i) => {
+      const lipped = blend(out[i]!, outY, lip);
+      const filmed = blend(lipped, outY * blend(1, p.wetShallowTint[i]! / shallowTintY, 0.4), film);
+      detailed[i] = blend(v, filmed, p.wetSand);
     });
   }
   if (p.wetSheen > 0 && wet > 0) {
@@ -690,12 +730,30 @@ export function cloudToneMappedNode(
         const wy = dot(detailed, vec3(...W)).toVar();
         detailed.assign(vec3(wy).add(detailed.sub(wy).mul(mix(float(1), p.wetChroma, wetShare))));
         If(p.wetSand.greaterThan(0), () => {
-          const ramp = smoothstep(0, 1, wet);
+          const ramp = smoothstep(p.wetSandStart, 1, wet);
           const share = ramp.mul(p.wet.min(1)).mul(float(1).sub(night));
           const targetY = p.wetSandFloor.add(y.sub(p.wetSandFloor).max(0).mul(float(1).sub(p.wetSandDepth)));
           const sandY = mix(y, targetY, ramp);
           const sand = p.wetSandTint.mul(sandY.div(dot(p.wetSandTint, vec3(...W)).max(1e-6)));
-          detailed.assign(mix(detailed, mix(bandSource, sand, share), p.wetSand));
+          // Painted shallows over sand stay water (turquoise); the crossing becomes a pale swash line (CPU twin).
+          const band = wetGate.mul(p.wet.min(1)).mul(float(1).sub(night));
+          const water = smoothstep(
+            p.wetPaintQ.x,
+            p.wetPaintQ.y,
+            source.b.sub(source.r.mul(0.5)).div(y.max(1e-6)),
+          ).toVar();
+          const shallow = p.wetShallowTint.mul(
+            y.mul(p.wetShallowLight).div(dot(p.wetShallowTint, vec3(...W)).max(1e-6)),
+          );
+          const out = mix(mix(bandSource, sand, share), shallow, water.mul(band).mul(p.wetShallow)).toVar();
+          const lip = water.mul(float(1).sub(water)).mul(4).mul(band).mul(p.wetLip).mul(float(1).sub(shade));
+          const film = smoothstep(p.wetFilmStart, 1, wet).mul(band).mul(p.wetLip).mul(p.wetFilm);
+          const outY = dot(out, vec3(...W))
+            .mul(float(1).add(p.wetLipLift))
+            .toVar();
+          const pale = mix(vec3(1), p.wetShallowTint.div(dot(p.wetShallowTint, vec3(...W)).max(1e-6)), 0.4).mul(outY);
+          out.assign(mix(mix(out, vec3(outY), lip), pale, film));
+          detailed.assign(mix(detailed, out, p.wetSand));
         });
         If(p.wetSheen.greaterThan(0), () => {
           const sheen = float(1).add(

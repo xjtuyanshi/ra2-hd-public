@@ -42,9 +42,9 @@ does not guess one from keystrokes: a live skirmish check showed Enter opens no 
 to the options menu), so an Enter/Escape estimate would wrongly block the toggle. Hosts that can observe real text
 entry pass `textEntryActive` through `mountLush2Tuning`.
 
-The lush2 tuning model stores values per theater under `hd-lush2-v5`. `goldReach` defaults to .35; increasing
+The lush2 tuning model stores values per theater under `hd-lush2-v6`. `goldReach` defaults to .35; increasing
 it lowers the two highlight thresholds. The `snowLift`
-range is 1–2.0, with snow recommended at 1.8. The wetSand/wetSheen/wetSandDepth and treeBlend sliders
+range is 1–2.0, with snow recommended at 1.8. The wetSand/wetSheen/wetSandDepth/wetShallow and treeBlend sliders
 control warm shoreline replacement and tree integration; snow disables these new paths. Snow gain separates
 scalar luminance lift from
 luma-one chromatic gain, applying the latter only to the mean's display-sRGB cool cast; shade tint remains

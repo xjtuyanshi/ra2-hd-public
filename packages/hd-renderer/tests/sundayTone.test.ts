@@ -24,7 +24,7 @@ describe('Sunday same-build r3 gates', () => {
     expect(Object.isFrozen(LUSH2_R3_TEMPERATE)).toBe(true);
     expect(LUSH2_R3_TEMPERATE).toEqual({ grassChroma: 1.2, shadeChroma: 1.25, wetSand: 0, wetSheen: 0, treeBlend: 0 });
     for (const [theater, grass, shade, enabled] of [
-      ['temperate', 1, 1.2, 1],
+      ['temperate', 1, 1.45, 1],
       ['urban', 1.04, 1.25, 1],
       ['newurban', 1.04, 1.25, 1],
       ['desert', 1.02, 1.25, 1],
@@ -34,10 +34,16 @@ describe('Sunday same-build r3 gates', () => {
       const p = tone(theater);
       expect([p.grassChroma, p.shadeChroma, p.wetSand, p.treeBlend]).toEqual([grass, shade, enabled, enabled]);
       expect(p.treeReference).toEqual([0.356, 0.372, 0.0884]);
-      expect(p.wetSandTint).toEqual([0.5161, 0.267, 0.0458]);
-      expect([p.wetSandDepth, p.wetSheen]).toEqual([0.7, enabled * 0.5]);
+      expect(p.wetSandTint).toEqual([0.4299, 0.2871, 0.1014]);
+      expect([p.wetSandDepth, p.wetSheen, p.wetShallow, p.wetLip]).toEqual([
+        0.45,
+        enabled * 0.8,
+        enabled,
+        enabled * 0.8,
+      ]);
+      expect([p.treeContact, p.treeContactHeight]).toEqual([0.35, 1]);
     }
-    for (const key of ['wetSand', 'wetSheen', 'wetSandDepth', 'treeBlend']) {
+    for (const key of ['wetSand', 'wetSheen', 'wetSandDepth', 'wetShallow', 'treeBlend']) {
       expect(LUSH2_SCHEMA.find((f) => f.key === key)).toMatchObject({ min: 0, max: 1, step: 0.01 });
     }
   });
@@ -82,7 +88,7 @@ describe('Sunday same-build r3 gates', () => {
   });
 });
 
-it('reduces default grass chroma while preserving OKLab lightness and hue', () => {
+it('reduces sunlit grass chroma, keeps shade chroma, preserving OKLab lightness and hue', () => {
   const oklab = (rgb: readonly number[]) => {
     const [r, g, b] = rgb as [number, number, number];
     const l = Math.cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b);
@@ -100,8 +106,9 @@ it('reduces default grass chroma while preserving OKLab lightness and hue', () =
     const old = oklab(cloudToneRgb(rgb, shade, { ...p, ...LUSH2_R3_TEMPERATE }));
     const next = oklab(cloudToneRgb(rgb, shade, p));
     const ratio = Math.hypot(next[1]!, next[2]!) / Math.hypot(old[1]!, old[2]!);
-    expect(ratio).toBeGreaterThan(0.69);
-    expect(ratio).toBeLessThan(0.9);
+    // Sunlit grass is calmer; cloud shade keeps nearly r3's chroma (lower read sage/grey-teal live).
+    expect(ratio).toBeGreaterThan(shade === 1 ? 0.9 : 0.69);
+    expect(ratio).toBeLessThan(shade === 0 ? 0.9 : 1);
     // The unchanged display-channel safety compressor can move OKLab L slightly.
     expect(Math.abs(next[0]! - old[0]!)).toBeLessThan(0.002);
     expect((Math.abs(Math.atan2(next[2]!, next[1]!) - Math.atan2(old[2]!, old[1]!)) * 180) / Math.PI).toBeLessThan(1);
@@ -109,36 +116,41 @@ it('reduces default grass chroma while preserving OKLab lightness and hue', () =
 });
 
 describe('Sunday warm land-side sand', () => {
-  it('uses a pre-light/display L*62/C*50/h78 tint and retains brighter source texture', () => {
+  it('uses a pre-light L*62/C*34/h84 tint: warm wet sand of about the dry chroma, darker but textured', () => {
     const p = tone();
-    lch(p.wetSandTint).forEach((v, i) => expect(v).toBeCloseTo([62, 50, 78][i]!, 1));
-    const dryY = ((77 + 16) / 116) ** 3;
-    const rgb = [dryY, dryY, dryY] as const;
-    const out = cloudToneRgb(rgb, 0, p, 0, rgb, false, 1);
-    const [l, c, h] = lch(out);
-    expect(l).toBeGreaterThanOrEqual(60);
-    expect(l).toBeLessThanOrEqual(64);
-    expect(c).toBeGreaterThanOrEqual(49);
-    expect(c).toBeLessThanOrEqual(51);
-    expect(h).toBeGreaterThanOrEqual(77);
-    expect(h).toBeLessThanOrEqual(79);
-    const values = [0.3, 0.4, 0.5, 0.6].map((v) => y(cloudToneRgb([v, v, v], 0, p, 0, [v, v, v], false, 1)));
+    lch(p.wetSandTint).forEach((v, i) => expect(v).toBeCloseTo([62, 34, 84][i]!, 1));
+    const sand = linear([215, 185, 130]);
+    const dry = cloudToneRgb(sand, 0, p, 0, sand, false, 0);
+    const wetSand = cloudToneRgb(sand, 0, p, 0, sand, false, 0.85);
+    const [l, c, h] = lch(wetSand);
+    expect(l).toBeLessThan(lightness(dry) - 2);
+    expect(l).toBeGreaterThan(lightness(dry) - 10);
+    expect(c).toBeGreaterThan(30);
+    expect(c).toBeLessThan(40);
+    expect(h).toBeGreaterThan(82);
+    expect(h).toBeLessThan(87);
+    const noFilm = { ...p, wetLip: 0 };
+    // Above the luminance floor (below it, dim rim art is lifted to the floor).
+    const values = [0.85, 0.9, 0.95, 1].map((v) =>
+      y(cloudToneRgb(linear([v * 255, v * 220, v * 150]), 0, noFilm, 0, sand, false, 1)),
+    );
     expect(values.every((v, i) => i === 0 || v > values[i - 1]!)).toBe(true);
   });
 
-  it('replaces green source chroma, floors dark rim luminance, and has a continuous ordered shore ramp', () => {
-    const p = tone();
+  it('replaces olive source chroma, floors dark rim luminance, and keeps the inner band dry', () => {
+    const p = { ...tone(), wetLip: 0 };
     for (const rgb of [linear([150, 160, 60]), linear([105, 115, 50]), linear([215, 185, 130])]) {
       const out = cloudToneRgb(rgb, 0, p, 0, rgb, false, 1);
-      expect(lightness(out)).toBeGreaterThanOrEqual(52);
-      expect(lch(out)[2]).toBeGreaterThanOrEqual(77);
-      expect(lch(out)[2]).toBeLessThanOrEqual(79);
-      const dry = cloudToneRgb(rgb, 0, p);
-      cloudToneRgb(rgb, 0, p, 0, rgb, false, 1e-6).forEach((v, i) => expect(v).toBeCloseTo(dry[i]!, 6));
+      expect(lightness(out)).toBeGreaterThanOrEqual(62);
+      expect(lch(out)[2]).toBeGreaterThanOrEqual(82);
+      expect(lch(out)[2]).toBeLessThanOrEqual(86);
       const before = cloudToneRgb(rgb, 0, p, 0, rgb, false, 1 - 1e-6);
       before.forEach((v, i) => expect(v).toBeCloseTo(out[i]!, 6));
     }
     const sand = linear([215, 185, 130]);
+    const dry = cloudToneRgb(sand, 0, p, 0, sand, false, 0);
+    for (const wet of [1e-6, 0.1, p.wetSandStart])
+      cloudToneRgb(sand, 0, p, 0, sand, false, wet).forEach((v, i) => expect(v).toBeCloseTo(dry[i]!, 9));
     const ramp = Array.from({ length: 101 }, (_, i) =>
       y(cloudToneRgb(sand, 0, { ...p, wetSheen: 0 }, 0, sand, false, i / 100)),
     );
@@ -162,13 +174,60 @@ describe('Sunday warm land-side sand', () => {
     for (const wet of [0, 0.5, 0.7, 0.85, 1])
       for (const night of [0, 0.5, 1])
         for (const shade of [0, 0.5, 1]) {
-          const off = cloudToneRgb(rgb, shade, { ...p, wetSheen: 0 }, night, rgb, false, wet);
-          const on = cloudToneRgb(rgb, shade, { ...p, wetSheen: 1 }, night, rgb, false, wet);
-          expect(y(on) / y(off)).toBeLessThanOrEqual(1.04 + 1e-12);
+          // The film and swash line are separate knobs (wetLip); this isolates the multiplicative sheen.
+          const off = cloudToneRgb(rgb, shade, { ...p, wetSheen: 0, wetLip: 0 }, night, rgb, false, wet);
+          const on = cloudToneRgb(rgb, shade, { ...p, wetSheen: 1, wetLip: 0 }, night, rgb, false, wet);
+          expect(y(on) / y(off)).toBeLessThanOrEqual(1 + p.wetSheenGain + 1e-12);
           if (wet <= 0.7 || night === 1 || shade === 1) expect(on).toEqual(off);
         }
     expect(cloudToneRgb(rgb, 0, p, 0, rgb, true, 1)).toEqual(r3CloudToneRgb(rgb, 0, p, 0, rgb, true, 1));
     expect(cloudToneRgb(rgb, 0, p, 0, rgb, false, 0)).toEqual(r3CloudToneRgb(rgb, 0, p, 0, rgb, false, 0));
+  });
+});
+
+describe('Sunday shore shallows and swash line', () => {
+  const sand = linear([215, 185, 130]),
+    shallow = linear([144, 163, 132]);
+
+  it('keeps painted shallows over sand reading as turquoise water instead of wet sand', () => {
+    const p = tone();
+    const [, c, h] = lch(cloudToneRgb(shallow, 0, p, 0, shallow, false, 1));
+    expect(h).toBeGreaterThan(175);
+    expect(h).toBeLessThan(200);
+    expect(c).toBeGreaterThan(15);
+    // Without the shallow recolour the same pixel becomes wet sand.
+    expect(lch(cloudToneRgb(shallow, 0, { ...p, wetShallow: 0, wetLip: 0 }, 0, shallow, false, 1))[2]).toBeLessThan(95);
+    // Dry land and the inner band never classify pixels as water.
+    expect(cloudToneRgb(shallow, 0, p, 0, shallow, false, 0)).toEqual(
+      r3CloudToneRgb(shallow, 0, p, 0, shallow, false, 0),
+    );
+  });
+
+  it('never boosts olive where tan sand and turquoise shallows cross', () => {
+    const p = tone();
+    for (let t = 0; t <= 1.0001; t += 0.05) {
+      const rgb = sand.map((v, i) => v + (shallow[i]! - v) * t) as [number, number, number];
+      for (const wet of [0.5, 0.85, 1]) {
+        const [, c, h] = lch(cloudToneRgb(rgb, 0, p, 0, rgb, false, wet));
+        // Partially wet source art may keep a trace of its own yellow-green, never more than the art itself had.
+        if (h > 98 && h < 170) {
+          expect(c).toBeLessThan(20);
+          expect(c).toBeLessThanOrEqual(lch(rgb)[1]!);
+        }
+      }
+    }
+  });
+
+  it('pales and desaturates the last stretch before the waterline only, by day and in the lush band', () => {
+    const p = tone();
+    const noFilm = { ...p, wetLip: 0 };
+    const at = (q: CloudToneParams, wet: number, night = 0) => cloudToneRgb(sand, 0, q, night, sand, false, wet);
+    expect(at(p, p.wetFilmStart)).toEqual(at(noFilm, p.wetFilmStart));
+    expect(lch(at(p, 1))[1]).toBeLessThan(lch(at(noFilm, 1))[1] - 5);
+    expect(y(at(p, 1))).toBeGreaterThan(y(at(noFilm, 1)));
+    expect(at(p, 1, 1)).toEqual(at(noFilm, 1, 1));
+    const r3 = { ...p, wetSand: 0, wetSheen: 0 };
+    expect(at(r3, 1)).toEqual(r3CloudToneRgb(sand, 0, r3, 0, sand, false, 1));
   });
 });
 
@@ -204,15 +263,15 @@ describe('Sunday reference-grass foliage grade', () => {
         }
   });
 
-  it('fades contact softly over .25 world cells, scales it with blend and halves it at night', () => {
+  it('fades contact softly over one world cell, scales it with blend and halves it at night', () => {
     const p = tone(),
       rgb = linear([150, 160, 60]);
-    expect(p.treeContactHeight).toBe(0.25);
+    expect(p.treeContactHeight).toBe(1);
     for (const night of [0, 1]) {
       const top = cloudTreeToneRgb(rgb, 0, p, night, p.treeContactHeight);
       const bottom = cloudTreeToneRgb(rgb, 0, p, night, 0);
-      expect(y(bottom) / y(top)).toBeCloseTo(1 - 0.25 * (1 - 0.5 * night), 12);
-      expect(y(cloudTreeToneRgb(rgb, 0, p, night, 0.125)) / y(top)).toBeCloseTo(1 - 0.125 * (1 - 0.5 * night), 12);
+      expect(y(bottom) / y(top)).toBeCloseTo(1 - 0.35 * (1 - 0.5 * night), 12);
+      expect(y(cloudTreeToneRgb(rgb, 0, p, night, 0.5)) / y(top)).toBeCloseTo(1 - 0.175 * (1 - 0.5 * night), 12);
     }
     const old = cloudTreeToneRgb(rgb, 0, { ...p, treeBlend: 0 }, 0, 0);
     const full = cloudTreeToneRgb(rgb, 0, p, 0, 0);

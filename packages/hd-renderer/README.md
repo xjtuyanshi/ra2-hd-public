@@ -1830,7 +1830,7 @@ capture listener first. The panel also stops immediate propagation when handling
 releases the reservation and all panel listeners. The page's existing debug shortcut remains unchanged
 outside these development sessions.
 
-Storage uses `hd-lush2-v5:<theatre>` so older recipes do not override the current defaults. Blocked/corrupt
+Storage uses `hd-lush2-v6:<theatre>` so older recipes do not override the current defaults. Blocked/corrupt
 storage still permits tuning. The panel starts collapsed at top-left (12px inset, 260px wide), with its state
 line and three buttons visible. After slider change/pointerup or a button click it blurs the control and invokes
 optional `returnFocus()`; the bridge focuses the existing game input canvas without scrolling. The owner disposes
@@ -1848,7 +1848,7 @@ nor post graphs are rebuilt. Strength zero is exact identity with the added clou
 | 绿色色相 [grassHue]     | 0–30 degrees | 10                | OKLab hue rotation toward green                        |
 | 阴影色相 [shadeHue]     | 0–40 degrees | 12                | Extra shaded-grass hue rotation                        |
 | 饱和度 [grassChroma]    | .8–1.6       | 1                 | OKLab chroma multiplier                                |
-| 阴影饱和 [shadeChroma]  | .8–1.6       | 1.2               | Extra shaded-grass chroma multiplier                   |
+| 阴影饱和 [shadeChroma]  | .8–1.6       | 1.45              | Extra shaded-grass chroma multiplier                   |
 | 草纹对比 [detail]       | .4–1.2       | 1                 | Optional source/mean luma contrast exponent            |
 | 云影覆盖 [cover]        | 0–1          | .5                | World-area cloud coverage estimate                     |
 | 阴影深浅 [shadeDepth]   | 0–.5         | .3                | Physical cloud attenuation                             |
@@ -1862,15 +1862,16 @@ nor post graphs are rebuilt. Strength zero is exact identity with the added clou
 | 接触阴影 [contact]      | 0–1          | 1                 | Existing soft pool, peak `min(.9,.9*contact*strength)` |
 | 岸边湿润 [wet]          | 0–1          | .8                | Full warm wet-strip recipe at .8                       |
 | 湿沙暖色 [wetSand]      | 0–1          | 1                 | Replaces olive rim chroma with warm sand; 0 retains r3 |
-| 湿沙光泽 [wetSheen]     | 0–1          | .5                | Outer-band daylight sheen, up to 4% luminance          |
-| 湿沙深浅 [wetSandDepth] | 0–1          | .7                | Contracts source luminance toward the L*52 floor       |
+| 湿沙光泽 [wetSheen]     | 0–1          | .8                | Sheen (+6% max), swash line and waterline water film   |
+| 湿沙深浅 [wetSandDepth] | 0–1          | .45               | Contracts source luminance toward the L*66 floor       |
+| 岸边浅水 [wetShallow]   | 0–1          | 1                 | Painted shallows over sand stay turquoise water        |
 | 树木融合 [treeBlend]    | 0–1          | 1                 | Reference-grass grade and full ground cloud light      |
 | 雪地蓝 [snowBlue]       | 0–1          | 1                 | Eligible snow shade tint                               |
 | 雪地提亮 [snowLift]     | 1–2          | 1.05              | Snow luminance lift with highlight headroom            |
 
 Urban/newurban use grassLight .98, grassHue 5, grassChroma 1.04, shadeChroma 1.25, cover .4 and shadeDepth .26. Desert uses
 1/3/1.02, shadeChroma 1.25, gold .1, cover .35 and shadeDepth .24. Snow uses identity grass parameters, gold 0, cover .28 and
-shadeDepth .12, snowLift 1.8 and snowWhite 1. Snow/lunar set wetSand, wetSheen and treeBlend to 0; snow keeps no shore
+shadeDepth .12, snowLift 1.8 and snowWhite 1. Snow/lunar set wetSand, wetShallow, wetSheen and treeBlend to 0; snow keeps no shore
 band. Lunar disables the look and retains r3 grassChroma 1.2/shadeChroma 1.25. Other shared defaults are defined
 by the schema/mapping source.
 
@@ -1907,12 +1908,22 @@ The wet band is 1.6 cells wide, perturbed by existing world value noise at .8-ce
 Noise is evaluated only near shore in the enabled branch. At wetSand=0/wetSheen=0 the r3 finish remains
 exact: fade the dry grade to source, multiply by [1,.88,.72] with neutral gain .6, then own-luma chroma 1.3.
 The new finish starts before the legacy tint/chroma expansion, replacing chroma at the effective share
-`wetSand*smoothstep(0,1,wet)*min(1,wetAmount)*(1-night)` with a luminance-normalised
-warm linear tint [.5161,.267,.0458], targeting L*62/C*50/h78 before scene lighting and display grading.
-It replaces source chroma rather than amplifying its green. Source luminance
-contracts smoothly toward an L*52 floor: at the waterline, `floor+max(0,sourceY-floor)*(1-wetSandDepth)`.
-At depth .7, dry L*77 sand ends near L*61 while brighter texture remains ordered above the floor. The optional
-neutral sheen starts at wet=.7, reaches at most +4% at wetSheen=1 and is multiplied by daylight and `(1-shade)`.
+`wetSand*smoothstep(wetSandStart,1,wet)*min(1,wetAmount)*(1-night)` with a luminance-normalised
+warm linear tint [.4299,.2871,.1014] (L*62/C*34/h84 before scene lighting and display grading, about the dry
+sand's own chroma: the earlier C*50 tint read as an ochre mud stripe). RA2 sets wetSandStart .2, so the inner
+fifth of the band stays dry sand. It replaces source chroma rather than amplifying its green. Source luminance
+contracts smoothly toward an L*66 floor: at the waterline, `floor+max(0,sourceY-floor)*(1-wetSandDepth)`, so the
+wet sand is a few L* darker than the dry sand while brighter texture remains ordered above the floor.
+Shore tiles paint translucent shallows over the sand inside the band. Each source pixel is classified by
+`(b-r/2)/luma` between `wetPaintQ` [0,.3] (sand stays below 0, painted shallows rise above .3; neutral grey and
+white foam count as water); that share, times the band gate and wetShallow, takes the turquoise
+`wetShallowTint` [.0761,.369,.3317] (L*62/C*28/h188) at .75 of the source luminance instead of wet sand. Where
+the classification crosses (peak `4w(1-w)`), the swash line desaturates toward luminance lifted by wetLipLift .12,
+so tan and turquoise never mix into olive. The last stretch before the waterline (wetFilmStart .85 to 1) blends
+by `wetLip*wetFilm` (.8*.3) toward a pale, slightly turquoise water film. Lip and film use wetLip, which RA2
+ties to the wetSheen slider. The neutral sheen starts at wet=.7, reaches at most +6% at wetSheen=1 and is
+multiplied by daylight and `(1-shade)`. At wetShallow=0, wetLip=0 and wetSandStart=0 the first Sunday finish
+(8e2d8ce) is reproduced exactly.
 Water signed distance, optics, colour, foam and night/snow water paths are unchanged. No texture fetch is added.
 
 Upright tree-wind instances borrow the ground's full cloud factor by treeBlend, then blend their r3 object grade
@@ -1924,8 +1935,8 @@ leaf colour. Each pixel's own greenness mixes that gain with its neutral luminan
 shadows retain their colour ratios. The OKLab gain now has uniform inputs per instance rather than per-pixel
 colour inputs; only the cheap greenness classification and gain mix vary by pixel. It stays inside the single
 tree-only instance branch, with no new texture reads; actual GPU cost still requires measurement.
-A .25 world-cell contact height (one quarter of the horizontal cell unit;
-positionWorld.y minus anchor.y) fades contact darkening smoothly from 25% at the trunk to zero, halved at night.
+A one world-cell contact height (positionWorld.y minus anchor.y) fades contact darkening smoothly from 35% at
+the trunk foot to zero over the lower crown, halved at night (.25 over .25 cells was invisible at 1:1).
 Lighting-none trees (including TIBTRE ore trees), grade-exempt instances and house-converter/indexed-paint
 instances retain their r3 paths. Other upright sprites and all flat instances keep the object recipe.
 

@@ -25,6 +25,7 @@ export interface Lush2Values {
   wet: number;
   wetSand: number;
   wetSandDepth: number;
+  wetShallow: number;
   wetSheen: number;
   treeBlend: number;
   snowBlue: number;
@@ -52,6 +53,7 @@ export const LUSH2_SCHEMA: readonly TuningField<keyof Lush2Values>[] = [
   { key: 'wetSand', label: '湿沙暖色 [wetSand]', min: 0, max: 1, step: 0.01 },
   { key: 'wetSheen', label: '湿沙光泽 [wetSheen]', min: 0, max: 1, step: 0.01 },
   { key: 'wetSandDepth', label: '湿沙深浅 [wetSandDepth]', min: 0, max: 1, step: 0.01 },
+  { key: 'wetShallow', label: '岸边浅水 [wetShallow]', min: 0, max: 1, step: 0.01 },
   { key: 'treeBlend', label: '树木融合 [treeBlend]', min: 0, max: 1, step: 0.01 },
   { key: 'snowBlue', label: '雪地蓝 [snowBlue]', min: 0, max: 1, step: 0.01 },
   { key: 'snowLift', label: '雪地提亮 [snowLift]', min: 1, max: 2, step: 0.01 },
@@ -61,7 +63,8 @@ const temperate: Readonly<Lush2Values> = Object.freeze({
   grassLight: 0.9,
   grassHue: 10,
   grassChroma: 1,
-  shadeChroma: 1.2,
+  // Live XMP27T8: shade chroma below r3's 1.5 total turned cloud-shaded grass sage/grey-teal.
+  shadeChroma: 1.45,
   snowLift: 1.05,
   objectFloor: 0.8,
   detail: 1,
@@ -76,8 +79,9 @@ const temperate: Readonly<Lush2Values> = Object.freeze({
   contact: 1,
   wet: 0.8,
   wetSand: 1,
-  wetSandDepth: 0.7,
-  wetSheen: 0.5,
+  wetSandDepth: 0.45,
+  wetShallow: 1,
+  wetSheen: 0.8,
   treeBlend: 1,
   snowBlue: 1,
   shadeDepth: 0.3,
@@ -106,6 +110,7 @@ export const LUSH2_DEFAULTS: Readonly<Record<Theater, Readonly<Lush2Values>>> = 
     ...temperate,
     snowLift: 1.8,
     wetSand: 0,
+    wetShallow: 0,
     wetSheen: 0,
     treeBlend: 0,
     snowBlue: 0.5,
@@ -137,6 +142,7 @@ export const LUSH2_DEFAULTS: Readonly<Record<Theater, Readonly<Lush2Values>>> = 
     contact: 0,
     wet: 0,
     wetSand: 0,
+    wetShallow: 0,
     wetSheen: 0,
     treeBlend: 0,
     shadeDepth: 0,
@@ -208,18 +214,32 @@ export function lush2Mapping(
       grassSunTint: [0.96, 1, 0.7],
       snowShadeTint: [0.93, 0.97, 1.08],
       wetSand: values.wetSand,
-      wetSandTint: [0.5161, 0.267, 0.0458],
+      // L* 62, C* 34, h 84 before scene light: live wet sand keeps about the dry sand's chroma (ochre read as mud).
+      wetSandTint: [0.4299, 0.2871, 0.1014],
       wetSandDepth: values.wetSandDepth,
-      // L* 52 in linear Rec.709; retain source texture above the floor instead of multiplying into black.
-      wetSandFloor: ((52 + 16) / 116) ** 3,
+      // L* 66 in linear Rec.709; retain source texture above the floor instead of multiplying into black.
+      wetSandFloor: ((66 + 16) / 116) ** 3,
       wetSheen: values.wetSheen,
-      wetSheenGain: 0.04,
+      wetSheenGain: 0.06,
       wetSheenStart: 0.7,
+      // The inner fifth of the shore mask stays dry sand (owner: the full-width band read as a mud stripe).
+      wetSandStart: 0.2,
+      wetShallow: values.wetShallow,
+      // L* 62, C* 28, h 188 (turquoise shallows of the approved reference) in linear Rec.709.
+      wetShallowTint: [0.0761, 0.369, 0.3317],
+      wetShallowLight: 0.75,
+      // Source (b - r / 2) / luma: dry and wet shore sand stay below 0, painted shallows over sand rise above 0.3.
+      wetPaintQ: [0, 0.3],
+      wetLip: values.wetSheen,
+      wetLipLift: 0.12,
+      wetFilm: 0.3,
+      wetFilmStart: 0.85,
       treeBlend: values.treeBlend,
       // Measured temperate grass albedo; shared by other theatres until separately calibrated.
       treeReference: [0.356, 0.372, 0.0884],
-      treeContact: 0.25,
-      treeContactHeight: 0.25,
+      // Soft occlusion over the lower crown (world cells): 0.25 over 0.25 cells was invisible at 1:1.
+      treeContact: 0.35,
+      treeContactHeight: 1,
       wetDepth: 0.4,
       wetChroma: 1.3,
       highlightGate: [0, 0, 1.12 - 0.14 * values.goldReach, 1.32 - 0.12 * values.goldReach],
@@ -265,6 +285,7 @@ export function lush2FromMapping(tone: CloudToneParams, alive: AliveOptions): Lu
     wet: tone.wet * 0.8,
     wetSand: tone.wetSand,
     wetSandDepth: tone.wetSandDepth,
+    wetShallow: tone.wetShallow,
     wetSheen: tone.wetSheen,
     treeBlend: tone.treeBlend,
     snowBlue: tone.snowBlue,
