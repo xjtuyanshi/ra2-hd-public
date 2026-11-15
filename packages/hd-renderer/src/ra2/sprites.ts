@@ -1,3 +1,7 @@
+import { treeToneEligibleNode } from './livingTrees';
+import { linearCloudFactor } from '../livingWorldNodes';
+import { objectCloudFactor, surfaceCloudFactor, surfaceFollowingCloudFactor } from '../objectCloudTone';
+import { cloudToneNode, cloudTreeToneNode } from '../cloudTone';
 import type { TerrainDepth } from '../terrainDepth';
 import { NOT_CAPTURED_CODE } from '../objectDepth';
 import { DirtyAttribute } from '../dirtyAttribute';
@@ -877,11 +881,46 @@ class SpriteGraph {
         return select(hidden.greaterThan(0.5), aAnchor, enhanced);
       })();
     material.positionNode = placement('main');
+    const footCoverage = nodes.alive
+      .coverageAt(mix(positionWorld.xz, aAnchor.xz, nodes.cloudTone.strength.greaterThan(0).select(1, 0)))
+      .toVar('aliveCloudCoverage');
+    // Eligibility is constant per instance. TIBTRE ore trees are lighting 'none' (extract.ts); converter instances
+    // are also excluded so no authored house ramp can enter the foliage grade.
+    const treeEligible = treeToneEligibleNode(
+      treeWind,
+      aFlat,
+      aGradeExempt,
+      isNone,
+      houseConverter,
+      indexedHousePaint,
+    ).toVar('spriteTreeToneEligible');
+    const treeOn: ShaderNode = treeEligible
+      .and(nodes.cloudTone.strength.greaterThan(0))
+      .and(nodes.cloudTone.treeBlend.greaterThan(0))
+      .toVar('spriteTreeToneEnabled');
+    // surfaceCloudFactor was already needed by objectCloudFactor. Reuse it; selecting the light share adds no
+    // texture reads and the expensive foliage grade below lives in a single instance-uniform If.
+    const groundFootShadow = surfaceCloudFactor(nodes, footCoverage).toVar();
+    const objectFootShadow = objectCloudFactor(nodes, footCoverage, groundFootShadow).toVar();
+    const footShadow = surfaceFollowingCloudFactor(
+      objectFootShadow,
+      groundFootShadow,
+      nodes.cloudTone.treeBlend,
+      treeOn,
+    ).toVar('aliveCloudFactor');
+    const linearFootShadow = linearCloudFactor(footShadow).toVar();
+    const shadeSurface = (colour: ShaderNode) => nodes.alive.shadeAt(colour, linearFootShadow);
     // One colour graph per material (the main pass and the enhanced look's ground passes below).
     const colourNode = (): ShaderNode =>
       Fn(() => {
         // Declare once before lit/unlit/relight siblings; a factor first used inside select's lit branch is unsafe.
-        nodes.alive.shadow.toStack();
+        footCoverage.toStack();
+        treeEligible.toStack();
+        treeOn.toStack();
+        groundFootShadow.toStack();
+        objectFootShadow.toStack();
+        footShadow.toStack();
+        linearFootShadow.toStack();
         const texel = vec2(aRect.x.add(u.mul(aRect.z)), aRect.y.add(v.mul(aRect.w))).toVar();
         const atlasUv = texel.div(atlasSize);
         const paletteColour = (i: ShaderNode): ShaderNode =>
@@ -979,7 +1018,7 @@ class SpriteGraph {
         const shade = (c: ShaderNode, paint: ShaderNode): ShaderNode => {
           const lit: ShaderNode = objectLit(c);
           const base = mix(moonlit(lit, nodes), lit, paint).mul(this.light);
-          const eventBase = nodes.alive.shade(sceneLitColour(base, sceneMultiplier));
+          const eventBase = shadeSurface(sceneLitColour(base, sceneMultiplier));
           return select(
             isUnlit.greaterThan(0.5),
             c.mul(look.unlitBaseLight),
@@ -1146,12 +1185,12 @@ class SpriteGraph {
               .mul(look.sunLight)
               .mul(gradeLight)
               .mul(look.glass.mul(core).mul(occlusion));
-            const sky: ShaderNode = nodes.alive.shade(
+            const sky: ShaderNode = shadeSurface(
               sceneLitColour(pane.sky.mul(occlusion).mul(gradeLight), sceneMultiplier),
             );
             const relit: ShaderNode = mix(base, sky, reflectance)
-              .add(nodes.alive.shade(sceneLitColour(highlight, sceneMultiplier)))
-              .add(nodes.alive.shade(sceneLitColour(glint, sceneMultiplier)));
+              .add(shadeSurface(sceneLitColour(highlight, sceneMultiplier)))
+              .add(shadeSurface(sceneLitColour(glint, sceneMultiplier)));
             result.assign(select(flatArt, result, vec4(relit.add(litGlow), litAlpha)));
             const isDecal: ShaderNode = step(0.5, aFlat).mul(float(1).sub(step(1.5, aFlat)));
             const crystal: ShaderNode = aFlags.w.mul(isDecal).mul(m.has);
@@ -1238,7 +1277,7 @@ class SpriteGraph {
         // Ore's authored self-light still bypasses map/night grading, but cloud cover is a surface shadow.
         // House-converter lamps remain emitted light and are mixed in separately below.
         If(isUnlit.greaterThan(0.5), () => {
-          result.rgb.assign(nodes.alive.shade(result.rgb));
+          result.rgb.assign(shadeSurface(result.rgb));
         });
         unlitShareOut.assign(unlitShare);
         // Black shadow/contact RGB naturally darkens the already transformed receiver. Only cast-shadow coverage
@@ -1260,7 +1299,36 @@ class SpriteGraph {
         // and never brightens them), so only the blitter's added colour applies there.
         const tintedLit: ShaderNode = applyObjectTint(result.rgb, aTint.x, aTint.y, grade.x, look.unlitBaseLight);
         const tintedUnlit: ShaderNode = applyObjectTint(unlitColour, float(1), aTint.y, 1, look.unlitBaseLight);
-        return vec4(mix(tintedLit, tintedUnlit, unlitShare), result.a.mul(bodyOpacity));
+        const finished = mix(tintedLit, tintedUnlit, unlitShare).toVar();
+        // Flat kinds are ground decals, shadows and reflections, not upright object pictures.
+        If(aFlat.lessThan(0.5), () => {
+          const source = finished.toVar();
+          finished.assign(
+            cloudToneNode(
+              finished,
+              finished,
+              nodes.alive.gradeCoverage(footCoverage),
+              nodes.cloudTone,
+              nodes.night,
+              true,
+              float(0),
+              positionWorld.y.sub(aAnchor.y).max(0),
+            ),
+          );
+          If(treeOn, () => {
+            finished.assign(
+              cloudTreeToneNode(
+                source,
+                finished,
+                nodes.alive.gradeCoverage(footCoverage),
+                nodes.cloudTone,
+                nodes.night,
+                positionWorld.y.sub(aAnchor.y).max(0),
+              ),
+            );
+          });
+        });
+        return vec4(finished, result.a.mul(bodyOpacity));
       })();
     const mainColour = colourNode();
     if (capture) {

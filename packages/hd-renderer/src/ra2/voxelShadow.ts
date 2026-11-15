@@ -1,3 +1,4 @@
+import { LUSH2_CONTACT } from './lush2Tone';
 import {
   BackSide,
   BufferGeometry,
@@ -7,6 +8,7 @@ import {
   Matrix4,
   Mesh,
   MeshBasicNodeMaterial,
+  PlaneGeometry,
   Quaternion,
   Vector2,
   Vector3,
@@ -17,6 +19,8 @@ import {
 } from 'three/webgpu';
 import {
   abs,
+  exp,
+  uv,
   float,
   floor,
   fract,
@@ -982,5 +986,95 @@ export class VoxelShadowMesh extends VoxelSurfaceMesh {}
 export class VoxelWaterMesh extends VoxelSurfaceMesh {
   constructor(source: Mesh, nodes: AtmosphereNodes | undefined, layer: WaterLayer, copyIndex = 0) {
     super(source, nodes, copyIndex, layer);
+  }
+}
+
+const softContacts = new WeakMap<AtmosphereNodes, { geometry: PlaneGeometry; material: MeshBasicNodeMaterial }>();
+function softContactResources(nodes: AtmosphereNodes) {
+  let resources = softContacts.get(nodes);
+  if (!resources) {
+    const geometry = nodes.own(new PlaneGeometry(2, 2).rotateX(-Math.PI / 2));
+    const material = nodes.own(new MeshBasicNodeMaterial({ color: 0, transparent: true, depthWrite: false }));
+    material.name = 'voxel-soft-contact';
+    const radius = uv().sub(0.5).mul(2).length().pow(2);
+    const gaussian = exp(radius.mul(-LUSH2_CONTACT.falloff))
+      .sub(Math.exp(-LUSH2_CONTACT.falloff))
+      .div(1 - Math.exp(-LUSH2_CONTACT.falloff))
+      .max(0);
+    material.opacityNode = gaussian
+      .mul(nodes.cloudTone.contact)
+      .mul(nodes.cloudTone.strength)
+      .mul(LUSH2_CONTACT.opacity)
+      .min(LUSH2_CONTACT.opacityCap);
+    material.alphaTest = 0.001;
+    resources = { geometry, material };
+    softContacts.set(nodes, resources);
+  }
+  return resources;
+}
+/** One soft ellipse per hull. Normal depth testing confines it to the ground behind upright geometry. */
+export class VoxelSoftContactMesh extends Mesh {
+  private readonly center = new Vector3();
+  private readonly xAxis = new Vector3();
+  private readonly zAxis = new Vector3();
+  private readonly planeUp = new Vector3();
+  private readonly hullCenter = new Vector3();
+  private readonly bottom = new Vector3();
+  constructor(
+    readonly source: Mesh,
+    private readonly nodes = DEFAULT_ATMOSPHERE_NODES,
+  ) {
+    const resources = softContactResources(nodes);
+    super(resources.geometry, resources.material);
+    this.name = 'voxel-soft-contact';
+    this.visible = false;
+    this.matrixAutoUpdate = false;
+    this.frustumCulled = false;
+    this.layers.set(MIRROR_SKIP_LAYER);
+    this.renderOrder = 4.48;
+  }
+  override updateMatrixWorld(): void {
+    const root = this.parent;
+    const ground = groundOf(this);
+    this.visible = false;
+    if (!root || !ground || this.nodes.cloudTone.strength.value * this.nodes.cloudTone.contact.value <= 0) return;
+    const origin = this.center.setFromMatrixPosition(root.matrixWorld);
+    const contact = contacts.get(root);
+    const height = ground.height(origin.x, origin.z);
+    if (
+      ground.waterHeight?.(origin.x, origin.z) !== undefined ||
+      shadowOrigins.has(root) ||
+      (!contact && origin.y - height > AIRBORNE_HEIGHT)
+    )
+      return;
+    if (!this.source.geometry.boundingBox) this.source.geometry.computeBoundingBox();
+    const box = this.source.geometry.boundingBox;
+    if (!box) return;
+    // Geometry and scale can change when a stand-in receives its final hull; no extra owned buffers are needed.
+    this.xAxis
+      .setFromMatrixColumn(this.source.matrixWorld, 0)
+      .multiplyScalar((box.max.x - box.min.x) * (LUSH2_CONTACT.radiusScale / 2));
+    this.zAxis
+      .setFromMatrixColumn(this.source.matrixWorld, 2)
+      .multiplyScalar((box.max.z - box.min.z) * (LUSH2_CONTACT.radiusScale / 2));
+    if (contact?.normal) this.planeUp.copy(contact.normal);
+    else if (ground.normal) ground.normal(origin.x, origin.z, this.planeUp);
+    else this.planeUp.set(0, 1, 0);
+    this.xAxis.y = -(this.planeUp.x * this.xAxis.x + this.planeUp.z * this.xAxis.z) / Math.max(this.planeUp.y, 0.01);
+    this.zAxis.y = -(this.planeUp.x * this.zAxis.x + this.planeUp.z * this.zAxis.z) / Math.max(this.planeUp.y, 0.01);
+    const base = contact ? origin.y : height;
+    box.getCenter(this.hullCenter).applyMatrix4(this.source.matrixWorld);
+    const dx = this.hullCenter.x - origin.x,
+      dz = this.hullCenter.z - origin.z;
+    origin.x = this.hullCenter.x;
+    origin.z = this.hullCenter.z;
+    origin.y = base - (this.planeUp.x * dx + this.planeUp.z * dz) / Math.max(this.planeUp.y, 0.01) + 0.025;
+    if (contact?.bottomFace) {
+      const bottom = this.bottom.set(0, box.min.y, 0).applyMatrix4(this.source.matrixWorld);
+      origin.y = bottom.y + contact.clearance + 0.025;
+    }
+    this.matrixWorld.makeBasis(this.xAxis, this.planeUp, this.zAxis).setPosition(origin);
+    this.matrixWorldNeedsUpdate = false;
+    this.visible = true;
   }
 }

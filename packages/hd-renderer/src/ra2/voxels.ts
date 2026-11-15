@@ -1,3 +1,4 @@
+import { setObjectGroundAnchor } from '../objectGroundAnchor';
 import {
   BufferAttribute,
   BufferGeometry,
@@ -16,7 +17,14 @@ import { createPainterDepth } from '../painterDepth';
 import { silhouetteCode } from '../silhouette';
 import { decodeBase64 } from './cache';
 import { paletteNodes } from './mapLighting';
-import { SHADOW_COPIES, SILHOUETTE_FOOTPRINT, VoxelShadowMesh, VoxelWaterMesh, groundOf } from './voxelShadow';
+import {
+  SHADOW_COPIES,
+  SILHOUETTE_FOOTPRINT,
+  VoxelShadowMesh,
+  VoxelSoftContactMesh,
+  VoxelWaterMesh,
+  groundOf,
+} from './voxelShadow';
 import {
   voxelFill,
   voxelMaterialFor,
@@ -916,6 +924,7 @@ export function instantiateVoxel(
     // Palette materials are shared. The node reads the currently rendered mesh's depth slot.
     if (!sourceMaterial.depthNode) sourceMaterial.depthNode = voxelNativeDepthNode();
     root.addSourceMesh(mesh, part.turretOffset);
+    setObjectGroundAnchor(mesh, root);
     mesh.castShadow = false;
     mesh.receiveShadow = false;
     meshes.push(mesh);
@@ -936,5 +945,7 @@ export function instantiateVoxel(
   for (let copy = 0; copy < SHADOW_COPIES.length; copy++)
     for (const mesh of meshes) root.add(new VoxelWaterMesh(mesh, nodes, 'foam', copy));
   for (const mesh of meshes) root.add(new VoxelWaterMesh(mesh, nodes, 'reflection'));
+  const hull = meshes.find((mesh) => mesh.parent === root);
+  if (hull) root.add(new VoxelSoftContactMesh(hull, nodes));
   return { root, turret };
 }

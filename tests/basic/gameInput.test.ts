@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   installGameInput,
   setSessionShortcutKey,
+  setSessionShortcutCode,
   toggleImmersiveFullscreen,
   type GameInputOptions,
   type InstalledGameInput,
@@ -262,6 +263,42 @@ describe('桌面鼠标跟手性', () => {
       [0x100, 27],
       [0x101, 27],
     ]);
+  });
+  it('reserves physical Backquote before later capture listeners, including Shift and non-US layouts, down and up', () => {
+    const { vm } = setup();
+    const overlay = vi.fn();
+    window.addEventListener('keydown', overlay, { capture: true });
+    const press = (key: string, code = 'Backquote') => {
+      for (const type of ['keydown', 'keyup'])
+        window.dispatchEvent(
+          Object.assign(new Event(type, { cancelable: true }), {
+            key,
+            code,
+            altKey: false,
+            ctrlKey: false,
+            shiftKey: key === '~',
+            metaKey: false,
+            repeat: false,
+            isComposing: false,
+          }),
+        );
+    };
+    try {
+      setSessionShortcutCode('Backquote', true);
+      for (const key of ['`', '~', 'ё']) press(key);
+      expect(vm.postMessage).not.toHaveBeenCalled();
+      expect(vm.setKeyState).not.toHaveBeenCalled();
+      expect(overlay).toHaveBeenCalledTimes(3);
+      press('a', 'KeyA');
+      expect(vm.postMessage).toHaveBeenCalled();
+      vm.postMessage.mockClear();
+      setSessionShortcutCode('Backquote', false);
+      press('ё');
+      expect(vm.postMessage.mock.calls.some(([message, vk]) => message === 0x100 && vk === 0xc0)).toBe(true);
+    } finally {
+      setSessionShortcutCode('Backquote', false);
+      window.removeEventListener('keydown', overlay, true);
+    }
   });
   it('a key reserved for a session shortcut stays with the page and returns to the game when released', () => {
     const { vm } = setup();

@@ -38,6 +38,20 @@ Only browser or frequent-input adapters such as canvas/WebGL, input-lock hints, 
 
 Modals share native `dialog.showModal()`, letting the browser constrain and restore focus. Esc closes web dialogs without synthesizing Esc for the game. Busy imports cannot be dismissed early.
 
+The lush2 tuning panel reserves Backquote by physical code. The bridge has no native RA2/YR chat signal and
+does not guess one from keystrokes: a live skirmish check showed Enter opens no chat line there (Escape went straight
+to the options menu), so an Enter/Escape estimate would wrongly block the toggle. Hosts that can observe real text
+entry pass `textEntryActive` through `mountLush2Tuning`.
+
+The lush2 tuning model stores values per theater under `hd-lush2-v7`. `goldReach` defaults to .35; increasing
+it lowers the two highlight thresholds. The `snowLift`
+range is 1–2.0, with snow recommended at 1.8. The wetSand/wetSheen/wetSandDepth/wetShallow and treeBlend sliders
+control warm shoreline replacement and tree integration (shoreKeep, default 1, keeps the shore band untoned and
+so disables the shoreline recipes); snow disables these new paths. Snow gain separates
+scalar luminance lift from
+luma-one chromatic gain, applying the latter only to the mean's display-sRGB cool cast; shade tint remains
+shade-only. CPU and TSL recipes share these contracts and have numeric parity regressions.
+
 ## Regression entry points
 
 Start a separate development server and set `RA2_BROWSER_ORIGIN`:

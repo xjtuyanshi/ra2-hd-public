@@ -1026,7 +1026,7 @@ empty.
   profile and the sphere, not their sum: overlapping engulf profiles must not extend the lead's reach twice.
   A lone blast has only the bounded sphere profile and keeps its original merge size.
 - Post (`src/HdRenderer.ts`, `src/post.ts`): per-channel exposure, mist and shroud visibility, bloom of the scene
-  `output` only, the display transform and cinematic grade, then the unbloomed emissive overlay in display-linear
+  `output` only, the display transform, cinematic grade and optional moist final tone (`src/tone.ts`), then the unbloomed emissive overlay in display-linear
   colour **before** `renderOutput` encodes sRGB. The same composite applies at night and with neutral grading;
   emission is multiplied by pixel shroud visibility. Night toe lift, anti-aliasing and sharpening follow as before.
   With positive `sourceLights`, debug view `none` and supported MRT blending, the scene adds an `emissive` attachment
@@ -1048,6 +1048,7 @@ Units and buildings are placeholders (`src/objects.ts`) until real assets exist;
 | Setting      | Default      | Meaning                                                                                                                                                                                                                                                                                                                                                                    |
 | ------------ | ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `toneMapper` | `'faithful'` | Display transform. `'faithful'` is the identity up to linear 0.8 and a hue-preserving shoulder above (`src/post.ts`), so original palette colours reach the screen unchanged by day; on original maps it blends into PBR Neutral with the night weight (the night presentation's calibration). `'neutral'`, `'agx'` and `'aces'` are three's filmic curves for comparison. |
+| `tone`       | `null`       | Optional final colour stage (`FinalToneParams`); null keeps the original graph/key. RA2 theatre presets are in `src/ra2/moistTone.ts`.                                                                                                                                                                                                                                     |
 | `exposure`   | `1`          | Multiplier on the scene exposure. For original maps the day exposure is pi / (flat-ground irradiance at clear noon) per channel, so lit art shows its own colour at noon (blending into the night's pi / reference with the night weight).                                                                                                                                 |
 | `bloom`      | `0.55`       | Bloom strength. By day only exposed luminance above 1 (effect cores, glints) blooms; the night keeps its 0.85 threshold on the unexposed scene.                                                                                                                                                                                                                            |
 | `vignette`   | `0.25`       | Screen-edge darkening (the live view sets 0, like the original).                                                                                                                                                                                                                                                                                                           |
@@ -1070,6 +1071,67 @@ estimates, not measured full-match memory or performance. Every mid-pass copy of
 backdrop-sampling effect material) ends and restarts the scene pass; under `'msaa4'` that stores, resolves and reloads
 the multisampled target, about 0.5 ms per copy at 2400x1500 on an Apple M-series GPU against about 0.1 ms
 single-sampled, so layers should copy at most once per frame and only while they draw.
+
+## Moist final tone (opt-in)
+
+`hd-tone=off|moist1|moist2|moist3` selects a theatre-aware final colour stage in the game bridge;
+unknown or missing values mean `off`. All look presets leave `tone` alone and default settings use `null`.
+The FX sandbox uses `&tone=moist1|moist2|moist3` after `look` and all `set=` overrides. Sandbox-only
+`&toneset=density:0.16,grain:0.45,chroma:1.3/1.2/1.07,shift1:8,exposure1:-0.05` overrides top-level numeric tone
+values (including `keyRadius`), the chroma triple and the angle/exposure of hue shifts 0-3.
+
+Stage order: scene lighting (real lights / normals from other pilots, scene pass) -> bloom -> tone map ->
+cinematic grade -> moist tone (last colour stage) -> emission/unlit add -> output encode + night toe ->
+grain cut -> clarity -> RCAS -> outline AA. Diagnostic views bypass the final tone.
+
+The generic transform (`src/tone.ts`) works in encoded Rec.709 luma and opponent chroma (r - g, (r + g) / 2 - b).
+Density deepens encoded luma like an exposure, `(1 - density) y + density y^6`: linear-light ratios between
+mid-tones, and so grass blades, clumps and light/dark patches, keep their contrast while the field deepens, and the
+`y^6` shoulder pins white. Rejected alternatives: a cubic high-key compression flattened sunlit grass (mid-scale L*
+contrast -25%); a gamma crushed dark scenes (jungle median L* 42 -> 27); fading the change out on dark pixels flattened
+the patches of darker maps (jungle patch contrast -28%). `contrast` then adds a sun/shade S-curve around `pivot`.
+Three luma bands set chroma gain and at most four hue windows rotate colour without changing geometry; a window may
+also carry an `exposure`, a relative change of encoded luma inside it, so sun and shade are separated by their colour
+class instead of darkening a whole map. Hue windows may carry `maxLuma` (snow whites, tone hue ~203 and luma > 0.85,
+told from water of the same hue), `minLuma` (sunlit ground told from shade of the same hue) and `maxChroma` (muted
+ground told from vivid grass). With `keyRadius` > 0 the shift windows classify a key instead of the pixel: four
+bilinear taps of the scene texture at +-(keyRadius + 0.5) output pixels, exposed and tone mapped like the pixel (mist,
+shroud and bloom left out), graded by the tone's grade. Per-pixel classification of a luma-keyed shift split grass
+texture into pale and dark specks (1-px Lab a* noise 0.91 -> 1.82 on XMP27T8 base); with the key it stays at the
+current look's level. The pixel's own hue only gates a keyed shift (full within the window width, none beyond twice
+it), so units and roofs inside a grass patch keep their colour. The key adds four scene-texture taps to the colour
+pass and changes the pipeline key only when it is switched on or off.
+On object pixels (silhouette code != 0) `objectShare` of the colour change and `objectDensity` of the luma change
+apply. Units must deepen with the ground: with a low `objectDensity` they stayed bright while the grass around them
+darkened, and the unit/ground L* gap fell from 22 to 8 (tanks sank into the grass). Green foliage takes all of it.
+Protection and foliage use the look's colour before the tone; emission and unlit radiance join afterwards.
+A replacement grade changes only the theatre's balance and split tints, preserving the look's contrast/lift/saturation;
+faithful ignores replacement grading. Airless scenes neutralize its balance/tints, and night fades colour to 35%.
+
+RA2 data (`src/ra2/moistTone.ts`): direction from the owner's choice on 2026-11-14 of reference A of the moist
+diagnosis boards (warm sunlit light, strong sun/shade contrast, deep saturated greens in shade, golden highlights),
+over B's uniformly deep green; only colour and tone, never A's redrawn ground or shapes. Temperate and urban lawns use
+four keyed windows: vivid lit grass a little towards gold and deeper, vivid mid-dark grass towards deep green and
+deeper, the look's teal jungle shade back towards the original's olive, and muted lit ground (the wet band beside
+clear water, the jungle's lighter patches) warmer and a little lighter. Measured on XMP27T8 base (quartiles of the
+blurred grass L*): sun/shade L* difference 16.6 (current) -> 19.8 (moist2; A 20.4), shade/sun Lab hue split 4.5 ->
+12.9 (A 10.7), sunlit hue 104 -> 99. A highlight chroma gain below 1 or a larger warm shift made the sunlit grass pale
+straw, which reads dry; a stronger shade exposure outlined the map's tile-variant patches as hard camouflage blots. moist1 is 0.6 of the theatre
+data, moist2 1, moist3 1.4 (tints saturate at 1). Snow keeps the same spirit cold and crisp: no darkening, blue
+shadows, whites back to the original's cyan ice (Lab hue about 217), never violet or warm. Review limits per level:
+units at least 16 L* from the ground around them on day maps, mid-scale contrast not below the current look, clear
+water and the wet band beside it unchanged; whole-frame L* within about 8 of the current look at moist2 (XMP27T8 base
+-6.0, AMAZON01 jungle -4.6).
+
+The display grain cut removes only the finest luminance residual with an edge guard. It shares clarity's single
+picture copy, using scratch alpha for the pre-tone ground/foliage mask so classification does not resample the scene.
+It adds five picture taps (centre plus four bilinear half-device-pixel offsets); colour/mask classification shares one
+physical-depth sample. Without painter physical depth, colour treats pixels as ground and grain cut is omitted.
+Clarity uses the same pre-cut picture for its mid-scale band. Changing tone values updates uniforms; only enabling
+tone or toggling positive grain changes its pipeline key. Cost: in the FX sandbox at 3456x2234 (XMP27T8 base,
+cinematic look, Apple M-series, other GPU work running), 15 alternating 30-frame blocks gave a median 40.2 ms with tone
+off and 38.7 ms with moist2 on: no difference above the +-4 ms noise of that machine, so the <0.4 ms budget is not
+proven by this measurement. Rendered appearance is checked on sandbox boards, not yet live.
 
 ## Enhanced look (opt-in, `src/ra2/spriteLook.ts`)
 
@@ -1763,3 +1825,224 @@ Fixture tests cover coverage, sprite-pool reuse, dedicated page routing and gene
 Full alpha removes ground transmission before postprocessing; mist, bloom and night tone mapping can still affect
 displayed colour. The tests do not establish displayed-pixel strength: conscripts were measured on frozen live
 frames (above); live GI, Initiate and Slave comparisons remain `UNVERIFIED`.
+
+### Lush ground stage
+
+`hd-tone=lush` in the game bridge, or `&tone=lush` in the FX sandbox, enables a separate terrain-material
+stage (`src/groundTone.ts`, RA2 data in `src/ra2/lushTone.ts`). It deepens the ground with olive shade,
+golden-orange light and dappled, irregular light patches anchored to world xz (one unit is one map cell).
+It changes light and colour only. Units/buildings retain their colour and brightness; cliffs share the
+ground transform. Lunar is untouched, unknown theatres use temperate. At night the change fades to `nightKeep`
+(temperate 0.5) and the lit patches take the cool `moonTint` instead of `sunTint`, so night ground only gets deeper.
+The existing default and moist1–3 selections retain their behaviour; switching away clears `groundTone`.
+
+`HdSettings.groundTone` defaults to null. `AtmosphereNodes.groundTone` owns one uniform per parameter:
+`strength`, `scale`, `detailScale`, `detailMix`, `stretch`, `angle`, `coverage`, `softness`, `depth`,
+`bareDepth`, `bareChroma`, `darkLo`, `darkHi`, `darkKeep`, `darkPatch`, `sunGain`, `shadeGain`, `bareShade`, `sunTint`,
+`shadeTint`, `grassShadeTint`, `sunChroma`, `shadeChroma`, `soften`, `nightKeep`, `moonTint`.
+`bareShade` is the shade gain on non-green ground (lighter than grass shade, so shaded sand stays light);
+`darkPatch` is the share of the light/shade split kept on already-dark ground (jungle floors), next to
+`darkKeep` for the overall depth.
+Angles are degrees, scales are world units, and tints are linear RGB multipliers normalised against the
+albedo's luminance. `coverage` approximates lit area share; zero/one give all shade/sun. `softness` controls
+the transition width. Two-octave integer-hash value noise uses no camera or time input. `soften` mixes
+four rect-clamped diagonal art taps before wet-ground processing; its contribution is masked back onto land.
+Water, refracted lake beds and the wet-shore band retain their original art inputs.
+
+The final tone for lush has identity colour and only cuts grain on the existing ground/foliage mask.
+`FinalToneParams.groundClarity` (default 1) scales clarity on that mask only when the grain cut is active;
+it does not alter object clarity. Tune these final-pass values through `toneset=grain:0.5,groundClarity:0.4`.
+
+Sandbox overrides run after look and tone selection, reject unknown keys, and accept numeric values or
+RGB triples: `&tone=lush&ground=depth:0.62,scale:3.4,soften:0.5,sunTint:1.1/1/0.74`.
+Live tuning changes uniforms on the next frame without rebuilding terrain materials or pipelines:
+
+```js
+const h = __fx.live.hd;
+Object.assign(h.settings.groundTone, { depth: 0.58, scale: 4, coverage: 0.55 });
+h.settings.groundTone.sunTint = [1.12, 1, 0.75];
+h.applySettings();
+```
+
+Material branches skip patch/colour work at zero strength and skip extra art taps at zero soften.
+These are initial tuning values: generated WGSL and numerical twins do not establish rendered L* depth,
+water dE, visual quality or GPU performance. Those require same-scene visual/pixel acceptance separately.
+
+### Lush2 live ground tuning
+
+Development game flags `hd-tone=lush2` (or `hd-tune=1`) mount the Chinese tuning overlay. The FX bench
+uses `tone=lush2`; add `tune=1` for the panel and `__fx.tune.get()`, `.set(partial)`, `.ab(true|false)`.
+Backquote toggles **润v2 / 当前**; Shift+Backquote hides/shows the panel. Inputs, textareas, selects,
+editable elements and IME composition keep their keys. Hosts can provide `textEntryActive()` for native
+text entry. The current game bridge/input contracts expose no RA2/YR native chat-active signal, so native
+chat suppression is **UNVERIFIED**; keyboard guessing is intentionally avoided.
+
+The bridge reserves physical `Backquote` at the game input's keydown **and** keyup forwarding entry while
+the panel exists. This handles Shift/non-US layouts even though game forwarding registered its window
+capture listener first. The panel also stops immediate propagation when handling its shortcut. Disposal
+releases the reservation and all panel listeners. The page's existing debug shortcut remains unchanged
+outside these development sessions.
+
+Storage uses `hd-lush2-v7:<theatre>` so older recipes do not override the current defaults. Blocked/corrupt
+storage still permits tuning. The panel starts collapsed at top-left (12px inset, 260px wide), with its state
+line and three buttons visible. After slider change/pointerup or a button click it blurs the control and invokes
+optional `returnFocus()`; the bridge focuses the existing game input canvas without scrolling. The owner disposes
+DOM/listeners. Actual focus and layout acceptance requires a browser/game review.
+
+`lush2` remains independent of `lush` and moist1–3. `HdSettings.cloudTone` holds renderer-local uniforms;
+`src/ra2/lush2Tone.ts` owns artistic values, gates, sampling widths, slider schema and theatre defaults. A/B leaves
+`groundTone` and final `tone` null and restores the entry's exact URL alive options on current. Neither materials
+nor post graphs are rebuilt. Strength zero is exact identity with the added clouds off.
+
+| Slider                   | Range        | Temperate default | Meaning                                                |
+| ------------------------ | ------------ | ----------------- | ------------------------------------------------------ |
+| 总强度 [strength]        | 0–1.5        | 1                 | Grade, cloud and contact amount                        |
+| 草地明度 [grassLight]    | .7–1.15      | .9                | OKLab lightness multiplier                             |
+| 绿色色相 [grassHue]      | 0–30 degrees | 10                | OKLab hue rotation toward green                        |
+| 阴影色相 [shadeHue]      | 0–40 degrees | 12                | Extra shaded-grass hue rotation                        |
+| 饱和度 [grassChroma]     | .8–1.6       | .95               | OKLab chroma multiplier                                |
+| 阴影饱和 [shadeChroma]   | .8–1.6       | 1.42              | Extra shaded-grass chroma multiplier                   |
+| 草纹对比 [detail]        | .4–1.2       | 1                 | Optional source/mean luma contrast exponent            |
+| 云影覆盖 [cover]         | 0–1          | .5                | World-area cloud coverage estimate                     |
+| 阴影深浅 [shadeDepth]    | 0–.5         | .3                | Physical cloud attenuation                             |
+| 金色量 [gold]            | 0–1          | .75               | Lit grass above source/mean luma ratio 1.12–1.32       |
+| 金色范围 [goldReach]     | 0–1          | .35               | Lowers the source/mean highlight thresholds            |
+| 片区大小 [patchScale]    | 6–24 cells   | 12                | Fine cloud lattice; coarse scale is twice this         |
+| 片区柔和 [softness]      | .2–1         | .7                | Penumbra width independent of coverage midpoint        |
+| 漂移速度 [drift]         | 0–1 cells/s  | .6                | Shared cloud clock; wind displacement disabled         |
+| 单位跟随 [objectShare]   | 0–1          | .5                | Object brightness/cloud-follow share                   |
+| 单位最暗 [objectFloor]   | .5–1         | .8                | Lower bound on object grade and cloud multipliers      |
+| 接触阴影 [contact]       | 0–1          | 1                 | Existing soft pool, peak `min(.9,.9*contact*strength)` |
+| 岸边湿润 [wet]           | 0–1          | .8                | Full warm wet-strip recipe at .8                       |
+| 湿沙暖色 [wetSand]       | 0–1          | 1                 | Replaces olive rim chroma with warm sand; 0 retains r3 |
+| 湿沙光泽 [wetSheen]      | 0–1          | .8                | Sheen (+6% max), swash line and waterline water film   |
+| 湿沙深浅 [wetSandDepth]  | 0–1          | .45               | Contracts source luminance toward the L*66 floor       |
+| 岸边浅水 [wetShallow]    | 0–1          | 1                 | Painted shallows over sand stay turquoise water        |
+| 岸边保持原样 [shoreKeep] | 0–1          | 1                 | Wet band renders untoned; 0 restores the wet recipes   |
+| 树木融合 [treeBlend]     | 0–1          | 1                 | Reference-grass grade and full ground cloud light      |
+| 雪地蓝 [snowBlue]        | 0–1          | 1                 | Eligible snow shade tint                               |
+| 雪地提亮 [snowLift]      | 1–2          | 1.05              | Snow luminance lift with highlight headroom            |
+
+Urban/newurban use grassLight .98, grassHue 5, grassChroma 1.04, shadeChroma 1.25, cover .4 and shadeDepth .26. Desert uses
+1/3/1.02, shadeChroma 1.25, gold .1, cover .35 and shadeDepth .24. Snow uses identity grass parameters, gold 0, cover .28 and
+shadeDepth .12, snowLift 1.8 and snowWhite 1. Snow/lunar set wetSand, wetShallow, wetSheen and treeBlend to 0; snow keeps no shore
+band. Lunar disables the look and retains r3 grassChroma 1.2/shadeChroma 1.25. Other shared defaults are defined
+by the schema/mapping source.
+
+`src/cloudToneMap.ts` owns one filterable RGBA16F endpoint atlas. Each half is sized
+`ceil(sourceWidth/(blockWidth*mapScale))` by the corresponding height; lit and shade live side by side.
+Both halves retain their original texel centres and RGB gains; lit alpha stores mean luminance, shade alpha
+stores material greenness. Sampling clamps inside each half before remapping UVs, preventing seam bleed.
+Two mean mip taps at LOD `log2(20*mapScale)` and two context taps at `log2(96*mapScale)` run per atlas texel
+only on refresh. The terrain shares the atlas across material families/fallbacks, updates before scene/depth/mirror
+draws through `TerrainBuild.updateGradeMap`, and disposes it with its materials. Uniform edits, source revision,
+explicit invalidation and cumulative night changes greater than .005 refresh it. Packing frees the binding used
+by the moving cloud cache while preserving the existing 16-texture limit.
+
+The existing repeating procedural water fields share one texture-array binding, with byte-identical layers and
+unchanged UVs; noise/hash always samples LOD 0 to preserve its original non-mipmapped bilinear filtering. This
+recovers bindings for the grade atlas and cloud cache on fully dressed lake-bed materials without raising the
+16-texture device limit or changing water coefficients. The original separate data-texture API remains available.
+
+Ground pixels bilinearly sample both targets, mix gains by cached shade coverage, then multiply source art.
+Only detail != 1 runs a luma power. Cliff walls blend upper/lower art-location samples with the same cover weights
+as their colour; plain-ground fallback uses the same map. Without a whole-map composite, atlas fallback retains
+its tile-clamped mean taps. Land/water grade and cloud weights use smoothstep(.3,.7,weatherLand), removing the
+previous hard half-mask boundary. Water optics and analytic cloud-field coefficients remain unchanged.
+
+The mean recipe rotates/scales OKLab hue/chroma and lightness, blends by the existing smooth mean-material gate,
+and uses soft chroma compression to protect the display-space channel floor. Context dirt receives only bareLight
+.97 (OKLab L, equivalent to linear RGB gain .97 cubed); warm sand without green context stays unchanged. Night
+blends the recipe toward identity and retains moonTint. `cloudToneGain` and `cloudToneGainNode` interpolate the same
+lit/shaded endpoints. Source black stays black; a mean-only channel floor does not promise a per-source floor for
+arbitrary source/mean ratios or zero source channels. Gold adds a luma-normalised [1.06,1,.86] warm tint and sunGain
+1.04 only to the brightest lit grass. The fraction passing this gate depends on the source art and needs real-map QA.
+
+The wet band is 1.6 cells wide, perturbed by existing world value noise at .8-cell scale with .45-cell amplitude.
+Noise is evaluated only near shore in the enabled branch. At wetSand=0/wetSheen=0 the r3 finish remains
+exact: fade the dry grade to source, multiply by [1,.88,.72] with neutral gain .6, then own-luma chroma 1.3.
+The new finish starts before the legacy tint/chroma expansion, replacing chroma at the effective share
+`wetSand*smoothstep(wetSandStart,1,wet)*min(1,wetAmount)*(1-night)` with a luminance-normalised
+warm linear tint [.4299,.2871,.1014] (L*62/C*34/h84 before scene lighting and display grading, about the dry
+sand's own chroma: the earlier C*50 tint read as an ochre mud stripe). RA2 sets wetSandStart .2, so the inner
+fifth of the band stays dry sand. It replaces source chroma rather than amplifying its green. Source luminance
+contracts smoothly toward an L*66 floor: at the waterline, `floor+max(0,sourceY-floor)*(1-wetSandDepth)`, so the
+wet sand is a few L* darker than the dry sand while brighter texture remains ordered above the floor.
+Shore tiles paint translucent shallows over the sand inside the band. Each source pixel is classified by
+`(b-r/2)/luma` between `wetPaintQ` [0,.3] (sand stays below 0, painted shallows rise above .3; neutral grey and
+white foam count as water); that share, times the band gate and wetShallow, takes the turquoise
+`wetShallowTint` [.0761,.369,.3317] (L*62/C*28/h188) at .75 of the source luminance instead of wet sand. Where
+the classification crosses (peak `4w(1-w)`), the swash line desaturates toward luminance lifted by wetLipLift .12,
+so tan and turquoise never mix into olive. The last stretch before the waterline (wetFilmStart .85 to 1) blends
+by `wetLip*wetFilm` (.8*.3) toward a pale, slightly turquoise water film. Lip and film use wetLip, which RA2
+ties to the wetSheen slider. The neutral sheen starts at wet=.7, reaches at most +6% at wetSheen=1 and is
+multiplied by daylight and `(1-shade)`. At wetShallow=0, wetLip=0 and wetSandStart=0 the first Sunday finish
+(8e2d8ce) is reproduced exactly.
+`shoreKeep` (RA2 default 1) hands the band back to the untoned source: the r3 wet tint/chroma share, the wet-sand
+replacement and the sheen are scaled by `1-shoreKeep`, and the finished band pixel blends to the source by
+`smoothstep(0,.3,wet)*shoreKeep` before gold (which the same gate already excludes). At 1 the band is the no-tone
+art exactly, fading in over the inner 30 % of the mask with no partial wet ring; only the physical cloud shadow
+still crosses it, so in sunlight the shore matches the current (no-tone) picture. The Sunday v2 wet recipes stay
+behind shoreKeep 0 (owner, 11-15: every lush wet band read as a pale film, a hard contour or specks at 1:1).
+Water signed distance, optics, colour, foam and night/snow water paths are unchanged. No texture fetch is added.
+
+Upright tree-wind instances borrow the ground's full cloud factor by treeBlend, then blend their r3 object grade
+toward the reference-grass ground endpoint gain (no gold, wet or detail finish). RA2 supplies `treeReference`
+linear RGB [.356,.372,.0884], the measured mean temperate grass albedo; other theatres currently share this
+reference pending separate calibration. The gain is `cloudToneGainNode(ref,ref,shade,p,night)`, independent of
+leaf colour. Each pixel's own greenness mixes that gain with its neutral luminance ratio
+`dot(ref*gain,W)/dot(ref,W)`: green leaves take the grass gain, while trunks, red/brown leaves and neutral crown
+shadows retain their colour ratios. The OKLab gain now has uniform inputs per instance rather than per-pixel
+colour inputs; only the cheap greenness classification and gain mix vary by pixel. It stays inside the single
+tree-only instance branch, with no new texture reads; actual GPU cost still requires measurement.
+A one world-cell contact height (positionWorld.y minus anchor.y) fades contact darkening smoothly from 35% at
+the trunk foot to zero over the lower crown, halved at night (.25 over .25 cells was invisible at 1:1).
+Lighting-none trees (including TIBTRE ore trees), grade-exempt instances and house-converter/indexed-paint
+instances retain their r3 paths. Other upright sprites and all flat instances keep the object recipe.
+
+For same-build r3 temperate boards, assign the frozen `LUSH2_R3_TEMPERATE` partial to `settings.cloudTone`
+and call `applySettings()`: grassChroma 1.2, shadeChroma 1.25, wetSand 0, wetSheen 0, shoreKeep 0, treeBlend 0. The new
+sand floor/depth/tint and contact parameters are dormant under these gates; alive options need no changes.
+
+Snow uses the same smooth mean-only gain atlas. Its gate combines display-mean luminance relative to the context
+mean (thresholds .65–.9) and display-mean saturation (fade .3–.45), allowing dim mission snow. The lit target is
+`luma(mean)*snowLift*mix(mean/luma(mean),white,snowWhite)`, with retained downstream cinematic compensation,
+luma normalization and a soft shoulder above .8. Shade adds `mix(1,snowShadeTint,snowBlue)`; blue never enters lit
+gains. Every source pixel multiplies the interpolated channel gains, bypassing per-pixel snow classification,
+detail, wet and gold. Dark lavender pattern strokes therefore receive the same whitening as their surroundings.
+The atlas fallback uses its local mean; the source-only stand-in uses the source itself. Objects keep their recipe.
+
+The source composite precedes mission lighting. For snow only, RA2 injects the map's light into both means before
+gain computation. `uvPositions.ts` rasterizes existing terrain geometry into a small nearest-filtered world-position
+texture at grade resolution; the caller supplies the UV attribute and visibility axis. This recovers raised terrain
+positions without a flat-ground inverse-projection guess. Only the cache pass reads it and the map-light texture;
+source-light revisions invalidate the cache. Terrain disposes this lookup on normal exit and material-build failure.
+Grass retains its original mean input. The mean shoulder controls lifted mean energy; arbitrary HDR source/mean
+outliers can still exceed one before the existing display tone mapper.
+
+Objects retain their own paint: grade multiplier `max(objectFloor,mix(1,grassLight,objectShare))`, with the existing
+low bounce and a .12 highlight shoulder. Their cloud multiplier is per-channel
+`max(objectFloor,mix(1,groundCloudFactor,objectShare))`. SHPs sample at their ground anchor; voxel hull/turret/barrel
+share their unit root. Contact shadow size, opacity and water/flight exclusions are unchanged.
+
+`CloudCoverageMap` is owned by `HdRenderer`, renders before all depth/mirror/main draws, and is disposed with it.
+It covers [0,width] × [0,height] world cells at four texels/cell in one linearly filtered R16F target
+(120×143 cells → 480×572 texels, 549,120 storage bytes). The pass calls the unchanged two-lattice analytic TSL
+with the same clock, direction, morph, stretch and drift; all presets and water share it. Each receiver uses one
+bilinear fetch, guarded by the cloud-enable uniform. Disabled clouds submit no cache pass; unchanged fields
+(including frozen clocks) reuse the target. CPU/production-TSL twins agree at texel centres before storage;
+R16F quantization is bounded separately, while between-centre interpolation is an approximation.
+
+Cloud attenuation converts each shared display factor once with `pow(factor,2.2)` and then multiplies every lit
+term by the linear factor. Sprites hoist coverage, display factor and linear factor before lit/unlit siblings;
+objects and weighted water terms reuse their factors. Exact identity skips remain. Over linear source .05–.8 and
+display factors .5–1 (steps .005), the numeric regression bounds deviation from exact sRGB OETF/attenuation/EOTF
+by .009 linear and .019 encoded (under 4.85/255). The approximation is not an exact sRGB identity away from factor=1;
+near-black/HDR values are outside this mid-tone bound. A four-term sprite replaces up to 24 scalar transfer powers
+with three factor powers; terrain's single term replaces six with three.
+
+Run `pnpm --filter hd-renderer test` for CPU/TSL numeric twins, WGSL generation, grade/cloud-map refresh/disposal,
+terrain/wall/fallback bindings, cloud/object sharing and DOM focus/storage/A/B contracts. `pnpm run check` adds
+workspace types, asset-free regressions and the production build. These checks do not establish GPU numeric
+execution, real UI acceptance, 1:1 visual quality or the <=+1.0 ms budget at 3456x1926; those remain **UNVERIFIED**
+until a same-scene runtime review.

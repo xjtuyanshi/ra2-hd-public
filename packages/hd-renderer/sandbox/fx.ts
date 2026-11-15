@@ -1,3 +1,5 @@
+import { applyLush2 } from '../src/ra2/lush2Tone';
+import { mountLush2Tuning } from '../src/ra2/lush2Tuning';
 import { parseAliveParams } from '../src/livingWorld';
 /**
  * Live-view bench (development only): drives LiveView with synthetic snapshots on a frozen clock, so one engine anim,
@@ -101,6 +103,10 @@ import { depleteOre, growthGrid, mapOverlayGrid, polylinePosition, type CellPoin
 import type { Weather } from '../src/contract';
 import { parseWeatherParams, weatherSettings } from '../src/weatherParams';
 import { parseSceneLighting } from './sceneLighting';
+import { parseWaterStyle } from '../src/ra2/waterStyles';
+import { applyMoistTone, parseToneStyle } from '../src/ra2/moistTone';
+import { applyToneOverrides } from './tone';
+import { applyGroundOverrides } from './ground';
 
 const params = new URLSearchParams(location.search);
 const canvas = document.querySelector<HTMLCanvasElement>('#view')!;
@@ -141,7 +147,7 @@ const live = await LiveView.create(canvas, {
   effectsHdBase: params.get('fxhdbase') ?? undefined,
   // The shared parser requires alive-wind=1 in addition to the entry's cloud flag.
   alive: parseAliveParams(params),
-  water: params.get('water') === 'enhanced' ? 'enhanced' : 'classic',
+  water: parseWaterStyle(params.get('water')),
   ...(params.get('glints') === 'off' ? { oreGlints: false } : {}),
   ...(params.has('sparkle') ? { crystalSparkle: Number(params.get('sparkle')) } : {}),
 });
@@ -186,6 +192,32 @@ if (overrides.length) {
     settings[key] = value;
   }
   live.hd.applySettings();
+}
+// Tone follows all look overrides, so its theatre grade starts from the actual look.
+if (params.has('tone')) {
+  applyMoistTone(live.hd.settings, live.theater, parseToneStyle(params.get('tone')));
+  if (params.get('tone') === 'lush2') live.hd.setAlive(applyLush2(live.hd.settings, live.theater));
+  applyToneOverrides(live.hd.settings.tone, params.get('toneset'));
+  live.hd.applySettings();
+}
+if (params.has('ground')) {
+  applyGroundOverrides(live.hd.settings.groundTone, params.get('ground'));
+  live.hd.applySettings();
+}
+const tune =
+  params.get('tone') === 'lush2' && params.get('tune') === '1'
+    ? mountLush2Tuning(canvas.parentElement!, live.hd, live.theater, parseAliveParams(params))
+    : undefined;
+// The bench owns the panel and releases it before the view/device on explicit disposal or page teardown.
+if (tune) {
+  const disposeLive = live.dispose.bind(live);
+  const disposeBench = () => live.dispose();
+  live.dispose = () => {
+    window.removeEventListener('pagehide', disposeBench);
+    tune.dispose();
+    disposeLive();
+  };
+  window.addEventListener('pagehide', disposeBench, { once: true });
 }
 // &lightspec=TYPE.orb.key:value,TYPE.arc.key:value,...: building-light tuning reviews without code edits (development
 // sandbox only). Values: a number, an sRGB colour r/g/b (0-255, converted to display-linear like the spec's colours) for
@@ -306,7 +338,7 @@ async function replay(): Promise<never> {
     pushDue();
     live.render(clock);
   };
-  (window as unknown as { __fx: unknown }).__fx = { live, advance, ready: true };
+  (window as unknown as { __fx: unknown }).__fx = { live, advance, ...(tune ? { tune } : {}), ready: true };
   return new Promise<never>(() => {});
 }
 
@@ -996,4 +1028,11 @@ function loop(): void {
   requestAnimationFrame(loop);
 }
 requestAnimationFrame(loop);
-(window as unknown as { __fx: unknown }).__fx = { live, step, advance, snapshot, ready: true };
+(window as unknown as { __fx: unknown }).__fx = {
+  live,
+  step,
+  advance,
+  snapshot,
+  ...(tune ? { tune } : {}),
+  ready: true,
+};

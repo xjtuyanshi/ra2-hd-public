@@ -1,4 +1,4 @@
-export type AlivePreset = 'soft' | 'deep';
+export type AlivePreset = 'soft' | 'deep' | 'lush';
 
 /** Opt-in presentation only; all distances are cells and all times are renderer seconds. */
 export interface AliveOptions {
@@ -10,6 +10,8 @@ export interface AliveOptions {
   sway: number;
   speed: number;
   debugCloud: boolean;
+  /** Optional runtime shape for a policy-owned preset. */
+  shape?: Readonly<CloudShape>;
 }
 
 export type AliveChange = boolean | Partial<AliveOptions>;
@@ -75,6 +77,17 @@ export const ALIVE_CLOUD_SHAPES: Readonly<Record<AlivePreset, Readonly<CloudShap
     waterBodyWeight: ALIVE.waterBodyWeight,
     waterSkyWeight: ALIVE.waterSkyWeight,
   }),
+  lush: Object.freeze({
+    scale: 11,
+    largeScale: 22,
+    edgeLow: -0.07,
+    edgeHigh: 0.25,
+    darkening: 0.14,
+    fineWeight: 1,
+    stretch: 1.2,
+    waterBodyWeight: ALIVE.waterBodyWeight,
+    waterSkyWeight: ALIVE.waterSkyWeight,
+  }),
   deep: Object.freeze({
     scale: 6,
     largeScale: 14,
@@ -117,12 +130,15 @@ export function resolveAlive(change: AliveChange, previous: Readonly<AliveOption
   const preset = change.preset;
   return {
     clouds: change.clouds ?? previous.clouds,
-    preset: preset === 'soft' || preset === 'deep' ? preset : previous.preset,
+    preset: preset === 'soft' || preset === 'deep' || preset === 'lush' ? preset : previous.preset,
     wind: change.wind ?? previous.wind,
     cloud: bounded(change.cloud, previous.cloud, 2),
     sway: bounded(change.sway, previous.sway, 3),
     speed: bounded(change.speed, previous.speed, 4),
     debugCloud: change.debugCloud ?? previous.debugCloud,
+    ...((preset ?? previous.preset) === 'lush' && (change.shape || previous.shape)
+      ? { shape: change.shape ?? previous.shape }
+      : {}),
   };
 }
 
@@ -249,4 +265,26 @@ export function treeSway(
 /** Signed grass ripple shares the trees' travelling gust phase; no additional noise sample. */
 export function grassRipple(x: number, z: number, seconds: number, direction: number, speed = 1): number {
   return (2 * aliveGust(x, z, seconds, direction, speed) - 1) * 0.05;
+}
+
+// Quantiles of this module's gradient noise, sampled over 512² stratified world points.
+// The single-lattice field uses this distribution; finite viewports and mixed lattices vary around it.
+const cloudQuantiles = [
+  -0.72, -0.3542, -0.3001, -0.2384, -0.1864, -0.1483, -0.1111, -0.0782, -0.0484, -0.0231, 0, 0.0235, 0.0486, 0.0779,
+  0.1109, 0.1474, 0.186, 0.2388, 0.3008, 0.3548, 0.72,
+];
+/** Map shaded fraction (coverage >= .5) to the field's mid-edge threshold, independent of softness. */
+export function cloudCoverThreshold(cover: number): number {
+  const index = (1 - Math.max(0, Math.min(1, cover))) * (cloudQuantiles.length - 1);
+  const i = Math.min(cloudQuantiles.length - 2, Math.floor(index));
+  return mix(cloudQuantiles[i]!, cloudQuantiles[i + 1]!, index - i);
+}
+export function cloudThresholdCover(threshold: number): number {
+  let i = 0;
+  while (i < cloudQuantiles.length - 2 && threshold > cloudQuantiles[i + 1]!) i++;
+  const fraction = Math.max(
+    0,
+    Math.min(1, (threshold - cloudQuantiles[i]!) / (cloudQuantiles[i + 1]! - cloudQuantiles[i]!)),
+  );
+  return 1 - (i + fraction) / (cloudQuantiles.length - 1);
 }

@@ -27,6 +27,11 @@ press Ctrl-C in the launcher, then launch again without `--hd-marks` to turn it 
 picture switch is unchanged. With the option absent, no draw capture is requested or installed for that new game
 process; native requested/installed diagnostics and visible marks still require live acceptance.
 
+`--hd-option key=value` (repeatable) adds one experimental HD page option for that launch only, for example
+`--hd-option hd-sprite=1` to try a look pilot and its development tuning panel on the owner's own game. Keys
+must start with `hd-` and may not replace any key of the shared play look in `scripts/remaster/play-options.mjs`,
+so the approved default stays unchanged; launching again without the option returns to it.
+
 The HD web owner entry, `scripts/remaster/play.sh` (or `play.command`), adds `play-start=1` only for ordinary
 HD play, including `--menu`; `--train` and `--original` keep their existing startup flow. For example,
 `scripts/remaster/play.sh --view classic --print` prints the same gated URL without starting a server or browser.
