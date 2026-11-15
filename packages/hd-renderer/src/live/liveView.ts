@@ -1451,7 +1451,10 @@ export class LiveView {
       requiredLimits,
     });
     await hd.init(world);
-    if (options.alive !== undefined) hd.setAlive(options.alive);
+    if (options.alive !== undefined) {
+      hd.setAlive(options.alive);
+      hd.nodes.resourceClouds.set(options.alive);
+    }
     hd.setState(state);
     // The original shows no vignette; keep the frame edge faithful to the game's own view.
     hd.settings.vignette = 0;

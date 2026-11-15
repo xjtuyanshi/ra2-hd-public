@@ -2087,3 +2087,24 @@ silhouette attachment. `hd.surfaceDebug.value = 1` displays categories as exact 
 buildings 1, vehicles 2, infantry 3, trees 4, ore 5. Reset to zero to restore the picture. Categories come from
 instance metadata; no scene colour classifier is used. This is diagnostic output, not artwork or a new attachment.
 Ordinary worlds leave both code packing and the diagnostic branch out of their shader graphs.
+
+## Protected resource overlays
+
+RA2 resource overlays retain their authored coverage when sprite integration is enabled. Resource instances use
+surface category 5 in the existing packed instance data. Live library overlays and map-cell fallbacks publish the
+same category. Optional object softening, contrast, clarity suppression, sharpening suppression and feathering
+exclude that category, including the mask's dilation band. The generic filter takes the category from its caller;
+it does not recognise resource filenames or classify artwork by colour.
+
+Modern cloud scenes retain a separate reference analytic field for resource art, initialised from the view's
+original `alive` options. Lush tuning changes the scene field only. Resource coverage is published in the existing
+physical-depth metadata attachment even for ground decals; hardware depth writes stay unchanged. The outline pass
+maps protected resource codes back to the ground code, preserving their previous outline policy. Default worlds
+without sprite integration, modern clouds or explicit surface diagnostics retain their former shader path.
+
+Older final-tone experiments resolve protected pixels through an additional reference display-filter branch:
+excluding the centre alone cannot stop changed neighbour gathers from altering an edge. This branch owns extra
+post targets and needs separate GPU timing. Lush2 and sprite integration do not allocate those reference targets.
+
+Synthetic coverage and shader tests are asset-free. Exact rendered resource pixels, foreground occlusion and
+neighbouring post-filter footprints still require same-frame GPU comparisons against the default look.

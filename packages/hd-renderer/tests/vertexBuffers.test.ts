@@ -1484,3 +1484,42 @@ describe('r186 vertex and uniform binding budget', () => {
     nodes.dispose();
   });
 });
+
+it('keeps resource coverage on the reference path beside modern cached lighting', () => {
+  const source = cache();
+  source.nodes!.surfaceClasses = true;
+  configureSpriteIntegration(source.nodes!, true);
+  const layer = new SpriteLayer(
+    source,
+    [
+      {
+        anchor: new Vector3(0, 0, 1),
+        frame: { rect: [0, 0, 24, 48], offset: [-12, -40] },
+        palette: '',
+        push: 0,
+        shadow: false,
+        flat: true,
+        unlit: true,
+        surfaceClass: 5,
+      },
+    ],
+    1,
+    undefined,
+    { color: texture(), remap: texture() },
+  );
+  try {
+    const result = layout(layer.mesh);
+    expect(result.buffers.length).toBeLessThanOrEqual(8);
+    expect(result.attributes.length).toBeLessThanOrEqual(16);
+    expect(result.fragmentSampledTextures.length).toBeLessThanOrEqual(16);
+    expect(result.fragmentShader).toContain('referenceCloudShade');
+    expect(result.fragmentShader).toContain('referenceCloud_clock');
+    expect(result.fragmentShader).toContain('aliveCloudShadow');
+    expect(result.fragmentShader).not.toMatch(/\b(?:NaN|undefined)\b/);
+    const declarations = [...result.fragmentShader.matchAll(/\bfn\s+(\w+)\s*\(/g)].map((m) => m[1]);
+    expect(new Set(declarations).size).toBe(declarations.length);
+  } finally {
+    dispose(layer.mesh);
+    source.nodes!.dispose();
+  }
+});

@@ -139,6 +139,7 @@ export function buildOverlayInstances(
       flat: type.flat,
       glint: !isRubble && type.tiberium === true ? 1 : undefined,
       unlit: !isRubble && type.tiberium === true,
+      surfaceClass: !isRubble && type.tiberium === true ? 5 : 0,
       lighting: type.lighting,
       light: bridge ? deckLight(level) : undefined,
       deckHeight: !isRubble && isHighBridge(id) ? HIGH_BRIDGE_HEIGHT : undefined,

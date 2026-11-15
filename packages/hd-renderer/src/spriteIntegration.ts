@@ -31,6 +31,8 @@ export type IntegrationValues = Record<IntegrationKey, number>;
 /** One group per renderer context, shared by all its atlas pages; never changes graph topology. */
 export class SpriteIntegration {
   compiled = false;
+  /** Caller-owned packed surface category excluded from optional object filtering (0 disables). */
+  protectedCategory = 0;
   readonly uniforms = Object.fromEntries(INTEGRATION_KEYS.map((key) => [key, uniform(0)])) as Record<
     IntegrationKey,
     ShaderNode

@@ -1,3 +1,4 @@
+import { moistTone } from '../src/ra2/moistTone';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { DataTexture, MeshBasicNodeMaterial, OrthographicCamera, QuadMesh, Scene, WebGPURenderer } from 'three/webgpu';
 import { texture, uniform, vec4 } from 'three/tsl';
@@ -170,4 +171,70 @@ it('gates the post graph on compiled + painter depth, and keeps the key/graph th
   internal.pipeline.dispose();
   internal.pipelineNodes.forEach((n) => n.dispose());
   hd.nodes.dispose();
+});
+
+it.each([0.5, 1, 2.5, 4])('keeps protected resource interiors and edges exact at view scale %s', (scale) => {
+  const f = frame();
+  f.codes.fill(1);
+  for (let y = 10; y <= 14; y++)
+    for (let x = 10; x <= 14; x++) {
+      const k = y * f.width + x;
+      f.codes[k] = 5;
+      f.pixels[k] = [x % 2, y % 2, 0.17];
+    }
+  for (let y = 10; y <= 14; y++)
+    for (let x = 10; x <= 14; x++) {
+      const actual = objectPostCPU(f.pixels, f.codes, f.width, x, y, defaults, scale, 5);
+      expect(actual).toEqual({ mask: 0, surface: f.pixels[y * f.width + x], feather: f.pixels[y * f.width + x] });
+    }
+  expect(objectPostCPU(f.pixels, f.codes, f.width, 9, 12, defaults, scale, 5).mask).toBe(1);
+});
+
+it.each([false, true])('compiles protected-category filtering in both GPU languages (WebGL=%s)', (webgl) => {
+  const picture = texture(new DataTexture(new Uint8Array(16 * 16 * 4), 16, 16));
+  const group = new SpriteIntegration();
+  group.protectedCategory = 5;
+  for (const node of [
+    objectPostMask(picture, 5),
+    objectSurfaceFilter(picture, picture, group, uniform(2.5)),
+    objectOutlineFeather(picture, picture, group),
+  ]) {
+    const shader = build(vec4(node), webgl).shader;
+    expect(shader).toMatch(/(?:%|mod(?:_float)?\s*\()/);
+    expect(shader).toContain('5');
+    expect(shader).not.toMatch(/\b(?:NaN|undefined)\b/);
+  }
+});
+
+it.each([false, true])('compiles the reference filter resolve for protected final-tone pixels (WebGL=%s)', (webgl) => {
+  vi.stubGlobal('window', { devicePixelRatio: 2 });
+  const hd = new HdRenderer(
+    {
+      width: 16,
+      height: 16,
+      style: {},
+      addEventListener() {},
+      removeEventListener() {},
+    } as unknown as HTMLCanvasElement,
+    createScenario(2, 2),
+  );
+  hd.nodes.surfaceClasses = true;
+  hd.spriteIntegration.protectedCategory = 5;
+  hd.settings.tone = moistTone('temperate', 'moist3', hd.settings);
+  hd.settings.clarity = 0.4;
+  const internal = hd as unknown as {
+    painterDepthEnabled: boolean;
+    buildPipeline(): void;
+    pipeline: { outputNode: unknown; dispose(): void };
+    pipelineNodes: { dispose(): void }[];
+  };
+  internal.painterDepthEnabled = true;
+  internal.buildPipeline();
+  try {
+    expect(build(internal.pipeline.outputNode, webgl).shader).not.toMatch(/\b(?:NaN|undefined)\b/);
+  } finally {
+    internal.pipeline.dispose();
+    internal.pipelineNodes.forEach((n) => n.dispose());
+    hd.nodes.dispose();
+  }
 });

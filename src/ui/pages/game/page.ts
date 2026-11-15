@@ -778,7 +778,21 @@ export async function startVmPage(canvas: HTMLCanvasElement, resumedSource?: Gam
   ) {
     try {
       const { createNativeCursor } = await import('./nativeCursor');
-      nativeCursor = await createNativeCursor(canvas, undefined, () => feelTelemetry?.pointerDrawn());
+      const refine =
+        new URLSearchParams(window.location.search).get('hd-cursor') === '1'
+          ? (await import('../../../games/yr/commandCursor')).refineCommandCursor
+          : undefined;
+      nativeCursor = await createNativeCursor(canvas, undefined, () => feelTelemetry?.pointerDrawn(), refine);
+      if (refine && nativeCursor) {
+        const cursor = nativeCursor;
+        const target = window as unknown as { __hdCursor?: typeof cursor };
+        target.__hdCursor = cursor;
+        const destroy = cursor.destroy.bind(cursor);
+        cursor.destroy = () => {
+          if (target.__hdCursor === cursor) delete target.__hdCursor;
+          destroy();
+        };
+      }
     } catch (error) {
       console.warn('[native] Cursor art unavailable; retaining game cursor', error);
     }

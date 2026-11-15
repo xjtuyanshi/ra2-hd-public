@@ -114,6 +114,7 @@ export function silhouetteSmooth(
   codes: ShaderNode,
   search = SILHOUETTE_SEARCH,
   resolve?: (pixel: ShaderNode) => ShaderNode,
+  codeTransform?: (code: ShaderNode) => ShaderNode,
 ): ShaderNode {
   return Fn(() => {
     const size: ShaderNode = textureSize(colour);
@@ -121,7 +122,10 @@ export function silhouetteSmooth(
     const p: ShaderNode = ivec2(int(floor(target.x.mul(size.x))), int(floor(target.y.mul(size.y)))).toConst();
     const last: ShaderNode = ivec2(size).sub(1).toConst();
     const at = (q: ShaderNode): ShaderNode => (clamp as ShaderNode)(q, ivec2(0, 0), last);
-    const code = (q: ShaderNode): ShaderNode => codes.load(at(q)).yz;
+    const code = (q: ShaderNode): ShaderNode => {
+      const raw: ShaderNode = codes.load(at(q)).yz;
+      return codeTransform ? codeTransform(raw) : raw;
+    };
     const differs = (a: ShaderNode, b: ShaderNode): ShaderNode =>
       abs(a.x.sub(b.x))
         .add(abs(a.y.sub(b.y)))

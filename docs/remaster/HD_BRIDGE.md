@@ -1368,3 +1368,21 @@ frame median L* falls from 66 to 43 (the owner's reference 40), lit patches are 
 the reference), clear water stays within dE 0.6 of the current look, and the night base frame goes from L* 30.5 to
 24 without turning yellow. The first tuning cost about 0.5-0.6 ms at 1920x1080 on the development Mac. Not yet seen
 live in a match on the owner's display.
+
+### Optional command cursor coverage
+
+The development native/YR page accepts `hd-cursor=1`, including through the owner launcher's
+`--hd-option hd-cursor=1`. It requires the existing page cursor atlas; missing art retains the existing fallback.
+The pinned YR move/order sequences use the original native frame publications and hotspots. The page reconstructs
+premultiplied coverage at twice the atlas resolution and slightly reduces green emission; it does not add an
+exterior halo, change animation scheduling, or intercept input. Menu, attack, harvest and scroll cursors keep their
+existing art. With the flag absent the previous cursor path remains in use. `native-cursor=game` continues to select
+the game-drawn cursor and therefore bypasses this optional page treatment.
+
+When this option is active, development inspection exposes `window.__hdCursor.setRefinement(false|true)` for
+same-publication A/B. It changes only the page bitmap; the native frame number and hotspot stay authoritative.
+The debug reference is removed with its owning cursor controller.
+
+The per-session cursor controller owns the reconstructed frame cache and releases it with its bitmap, canvas and
+listeners. Mechanism-only browser fixtures establish layout, frame fallback and cleanup; they do not establish
+real-game animation, pointer-lock behaviour or visual acceptance.

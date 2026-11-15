@@ -1459,7 +1459,12 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
             ? { crystalSparkle: Number(params.get('hd-sparkle')) }
             : {}),
           spriteIntegration: params.get('hd-sprite') === '1',
-          surfaceClasses: params.get('hd-mask') === '1',
+          surfaceClasses:
+            params.get('hd-mask') === '1' ||
+            params.get('hd-sprite') === '1' ||
+            params.get('hd-blend') === '1' ||
+            params.get('hd-veh') === '1' ||
+            (params.has('hd-tone') && params.get('hd-tone') !== 'off'),
           modernClouds: params.has('hd-tone') || params.get('hd-blend') === '1',
           ...(params.get('hd-vlook') === 'remaster' ? { voxelLook: 'remaster' } : {}),
           ...(projectionDir && !/\.\.|[\\:]/.test(projectionDir)
