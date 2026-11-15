@@ -271,3 +271,35 @@ process evidence, and a `visual_review.json` with `pass`, `reason`, `agentDirect
 blocky round feature or stair-stepped plate fails the visual gate even if assembly IoU passes.
 The overview crops native facing-zero tiles without resizing. No offline board establishes
 VM, GPU, runtime, performance, hardware or owner artistic acceptance.
+
+### Preserve the hard floor while polishing existing automatic geometry
+
+`round.ts --mode polish` (also forwarded by `roundBatch.ts`) remeasures the earlier delivery,
+then attempts compatible convex-neighbour coalescing and source-seeded upper ridges. The
+coalescer checks opposing shared halfspaces and every neighbour vertex against all remaining
+constraints, with a `1e-7` plane tolerance. Concave unions and incompatible opaque paint,
+groove or chamfer metadata cannot merge. Existing subtraction is retained; expanded flat
+pieces are exempted from being cut a second time. Round primitives keep their original owner.
+This reduces genuine geometric complexity and false internal bevel seams, not voxel count.
+All resulting beveled meshes still receive the unchanged formal metrics and silhouette tests.
+
+Ridges fit a circular upper cross-section against quantized source heights, including a
+sloping parent surface. Constant-radius runs are split when no radius fits every source
+profile; each run needs six source slices. A flat, featureless plate is not a ridge seed.
+Only material above the fitted parent plane is replaced. The hidden radius and narrow
+cross-section remain ambiguous at low voxel resolution; this is source-supported geometry,
+not semantic recognition of pipes or proof of a hidden assembly. Every proposal still has
+to preserve the assembly hard floor, budgets, source proportions and actual 1x visual review.
+
+Polish may first search for a small silhouette margin above the hard floor, using up to 40
+percent of its compute window. This `0.971` internal search aim is not an acceptance threshold:
+the revised hard gate stays at `0.97`, and p99 remains advisory. Coalescing may slightly alter
+seeded triangle-sampling statistics even when the un-beveled union is unchanged; its actual
+metrics are retained, not replaced with earlier numbers. Barrel specs are remeasured unchanged
+in this mode, since the round pass already performed their independent circular-chain search.
+
+For each ridge candidate, polish can coalesce the new cut fragments before checking its actual
+expanded count. This is the same verified convex-union operation, not a compound-count exemption.
+`coalescing.json` retains the original neighbour names and every local merge. The ridge height-error
+field describes raw source profiles before centreline smoothing; it is a proposal diagnostic, not
+the delivered surface p99. Final mesh errors and every silhouette are always remeasured.

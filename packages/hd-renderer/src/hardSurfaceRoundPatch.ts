@@ -160,11 +160,19 @@ export function upperPipeContinuation(
 }
 
 /** Only replace material above each centreline plane. The existing parent below it remains flush and whole. */
-export function patchUpperPipe(part: PartSpec, feature: RoundFeature, name: string, up: Axis = 'z'): PartSpec {
+export function patchUpperPipe(
+  part: PartSpec,
+  feature: RoundFeature,
+  name: string,
+  up: Axis = 'z',
+  floorOffset = 0,
+  floorSlope = 0,
+): PartSpec {
   const out = structuredClone(part),
     names = feature.primitives.map((_, i) => `${name}_${i}`),
     a = 'xyz'.indexOf(feature.axis),
     u = 'xyz'.indexOf(up);
+  if (a === u) throw new Error('Upper pipe requires a transverse up axis');
   for (const cut of out.carve ?? []) cut.keep = [...(cut.keep ?? []), ...names];
   out.primitives.push(...feature.primitives.map((q, i) => ({ ...structuredClone(q), name: names[i], mirror: false })));
   out.carve ??= [];
@@ -174,12 +182,19 @@ export function patchUpperPipe(part: PartSpec, feature: RoundFeature, name: stri
       direction = unit(sub(end, start)),
       upVector: Vec3 = [0, 0, 0];
     upVector[u] = 1;
+    const crossAxis = [0, 1, 2].find((k) => k !== a && k !== u)!;
+    upVector[crossAxis] = -floorSlope;
     const normal = unit(sub(upVector, scale(direction, dot(upVector, direction)))),
       lo = [...feature.bounds[0]] as Vec3,
       hi = [...feature.bounds[1]] as Vec3;
     lo[a] = Math.min(start[a], end[a]);
     hi[a] = Math.max(start[a], end[a]);
-    out.carve!.push({ min: lo, max: hi, cuts: [[...scale(normal, -1), -dot(normal, start)]], keep: names });
+    out.carve!.push({
+      min: lo,
+      max: hi,
+      cuts: [[...scale(normal, -1), -dot(normal, start) - floorOffset * normal[u]]],
+      keep: names,
+    });
   });
   return out;
 }

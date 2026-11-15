@@ -4,6 +4,8 @@ import { appendFileSync } from 'node:fs';
 import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
+import { coalescePart } from '../../../packages/hd-renderer/src/hardSurfaceCoalesce';
+import { detectRoundRidges } from '../../../packages/hd-renderer/src/hardSurfaceRoundRidge';
 import { buildPart, type PartSpec, type HardSurfaceSpec } from '../../../packages/hd-renderer/src/hardSurfaceMesh';
 import {
   detectRoundFeatures,
@@ -50,13 +52,15 @@ const flags = new Map<string, string>();
 for (let i = 2; i < process.argv.length; i += 2) {
   const key = process.argv[i];
   if (
-    !['--input', '--out', '--seconds', '--font', '--cell', '--python'].includes(key) ||
+    !['--input', '--out', '--seconds', '--font', '--cell', '--python', '--mode'].includes(key) ||
     !process.argv[i + 1] ||
     flags.has(key)
   )
     throw new Error(`Invalid ${key}`);
   flags.set(key, process.argv[i + 1]);
 }
+const mode = flags.get('--mode') ?? 'round';
+if (!['round', 'polish'].includes(mode)) throw new Error('Mode must be round or polish');
 if (!flags.has('--input') || !flags.has('--out'))
   throw new Error('round.ts --input AUTOMATIC_DELIVERY --out FRESH_OUTPUT [--seconds 1800]');
 const here = dirname(fileURLToPath(import.meta.url)),
@@ -186,6 +190,8 @@ const phases: Record<string, number> = {},
   detections: Record<string, RoundFeature[]> = {},
   actions: unknown[] = [];
 const bendFeatures: Record<string, unknown[]> = {};
+const coalescing: Record<string, unknown> = {};
+const ridgeCoalescing: Record<string, unknown[]> = {};
 for (const key of keys) {
   const t = performance.now();
   metrics[key] = measurements(key, spec.parts[key], partMasks[key]);
@@ -210,6 +216,12 @@ const cost = (assembly: SilhouetteComparison[], m: HardSurfaceMetrics, role: str
 const consider = (key: string, p: PartSpec, action: string, allowEqualRound = false) => {
   if (performance.now() - started > limit) return false;
   try {
+    if (mode === 'polish' && action.startsWith('source ridge')) {
+      const merged = coalescePart(p);
+      p = merged.part;
+      (ridgeCoalescing[key] ??= []).push({ action, merges: merged.merges });
+      action += `; local convex unions=${merged.merges.length}`;
+    }
     if ((p.carve?.length ?? 0) > 32) {
       history({ key, action, accepted: false, rejected: 'carve/schema budget' });
       return false;
@@ -263,17 +275,29 @@ const consider = (key: string, p: PartSpec, action: string, allowEqualRound = fa
       return false;
     }
 
+    const oldMax = Math.max(old.metrics.dev_vox_to_cad.p99, old.metrics.dev_cad_to_vox.p99),
+      newMax = Math.max(measured.metrics.dev_vox_to_cad.p99, measured.metrics.dev_cad_to_vox.p99);
+    const special = action.startsWith('coalesce:')
+      ? count < old.metrics.primitives &&
+        min >= Math.min(0.97, previousMin) &&
+        minPart >= oldPart - 0.001 &&
+        newMax <= oldMax + 0.05
+      : action.startsWith('prepare:')
+        ? min > previousMin + 0.00001 && newMax <= Math.max(1, oldMax) + 0.05
+        : undefined;
     const accepted =
       measured.finite &&
-      (role === 'barrel'
-        ? minPart > oldPart + 1e-6 && min >= Math.min(0.97, previousMin) - 1e-6
-        : loss < oldLoss - 1e-7 ||
-          (allowEqualRound &&
-            p.primitives.filter((q) => q.round).length > spec.parts[key].primitives.filter((q) => q.round).length &&
-            loss <= oldLoss + 0.0001 &&
-            min >= Math.min(0.97, previousMin) &&
-            Math.max(measured.metrics.dev_vox_to_cad.p99, measured.metrics.dev_cad_to_vox.p99) <=
-              Math.max(old.metrics.dev_vox_to_cad.p99, old.metrics.dev_cad_to_vox.p99) + 0.05));
+      (special !== undefined
+        ? special
+        : role === 'barrel'
+          ? minPart > oldPart + 1e-6 && min >= Math.min(0.97, previousMin) - 1e-6
+          : loss < oldLoss - 1e-7 ||
+            (allowEqualRound &&
+              p.primitives.filter((q) => q.round).length > spec.parts[key].primitives.filter((q) => q.round).length &&
+              loss <= oldLoss + 0.0001 &&
+              min >= Math.min(0.97, previousMin) &&
+              Math.max(measured.metrics.dev_vox_to_cad.p99, measured.metrics.dev_cad_to_vox.p99) <=
+                Math.max(old.metrics.dev_vox_to_cad.p99, old.metrics.dev_cad_to_vox.p99) + 0.05));
     measured.loss = loss;
     history({ key, action, accepted, assembledMin: min, minPart, loss, previousLoss: oldLoss, result: measured });
     if (accepted) {
@@ -295,7 +319,43 @@ const consider = (key: string, p: PartSpec, action: string, allowEqualRound = fa
 for (const key of keys) {
   const t = performance.now(),
     solid = ex.parts[key].solid;
-  if (ex.parts[key].role === 'barrel') {
+  if (mode === 'polish') {
+    if (ex.parts[key].role !== 'barrel') {
+      const merged = coalescePart(spec.parts[key]);
+      coalescing[key] = {
+        merges: merged.merges,
+        planeTolerance: 1e-7,
+        before: buildPart(spec.parts[key]).primitives.length,
+        proposed: buildPart(merged.part).primitives.length,
+      };
+      if (merged.merges.length) consider(key, merged.part, `coalesce: ${merged.merges.length} exact convex unions`);
+      const marginDeadline = started + limit * 0.4;
+      for (
+        let pass = 0;
+        pass < 2 && Math.min(...currentAssembly.map((s) => s.iou)) < 0.971 && performance.now() < marginDeadline;
+        pass++
+      ) {
+        let improved = false;
+        for (const group of coplanarBoundaries(spec.parts[key])) {
+          if (Math.min(...currentAssembly.map((s) => s.iou)) >= 0.971 || performance.now() > marginDeadline) break;
+          for (const delta of [-0.25, 0.25, -0.5, 0.5])
+            improved =
+              consider(key, shiftCoplanarBoundary(spec.parts[key], group, delta), `prepare:${group.key}/${delta}`) ||
+              improved;
+        }
+        if (!improved) break;
+      }
+      const ridges = detectRoundRidges(solid);
+      detections[key] = ridges;
+      for (const [i, ridge] of ridges.entries())
+        consider(
+          key,
+          patchUpperPipe(spec.parts[key], ridge, `ridge_${i}`, 'z', ridge.floorOffset, ridge.floorSlope),
+          `source ridge ${i}; raw-profile-height-error=${ridge.maximumHeightError}; ${ridge.evidence.slices} slices`,
+          true,
+        );
+    }
+  } else if (ex.parts[key].role === 'barrel') {
     const cells = occupiedCells(solid),
       lanes = tubeLanes(cells);
     const source = lanes.flatMap((lane, i) => {
@@ -490,6 +550,7 @@ await save('spec.json', spec);
 await save('metrics.json', metrics);
 await save('actions.json', actions);
 await save('bend_features.json', bendFeatures);
+await save('coalescing.json', { initial: coalescing, ridgeCandidates: ridgeCoalescing });
 await save('silhouette.json', {
   ...Object.fromEntries(keys.map((k) => [k, metrics[k].silhouettes])),
   assembled: currentAssembly,
@@ -514,6 +575,7 @@ await save('timing.json', {
   finished: new Date().toISOString(),
   totalMs: performance.now() - started,
   phasesMs: phases,
+  runMode: mode,
   stopReason: performance.now() - started > limit ? 'time-budget' : 'search-complete',
   manualModelDecisions: [],
   note: 'Automatic wall clock including source detection, formal evaluation, and boards; prior baseline time excluded.',
@@ -536,6 +598,7 @@ const finalHashes = await hashes();
 log(`Complete: assembled min ${minAssembly.toFixed(6)}; barrel target ${barrelTarget}; review pending`);
 await writeDeliveryManifest(out, {
   kind: 'automatic-round-reconstruction',
+  runMode: mode,
   model: ex.id,
   revision,
   sourceStatusAtStart: sourceStatus,

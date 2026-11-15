@@ -10,7 +10,17 @@ const flags = new Map<string, string>();
 for (let i = 2; i < process.argv.length; i += 2) {
   const k = process.argv[i];
   if (
-    !['--ids', '--input-root', '--out', '--concurrency', '--seconds', '--font', '--cell', '--python'].includes(k) ||
+    ![
+      '--ids',
+      '--input-root',
+      '--out',
+      '--concurrency',
+      '--seconds',
+      '--font',
+      '--cell',
+      '--python',
+      '--mode',
+    ].includes(k) ||
     !process.argv[i + 1] ||
     flags.has(k)
   )
@@ -70,7 +80,8 @@ await Promise.all(
         '--out',
         join(out, 'units', id),
       ];
-      for (const k of ['--seconds', '--font', '--cell', '--python']) if (flags.has(k)) args.push(k, flags.get(k)!);
+      for (const k of ['--seconds', '--font', '--cell', '--python', '--mode'])
+        if (flags.has(k)) args.push(k, flags.get(k)!);
       const result = await new Promise<{ exitCode: number; signal: string | null }>((resolveResult) => {
         const child = spawn('pnpm', args, { cwd: resolve(here, '../../..'), stdio: ['ignore', 'pipe', 'pipe'] });
         child.stdout.pipe(log, { end: false });
