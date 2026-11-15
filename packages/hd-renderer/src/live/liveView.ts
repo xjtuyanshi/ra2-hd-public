@@ -1383,6 +1383,16 @@ export class LiveView {
   }
 
   /** Switch surface uniforms without moving the camera or reloading the match. */
+  vehicleCadMode(mode?: 'look' | 'pbr' | 'off'): string {
+    return this.voxelUnits.vehicleCadMode(mode);
+  }
+  vehicleCadSet(knob: string, value: number): void {
+    this.voxelUnits.vehicleCadSet(knob, value);
+  }
+  vehicleCadGet(): Record<string, number> {
+    return this.voxelUnits.vehicleCadGet();
+  }
+
   setWaterLook(style: WaterStyle): WaterStyle {
     return parseWaterStyle(this.hd.setWaterLook(style) ?? null);
   }

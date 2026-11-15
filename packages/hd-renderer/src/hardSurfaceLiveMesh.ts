@@ -228,7 +228,13 @@ export function subdivideHardSurfaceMesh(mesh: HardSurfaceMesh, maxEdge = 0.5): 
 }
 
 /** Adaptive painted plates with cached deterministic hemisphere AO, including grooves and undersides. */
-export function buildHardSurfaceLiveMesh(part: PartSpec, maxEdge = 0.5, paint?: SurfaceSampler) {
+export function buildHardSurfaceLiveMesh(
+  part: PartSpec,
+  maxEdge = 0.5,
+  paint?: SurfaceSampler,
+  paintCodes: Readonly<Record<string, number>> = {},
+  preparePaint?: (mesh: HardSurfaceMesh, primitives: ReturnType<typeof buildPart>['primitives']) => SurfaceSampler,
+) {
   const built = buildPart(part);
   const mesh = built.mesh;
   if (!mesh.positions.length) throw new Error('Empty CAD mesh');
@@ -336,7 +342,7 @@ export function buildHardSurfaceLiveMesh(part: PartSpec, maxEdge = 0.5, paint?: 
   const adaptive = adaptiveHardSurfaceMesh(
     mesh,
     maxEdge,
-    paint ?? (() => ({ index: 0, shade: 0 })),
+    preparePaint?.(mesh, built.primitives) ?? paint ?? (() => ({ index: 0, shade: 0 })),
     sampleOcclusion,
     (points, self, n) => {
       const dx = n[0] * 1e-4,
@@ -364,7 +370,8 @@ export function buildHardSurfaceLiveMesh(part: PartSpec, maxEdge = 0.5, paint?: 
       return false;
     },
   );
-  return { ...adaptive, lattice: adaptive.positions.slice() };
+  const lookCode = Float32Array.from(adaptive.primitive, (i) => paintCodes[built.primitives[i].paint ?? ''] ?? 0);
+  return { ...adaptive, lattice: adaptive.positions.slice(), lookCode, primitives: built.primitives };
 }
 
 /** Reject malformed JSON before expansion/allocation. Paint labels are intentionally opaque metadata. */

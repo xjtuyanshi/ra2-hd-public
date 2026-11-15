@@ -1424,16 +1424,75 @@ those boundary vertices without adding centre fans. This avoids geometric T-junc
 The discrete palette/material index is constant per triangle, avoiding interpolation through unrelated ramps;
 shade varies only within that index's 16-entry ramp. The fine-sampling and emitted-mesh budgets each allow at most
 two million triangles, independently of merging.
-Curvature marks chamfers for the existing remaster wear/highlight response. Subvoxel paint boundaries remain
-approximations. Named cylinder paint labels remain spec metadata: this path uses the source palette and remaster
-PBR classification, rather than the offline reference's procedural wheel, drum, hatch or steel profiles.
+Curvature marks chamfers (`chamfer * 2`). Subvoxel paint boundaries remain approximations. A caller-supplied
+paint-code table produces `lookCode`; the generic geometry does not interpret game paint names.
+
+Optional baked detail sits beside the spec: `<MODEL_ID>.detail/<role>.json` (chart table) and `<role>.png`
+(RGBA8 atlas), both in the external HD cache. The table is `{res, size: [w, h], faces: {id: [ox, oy, w, h,
+origin xyz, u xyz, v xyz]}}`: one chart per planar face in its own plane, `res` texels per lattice unit, `v = n x u`.
+Texels hold the detail normal along u/v in R/G (`x * 0.5 + 0.5`), cavity AO in B and signed grime (< 0) / wear
+(> 0) in A. `hardSurfaceDetailAtlas.ts` matches the look mesh's triangles to charts geometrically (same plane
+within 0.06 lattice units and cos 0.995, all three vertices inside the chart rectangle), splits vertices shared
+across charts and emits a `detailUv` attribute in texels; unmatched triangles get (-1, -1) and render neutral, and
+the legacy PBR twin is untouched. The Worker receives only the tables; the presenting thread decodes the PNG with
+`premultiplyAlpha: 'none'` and no colour conversion (the channels are data) and the material samples it with
+mipmaps (1:1 is heavy minification). Missing sidecars are silent; a malformed table or an atlas whose size
+differs from its table warns once and drops that part's detail. Node tooling has no image decoder: coordinates
+are still built, the atlas is not fetched. The CAD material applies the AO to its lighting gain, grime/wear to
+the albedo (wear on paint only) and the relief through a cotangent frame from the texel coordinates, after the
+volume's groove bump. Knobs `detailNormal`, `detailAo`, `detailGrime` and `detailWear` (sandbox `cadk=`, live
+`__hdBridge.vehicleCad.set`) scale each term; 0 disables it.
 
 The RA2 adapter shares the bounds/HVA/model transform with the voxel paths, preserves role order and TurretOffset,
 and exchanges geometry and material in place, retaining the unit root, turret yaw, pose, tint, opacity and native
-depth. CAD always uses the remaster PBR palette material with scene sun/sky lighting, even alongside engine-look
+depth. CAD defaults to its own painted-steel material with scene sun/sky lighting, even alongside engine-look
 vehicles. It never receives image-based redraw projection. Shadow/foam silhouettes retain the original voxel
 outline through `withSilhouette`; water colour reflections follow the CAD source geometry/material normally.
 Other vehicles keep their existing look and projection behaviour.
+
+The CAD material folds palette glints into levelled cream, separates bare/dark steel from rubber, retains
+player-remapped house hue with limited chroma, and overrides coded barrels with neutral gunmetal. Wheel tyre,
+disc and hub, drum hoops and hatch roof rings come from expanded cylinder metadata. Generic straight-run
+vectorisation consumes exposed line features from `analyseVoxelPaint`; combing and slope rejection prevent
+voxel staircase shading from becoming plate joints. A surface-rasterised RGBA8 lattice volume carries groove
+darkness, its wider AO halo and cylinder sub-material codes. Resolution defaults to four texels per voxel;
+the RA2 adapter selects the highest common integer density up to four that fits a 4,000,000-byte model budget.
+The current Rhino's full padded AABBs would take 8,490,240 bytes at four, so it uses three (3,581,820 bytes).
+This is an intentional density exception to the default, rather than cropping the required one-voxel halo.
+The Worker receives a cloned 768-byte base unit palette (before player remapping) and transfers only newly owned
+mesh/volume buffers.
+Seams remain model-shared across player palettes. `lookIndex` selects a representative of each analysed paint
+region, including the host paint under a seam; the separate unfolded `pbr` mesh retains original `pindex`/`pshade` and topology for the old-PBR comparison.
+Before adaptive meshing, deterministic area-weighted face samples fold small regions and glints into the dominant paint, retaining regions covering at least 12%, house regions covering at least 4%, or features of at least 1.5 square voxels whose luma exceeds the dominant by 0.08; flat/hatch faces use only the dominant paint.
+That additional CAD-only attribute prevents the original dark seam paint from doubling the baked groove.
+One prototype graph per map grade uses palette and 3D-volume **texture slots**, plus part bounds/flags in uniform
+slots: new palettes and models allocate data, not shader graphs. Materials are cached per palette and model part;
+the atmosphere owns GPU textures/materials and the vehicle library owns adopted geometry. Broad tonal variation,
+up-facing chamfer wear, model-local lower-hull grime, wall sky occlusion, source AO, track gaps/ridges and
+derivative groove normals supply the painted-steel finish. Scene multipliers, cloud shading, map light, moonlight,
+object tint, native depth and silhouette twins follow the existing plumbing; water uses an ambient-only simplified
+colour without the volume or groove derivatives.
+
+CAD never uses `litAlbedo` or a bright VPL row. Roughness is bounded below by 0.28; direct and environment specular
+radiance on paint/house are capped at 0.04 and 0.02 respectively before scene grading/exposure; metal keeps
+0.10 and 0.08 to retain its reflection gradient. Defaults are
+`brightness=1.1`, `sunGain=1.6`, `fill=0.6`, `envStrength=0.4`, `specular=0.35`, `wear=0.30`,
+`lineDark=0.92`, `haloDark=0.30`, `linkDark=0.55`, `bump=0.30`, `houseLevel=0.60`, `wallOcclusion=0.45`,
+`wallGrime=0.32`, `aoStrength=1`. The lighting gains follow same-frame live calibration; the clear-noon Lambert energy check uses key intensity 3.2, elevation 55 degrees
+(with the existing azimuth correction), sky RGB (0.62, 0.75, 0.95), ground RGB (0.32, 0.28, 0.22), and the renderer’s
+per-channel `pi / noon irradiance` exposure. Reference cream times the dielectric diffuse share 0.96 gives an
+unoccluded top near sRGB (0.764, 0.726, 0.656), a sun-shadowed upper wall near (0.204, 0.202, 0.194), before the small
+view-dependent specular term. The brightest permitted cream ratio (1.15), maximum tonal variation (+6%) and both paint specular caps stay below one
+under that neutral noon calibration. Authored map grades, weather, display finish and user knob changes are separate
+from this bounded numeric check and still need scene-specific visual review.
+
+With development `hd-veh=cad`, `window.__hdBridge.vehicleCad` provides `mode('look'|'pbr'|'off')` (no argument reads
+it), `set(knob, finiteNumber)` and `get()`. Knobs are nonnegative and bounded to eight. `look` is the default;
+`pbr` uses the retained unfolded CAD geometry with the previous remaster material; `off` restores retained original geometry/material
+objects in place. Units created in any mode follow it, and pending source smooth builds update the retained original
+set. Mode changes never rebuild CAD or replace a unit root. The hook is absent outside the CAD development opt-in.
+Sandbox `veh=cad&cadlook=pbr|look` chooses the initial material. Knobs accept their names as URL parameters, or
+`cadk=brightness:1.1,wear:0.3`; `vk` continues to control only the old PBR material.
 
 Browser builds run in short-lived CAD Workers owned by the library, terminated on completion, failure or disposal;
 late results cannot revive a disposed view. Worker creation failure keeps the current geometry. Non-browser

@@ -129,7 +129,7 @@ describe('hard surface look', () => {
       cream: [0.64, 0.615, 0.565],
       houseTone: [0.6, 0.6, 0.6],
       hatchColour: [0.36, 0.38, 0.43],
-      barrelSteel: [0.6, 0.6, 0.74],
+      barrelSteel: [0.42, 0.44, 0.47],
       wear: 0.3,
       wallOcclusion: 0.45,
       wallGrime: 0.32,

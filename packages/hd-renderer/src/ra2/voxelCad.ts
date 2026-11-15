@@ -1,32 +1,72 @@
 import type { VoxelModel } from '../../../ra2-assets/src/manifest';
 import type { AtmosphereNodes } from '../atmosphere';
 import { parseHardSurfaceSpec } from '../hardSurfaceLiveMesh';
+import { parseDetailChartTable, type DetailChartTable } from '../hardSurfaceDetailAtlas';
 import type { HardSurfaceSpec } from '../hardSurfaceMesh';
-import { buildCadModel } from './voxelCadMesh';
+import { buildCadModel, type CadMeshData } from './voxelCadMesh';
 import type { CadReply, CadRequest } from './voxelCadWorker';
-import type { SmoothMeshData } from './voxelSmooth';
+import { BufferAttribute, type BufferGeometry } from 'three/webgpu';
+import { voxelCadMaterialFor } from './voxelCadMaterial';
+import { VOXEL_TO_WORLD } from './voxelScale';
 import { smoothPartGeometry, withSilhouette } from './voxelSmoothGeometry';
 import { voxelPbrMaterialFor } from './voxelPbr';
 import { selectedVoxelTurretIndex } from './voxelTurrets';
 import { updateVoxelNativeDepth, VoxelUnit, type VoxelGeometry } from './voxels';
 
-export type CadBuilder = (model: VoxelModel, spec: HardSurfaceSpec) => Promise<SmoothMeshData[]>;
+export type CadBuilder = (
+  model: VoxelModel,
+  spec: HardSurfaceSpec,
+  palette: Uint8Array,
+  detail?: Record<string, DetailChartTable>,
+) => Promise<CadMeshData[]>;
 
 /** Reuse source silhouette policies, turret pivots, palette slots and every existing surface twin. */
 export function cadVoxelGeometry(
   model: VoxelModel,
-  meshes: SmoothMeshData[],
+  meshes: CadMeshData[],
   palette: Uint8Array,
   nodes?: AtmosphereNodes,
+  mode: 'look' | 'pbr' = 'look',
+  shared?: readonly BufferGeometry[],
 ): VoxelGeometry[] {
   if (meshes.length !== model.parts.length) throw new Error('Incomplete CAD mesh set');
-  const material = voxelPbrMaterialFor(palette, nodes);
-  return model.parts.map((part, i) => ({
-    role: part.role,
-    turretOffset: (model.turretOffset ?? 0) / 256,
-    geometry: withSilhouette(smoothPartGeometry([meshes[i]]), part.sections),
-    material,
-  }));
+  let ground = Infinity,
+    top = -Infinity;
+  const hull = meshes[model.parts.findIndex((p) => p.role === 'body')] ?? meshes[0];
+  for (let i = 1; i < hull.position.length; i += 3) {
+    ground = Math.min(ground, hull.position[i] / VOXEL_TO_WORLD);
+    top = Math.max(top, hull.position[i] / VOXEL_TO_WORLD);
+  }
+  return model.parts.map((part, i) => {
+    const geometry =
+      shared?.[i] ?? withSilhouette(smoothPartGeometry([mode === 'pbr' ? meshes[i].pbr : meshes[i]]), part.sections);
+    if (!shared && mode === 'look') {
+      geometry.setAttribute('lookCode', new BufferAttribute(meshes[i].lookCode, 1));
+      geometry.setAttribute('lookIndex', new BufferAttribute(meshes[i].lookIndex, 1));
+      geometry.setAttribute('detailUv', new BufferAttribute(meshes[i].detailUv, 2));
+    }
+    const { detailImage, detailSize } = meshes[i];
+    return {
+      role: part.role,
+      turretOffset: (model.turretOffset ?? 0) / 256,
+      geometry,
+      material:
+        mode === 'pbr'
+          ? voxelPbrMaterialFor(palette, nodes)
+          : voxelCadMaterialFor(
+              palette,
+              {
+                volume: meshes[i].lookVolume,
+                ground,
+                height: top - ground,
+                body: part.role === 'body',
+                steel: part.role === 'barrel',
+                detail: detailImage && detailSize ? { image: detailImage, size: detailSize } : null,
+              },
+              nodes,
+            ),
+    };
+  });
 }
 
 /** Exchange geometry and palette material without replacing the unit, articulation or per-object state. */
@@ -37,11 +77,17 @@ export function adoptCadVoxel(root: VoxelUnit, previous: VoxelGeometry[], next: 
   updateVoxelNativeDepth(root, anchor, bonus, enabled !== 0);
 }
 
+interface CadDetail {
+  tables: Record<string, DetailChartTable>;
+  images: Record<string, Promise<ImageBitmap | null>>;
+}
+
 /** Lazy optional specs. Missing specs are silent; all other failures settle once and retain the current geometry. */
 export class VoxelCadLibrary {
   private readonly abort = new AbortController();
   private readonly specs = new Map<string, Promise<HardSurfaceSpec | null>>();
-  private readonly pending = new Map<VoxelModel, Promise<SmoothMeshData[] | null>>();
+  private readonly details = new Map<VoxelModel, Promise<CadDetail>>();
+  private readonly pending = new Map<VoxelModel, Promise<CadMeshData[] | null>>();
   private readonly workers = new Map<Worker, (error: Error) => void>();
   private readonly warnings = new Set<string>();
   private disposed = false;
@@ -58,14 +104,23 @@ export class VoxelCadLibrary {
     this.warnings.add(id);
     console.warn(`[HD] voxel CAD ${id}: ${String(error)}; keeping the current look`);
   }
-  load(model: VoxelModel): Promise<SmoothMeshData[] | null> {
+  load(model: VoxelModel, palette: Uint8Array): Promise<CadMeshData[] | null> {
     if (this.disposed || selectedVoxelTurretIndex(model)) return Promise.resolve(null);
     let pending = this.pending.get(model);
     if (!pending) {
       pending = this.spec(model.id)
         .then(async (spec) => {
           if (!spec || this.disposed) return null;
-          const meshes = await (this.builder ? this.builder(model, spec) : this.build(model, spec));
+          const detail = await this.detail(model);
+          if (this.disposed) return null;
+          const meshes = await (this.builder
+            ? this.builder(model, spec, palette, detail.tables)
+            : this.build(model, spec, palette, detail.tables));
+          if (this.disposed) return null;
+          const images = await Promise.all(model.parts.map((part) => detail.images[part.role] ?? null));
+          meshes.forEach((mesh, i) => {
+            if (mesh.detailSize) mesh.detailImage = images[i];
+          });
           return this.disposed ? null : meshes;
         })
         .catch((error) => {
@@ -75,6 +130,67 @@ export class VoxelCadLibrary {
       this.pending.set(model, pending);
     }
     return pending;
+  }
+  /** GET a sidecar; 404 and dev-server HTML fallbacks mean missing, other failures throw. */
+  private async fetchOptional(path: string, json: boolean): Promise<Response | null> {
+    const response = await fetch(`${this.base.replace(/\/$/, '')}/${path}`, { signal: this.abort.signal });
+    if (response.status === 404) return null;
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const type = response.headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase() ?? '';
+    if (type === 'text/html') return null;
+    if (json && type !== 'application/json' && !type.endsWith('+json')) return null;
+    return response;
+  }
+  /**
+   * Optional baked detail: <id>.detail/<role>.json (chart table) and <role>.png (RGBA8 atlas) beside the spec.
+   * A part without both renders without detail; a failed table or image warns once and drops that part's detail.
+   */
+  private detail(model: VoxelModel): Promise<CadDetail> {
+    let pending = this.details.get(model);
+    if (!pending) {
+      const dir = `${encodeURIComponent(model.id)}.detail`;
+      pending = (async () => {
+        const tables: Record<string, DetailChartTable> = {},
+          images: Record<string, Promise<ImageBitmap | null>> = {};
+        await Promise.all(
+          model.parts.map(async ({ role }) => {
+            try {
+              const response = await this.fetchOptional(`${dir}/${encodeURIComponent(role)}.json`, true);
+              if (!response) return;
+              const body = await response.text();
+              if (body.trimStart().startsWith('<')) return;
+              const table = parseDetailChartTable(JSON.parse(body));
+              tables[role] = table;
+              images[role] = this.detailImage(`${dir}/${encodeURIComponent(role)}.png`, table).catch((error) => {
+                this.reportFailure(`${model.id} detail ${role}`, error);
+                return null;
+              });
+            } catch (error) {
+              this.reportFailure(`${model.id} detail ${role}`, error);
+            }
+          }),
+        );
+        return { tables, images };
+      })();
+      this.details.set(model, pending);
+    }
+    return pending;
+  }
+  private async detailImage(path: string, table: DetailChartTable): Promise<ImageBitmap | null> {
+    // Non-browser tooling has no image decoder; the mesh keeps its coordinates and renders neutral.
+    if (typeof createImageBitmap === 'undefined') return null;
+    const response = await this.fetchOptional(path, false);
+    if (!response) return null;
+    // The channels are data (normal, AO, signed grime): no premultiplication and no colour conversion.
+    const image = await createImageBitmap(await response.blob(), {
+      premultiplyAlpha: 'none',
+      colorSpaceConversion: 'none',
+    });
+    if (image.width !== table.size[0] || image.height !== table.size[1]) {
+      image.close();
+      throw new Error(`detail atlas is ${image.width}x${image.height}, table says ${table.size.join('x')}`);
+    }
+    return image;
   }
   private spec(id: string): Promise<HardSurfaceSpec | null> {
     let pending = this.specs.get(id);
@@ -98,11 +214,16 @@ export class VoxelCadLibrary {
     }
     return pending;
   }
-  private build(model: VoxelModel, spec: HardSurfaceSpec): Promise<SmoothMeshData[]> {
+  private build(
+    model: VoxelModel,
+    spec: HardSurfaceSpec,
+    palette: Uint8Array,
+    detail: Record<string, DetailChartTable>,
+  ): Promise<CadMeshData[]> {
     // Non-browser tooling has no presenting thread; it runs the same pure implementation directly.
     if (typeof Worker === 'undefined') {
       if (typeof document !== 'undefined') return Promise.reject(new Error('CAD requires a Worker in the browser'));
-      return Promise.resolve(buildCadModel(model, spec));
+      return Promise.resolve(buildCadModel(model, spec, palette, undefined, detail));
     }
     return new Promise((resolve, reject) => {
       const worker = new Worker(new URL('./voxelCadWorker.ts', import.meta.url), { type: 'module' });
@@ -122,7 +243,7 @@ export class VoxelCadLibrary {
         reject(new Error(event.message));
       };
       try {
-        worker.postMessage({ model, spec } satisfies CadRequest);
+        worker.postMessage({ model, spec, palette, detail } satisfies CadRequest);
       } catch (error) {
         finish();
         reject(error);
@@ -141,5 +262,6 @@ export class VoxelCadLibrary {
     this.workers.clear();
     this.pending.clear();
     this.specs.clear();
+    this.details.clear();
   }
 }
