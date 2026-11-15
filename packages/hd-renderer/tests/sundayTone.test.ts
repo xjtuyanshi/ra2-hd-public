@@ -4,6 +4,8 @@ import { LUSH2_R3_TEMPERATE, LUSH2_SCHEMA, lush2Defaults, lush2Mapping } from '.
 import { r3CloudToneRgb } from './fixtures/r3CloudTone';
 
 const tone = (theater = 'temperate') => lush2Mapping(lush2Defaults(theater), theater).tone;
+/** The Sunday v2 wet-sand recipe stays reachable behind shoreKeep 0 (the default keeps the band untoned). */
+const wetTone = (theater = 'temperate') => ({ ...tone(theater), shoreKeep: 0 });
 const y = (rgb: readonly number[]) => rgb.reduce((sum, v, i) => sum + v * [0.2126, 0.7152, 0.0722][i]!, 0);
 const linear = (rgb: readonly number[]) =>
   rgb.map((v) => ((v / 255 + 0.055) / 1.055) ** 2.4) as [number, number, number];
@@ -22,9 +24,16 @@ function lch(rgb: readonly number[]) {
 describe('Sunday same-build r3 gates', () => {
   it('exports the exact frozen temperate override and preserves all inherited theatre chroma values', () => {
     expect(Object.isFrozen(LUSH2_R3_TEMPERATE)).toBe(true);
-    expect(LUSH2_R3_TEMPERATE).toEqual({ grassChroma: 1.2, shadeChroma: 1.25, wetSand: 0, wetSheen: 0, treeBlend: 0 });
+    expect(LUSH2_R3_TEMPERATE).toEqual({
+      grassChroma: 1.2,
+      shadeChroma: 1.25,
+      wetSand: 0,
+      wetSheen: 0,
+      shoreKeep: 0,
+      treeBlend: 0,
+    });
     for (const [theater, grass, shade, enabled] of [
-      ['temperate', 1, 1.45, 1],
+      ['temperate', 0.95, 1.42, 1],
       ['urban', 1.04, 1.25, 1],
       ['newurban', 1.04, 1.25, 1],
       ['desert', 1.02, 1.25, 1],
@@ -42,8 +51,9 @@ describe('Sunday same-build r3 gates', () => {
         enabled * 0.8,
       ]);
       expect([p.treeContact, p.treeContactHeight]).toEqual([0.35, 1]);
+      expect(p.shoreKeep).toBe(1);
     }
-    for (const key of ['wetSand', 'wetSheen', 'wetSandDepth', 'wetShallow', 'treeBlend']) {
+    for (const key of ['wetSand', 'wetSheen', 'wetSandDepth', 'wetShallow', 'shoreKeep', 'treeBlend']) {
       expect(LUSH2_SCHEMA.find((f) => f.key === key)).toMatchObject({ min: 0, max: 1, step: 0.01 });
     }
   });
@@ -115,9 +125,43 @@ it('reduces sunlit grass chroma, keeps shade chroma, preserving OKLab lightness 
   }
 });
 
+describe('Sunday shore band kept as the untoned original', () => {
+  const pixels = [
+    [215, 185, 130],
+    [144, 163, 132],
+    [150, 160, 60],
+    [105, 115, 50],
+    [60, 90, 120],
+  ].map((v) => linear(v));
+  it('returns the source exactly wherever the wet gate is full, by day, at night and in cloud shade', () => {
+    const p = tone();
+    for (const rgb of pixels)
+      for (const wet of [0.3, 0.5, 0.85, 1])
+        for (const shade of [0, 0.5, 1])
+          for (const night of [0, 0.5, 1])
+            cloudToneRgb(rgb, shade, p, night, rgb, false, wet).forEach((v, i) => expect(v).toBeCloseTo(rgb[i]!, 14));
+  });
+  it('fades in only across the inner gate, leaves dry land on the grade, and shoreKeep 0 restores Sunday v2', () => {
+    const p = tone();
+    for (const rgb of pixels) {
+      expect(cloudToneRgb(rgb, 0, p, 0, rgb, false, 0)).toEqual(cloudToneRgb(rgb, 0, wetTone(), 0, rgb, false, 0));
+      const graded = cloudToneRgb(rgb, 0, p, 0, rgb, false, 0);
+      const ramp = [0, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3].map((wet) => {
+        const out = cloudToneRgb(rgb, 0, p, 0, rgb, false, wet);
+        return Math.hypot(...out.map((v, i) => v - rgb[i]!));
+      });
+      expect(ramp.at(-1)).toBeCloseTo(0, 14);
+      expect(ramp.every((v, i) => i === 0 || v <= ramp[i - 1]! + 1e-12)).toBe(true);
+      expect(ramp[0]).toBeCloseTo(Math.hypot(...graded.map((v, i) => v - rgb[i]!)), 12);
+    }
+    const sand = pixels[0]!;
+    expect(cloudToneRgb(sand, 0, { ...p, shoreKeep: 0 }, 0, sand, false, 1)).not.toEqual(sand);
+  });
+});
+
 describe('Sunday warm land-side sand', () => {
   it('uses a pre-light L*62/C*34/h84 tint: warm wet sand of about the dry chroma, darker but textured', () => {
-    const p = tone();
+    const p = wetTone();
     lch(p.wetSandTint).forEach((v, i) => expect(v).toBeCloseTo([62, 34, 84][i]!, 1));
     const sand = linear([215, 185, 130]);
     const dry = cloudToneRgb(sand, 0, p, 0, sand, false, 0);
@@ -138,7 +182,7 @@ describe('Sunday warm land-side sand', () => {
   });
 
   it('replaces olive source chroma, floors dark rim luminance, and keeps the inner band dry', () => {
-    const p = { ...tone(), wetLip: 0 };
+    const p = { ...wetTone(), wetLip: 0 };
     for (const rgb of [linear([150, 160, 60]), linear([105, 115, 50]), linear([215, 185, 130])]) {
       const out = cloudToneRgb(rgb, 0, p, 0, rgb, false, 1);
       expect(lightness(out)).toBeGreaterThanOrEqual(62);
@@ -158,7 +202,7 @@ describe('Sunday warm land-side sand', () => {
   });
 
   it('never applies the legacy chroma expansion to the new sand path, including partial wet ramps', () => {
-    const p = tone(),
+    const p = wetTone(),
       rgb = linear([105, 115, 50]);
     for (const wet of [0.1, 0.3, 0.5, 0.85, 1]) {
       const base = cloudToneRgb(rgb, 0, { ...p, wetChroma: 1 }, 0, rgb, false, wet);
@@ -170,7 +214,7 @@ describe('Sunday warm land-side sand', () => {
 
   it('limits sheen to outer, lit, daytime band and keeps objects/dry land untouched', () => {
     const rgb = linear([215, 185, 130]);
-    const p = tone();
+    const p = wetTone();
     for (const wet of [0, 0.5, 0.7, 0.85, 1])
       for (const night of [0, 0.5, 1])
         for (const shade of [0, 0.5, 1]) {
@@ -190,7 +234,7 @@ describe('Sunday shore shallows and swash line', () => {
     shallow = linear([144, 163, 132]);
 
   it('keeps painted shallows over sand reading as turquoise water instead of wet sand', () => {
-    const p = tone();
+    const p = wetTone();
     const [, c, h] = lch(cloudToneRgb(shallow, 0, p, 0, shallow, false, 1));
     expect(h).toBeGreaterThan(175);
     expect(h).toBeLessThan(200);
@@ -204,7 +248,7 @@ describe('Sunday shore shallows and swash line', () => {
   });
 
   it('never boosts olive where tan sand and turquoise shallows cross', () => {
-    const p = tone();
+    const p = wetTone();
     for (let t = 0; t <= 1.0001; t += 0.05) {
       const rgb = sand.map((v, i) => v + (shallow[i]! - v) * t) as [number, number, number];
       for (const wet of [0.5, 0.85, 1]) {
@@ -219,7 +263,7 @@ describe('Sunday shore shallows and swash line', () => {
   });
 
   it('pales and desaturates the last stretch before the waterline only, by day and in the lush band', () => {
-    const p = tone();
+    const p = wetTone();
     const noFilm = { ...p, wetLip: 0 };
     const at = (q: CloudToneParams, wet: number, night = 0) => cloudToneRgb(sand, 0, q, night, sand, false, wet);
     expect(at(p, p.wetFilmStart)).toEqual(at(noFilm, p.wetFilmStart));

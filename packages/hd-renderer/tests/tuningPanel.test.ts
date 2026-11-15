@@ -304,7 +304,7 @@ it('the actual RA2 controller restores URL clouds and no-tone settings, preservi
     () => nativeTyping,
   );
   try {
-    expect(readStorage).toHaveBeenCalledWith('hd-lush2-v6:temperate');
+    expect(readStorage).toHaveBeenCalledWith('hd-lush2-v7:temperate');
     expect(panel.get()).toEqual(lush2Defaults('temperate'));
     const backquote = () => {
       const event = Object.assign(new Event('keydown', { cancelable: true }), { code: 'Backquote' });

@@ -83,7 +83,8 @@ describe('lush2 colour reference', () => {
     expect(hue(lit)).toBeLessThanOrEqual(80);
     expect(Math.max(...lit) / 255).toBeGreaterThanOrEqual(0.56);
     expect(Math.max(...lit) / 255).toBeLessThanOrEqual(0.66);
-    expect(saturation(lit)).toBeGreaterThanOrEqual(0.6);
+    // Sunday v3: sunlit grass chroma 0.95 (owner: 15-20 % below r3).
+    expect(saturation(lit)).toBeGreaterThanOrEqual(0.55);
     expect(saturation(lit)).toBeLessThanOrEqual(0.85);
     expect(hue(shade)).toBeGreaterThan(hue(lit));
     expect(saturation(shade)).toBeGreaterThanOrEqual(0.5);
@@ -286,7 +287,7 @@ describe('lush2 colour reference', () => {
   it('retains the r3 warm wet multiplier and own-luma chroma when replacement is off', () => {
     const contaminated = decode([120, 170, 160]);
     for (const theater of ['temperate', 'desert']) {
-      const p = { ...recommended(theater), wetSand: 0, wetSheen: 0 };
+      const p = { ...recommended(theater), wetSand: 0, wetSheen: 0, shoreKeep: 0 };
       for (const pixel of [
         [215, 185, 130],
         [170, 165, 140],
@@ -810,7 +811,7 @@ it('keeps r3 neighbouring sand and surf identical pre-chroma gains, independent 
         const out = cloudToneRgb(
           rgb,
           0,
-          { ...p, wetChroma: 1, wetSand: 0, wetSheen: 0 },
+          { ...p, wetChroma: 1, wetSand: 0, wetSheen: 0, shoreKeep: 0 },
           0,
           decode([120, 170, 160]),
           false,
@@ -820,7 +821,7 @@ it('keeps r3 neighbouring sand and surf identical pre-chroma gains, independent 
       });
       gains[0]!.forEach((v, i) => expect(gains[1]![i]).toBeCloseTo(v, 12));
     }
-  const p = { ...recommended(), wetSand: 0, wetSheen: 0 };
+  const p = { ...recommended(), wetSand: 0, wetSheen: 0, shoreKeep: 0 };
   for (const mean of [decode([120, 170, 160]), decode([150, 160, 60]), decode([215, 185, 130])]) {
     const sand = cloudToneRgb(pixels[0]!, 0, p, 0, mean, false, 1, 0, mean);
     expect(hue(encode(sand))).toBeGreaterThanOrEqual(25);

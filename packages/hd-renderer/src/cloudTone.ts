@@ -80,6 +80,11 @@ export interface CloudToneParams {
   /** Pale water film over the last stretch of wet sand before the waterline (from wetFilmStart), times wetLip. */
   wetFilm: number;
   wetFilmStart: number;
+  /**
+   * Share of the wet-band gate (smoothstep 0..0.3 of the shore mask) that keeps the untoned source exactly: at 1 the
+   * band renders as with no tone at all (no wet tint, wet sand, shallows, film or sheen, no grass grade or gold).
+   */
+  shoreKeep: number;
   treeBlend: number;
   treeReference: [number, number, number];
   treeContact: number;
@@ -143,6 +148,7 @@ export class CloudToneUniforms {
   readonly wetLipLift = uniform(0);
   readonly wetFilm = uniform(0);
   readonly wetFilmStart = uniform(0);
+  readonly shoreKeep = uniform(0);
   readonly treeBlend = uniform(0);
   readonly treeReference = uniform(new Vector3(1, 1, 1));
   readonly treeContact = uniform(0);
@@ -309,7 +315,9 @@ export function cloudToneRgb(
     });
   }
   const wetGate = smooth(0, 0.3, wet);
-  const wetShare = p.wet * wet * (1 - night);
+  // shoreKeep hands the band to the untoned source: the wet recipes fade out with it (no partial ring at the gate).
+  const wetOwn = 1 - p.shoreKeep;
+  const wetShare = p.wet * wet * (1 - night) * wetOwn;
   const tintY = Math.max(luma(p.wetTint), 1e-6);
   const bandSource = detailed.map((v, i) => blend(v, rgb[i]!, wetGate));
   detailed.forEach((_, i) => {
@@ -346,14 +354,21 @@ export function cloudToneRgb(
     detailed.forEach((v, i) => {
       const lipped = blend(out[i]!, outY, lip);
       const filmed = blend(lipped, outY * blend(1, p.wetShallowTint[i]! / shallowTintY, 0.4), film);
-      detailed[i] = blend(v, filmed, p.wetSand);
+      detailed[i] = blend(v, filmed, p.wetSand * wetOwn);
     });
   }
   if (p.wetSheen > 0 && wet > 0) {
     const sheen =
-      1 + p.wetSheenGain * p.wetSheen * smooth(p.wetSheenStart, 1, wet) * Math.min(1, p.wet) * (1 - night) * lit;
+      1 +
+      p.wetSheenGain * p.wetSheen * smooth(p.wetSheenStart, 1, wet) * Math.min(1, p.wet) * (1 - night) * lit * wetOwn;
     detailed.forEach((v, i) => {
       detailed[i] = v * sheen;
+    });
+  }
+  if (p.shoreKeep > 0 && wet > 0) {
+    const keep = wetGate * p.shoreKeep;
+    detailed.forEach((v, i) => {
+      detailed[i] = blend(v, rgb[i]!, keep);
     });
   }
   const gold =
@@ -718,8 +733,9 @@ export function cloudToneMappedNode(
             .pow(p.detail.sub(1).mul(float(1).sub(night))),
         );
       });
+      const wetOwn = float(1).sub(p.shoreKeep);
       const wetGate = smoothstep(0, 0.3, wet),
-        wetShare = p.wet.mul(wet).mul(float(1).sub(night));
+        wetShare = p.wet.mul(wet).mul(float(1).sub(night)).mul(wetOwn);
       If(wet.greaterThan(0), () => {
         const bandSource = mix(detailed, source, wetGate).toVar();
         detailed.assign(
@@ -753,7 +769,7 @@ export function cloudToneMappedNode(
             .toVar();
           const pale = mix(vec3(1), p.wetShallowTint.div(dot(p.wetShallowTint, vec3(...W)).max(1e-6)), 0.4).mul(outY);
           out.assign(mix(mix(out, vec3(outY), lip), pale, film));
-          detailed.assign(mix(detailed, out, p.wetSand));
+          detailed.assign(mix(detailed, out, p.wetSand.mul(wetOwn)));
         });
         If(p.wetSheen.greaterThan(0), () => {
           const sheen = float(1).add(
@@ -762,9 +778,13 @@ export function cloudToneMappedNode(
               .mul(smoothstep(p.wetSheenStart, 1, wet))
               .mul(p.wet.min(1))
               .mul(float(1).sub(night))
-              .mul(float(1).sub(shade)),
+              .mul(float(1).sub(shade))
+              .mul(wetOwn),
           );
           detailed.mulAssign(sheen);
+        });
+        If(p.shoreKeep.greaterThan(0), () => {
+          detailed.assign(mix(detailed, source, wetGate.mul(p.shoreKeep)));
         });
       });
       If(p.gold.greaterThan(0), () => {

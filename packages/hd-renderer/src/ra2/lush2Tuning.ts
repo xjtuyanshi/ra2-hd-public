@@ -29,7 +29,7 @@ export function mountLush2Tuning(
     textEntryActive,
     schema: LUSH2_SCHEMA,
     recommended: lush2Defaults(theater),
-    storageKey: `hd-lush2-v6:${theater}`,
+    storageKey: `hd-lush2-v7:${theater}`,
     get: () => ({ ...values }),
     set: (next) => {
       values = { ...next };

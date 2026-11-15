@@ -27,6 +27,7 @@ export interface Lush2Values {
   wetSandDepth: number;
   wetShallow: number;
   wetSheen: number;
+  shoreKeep: number;
   treeBlend: number;
   snowBlue: number;
   shadeDepth: number;
@@ -54,6 +55,7 @@ export const LUSH2_SCHEMA: readonly TuningField<keyof Lush2Values>[] = [
   { key: 'wetSheen', label: '湿沙光泽 [wetSheen]', min: 0, max: 1, step: 0.01 },
   { key: 'wetSandDepth', label: '湿沙深浅 [wetSandDepth]', min: 0, max: 1, step: 0.01 },
   { key: 'wetShallow', label: '岸边浅水 [wetShallow]', min: 0, max: 1, step: 0.01 },
+  { key: 'shoreKeep', label: '岸边保持原样 [shoreKeep]', min: 0, max: 1, step: 0.01 },
   { key: 'treeBlend', label: '树木融合 [treeBlend]', min: 0, max: 1, step: 0.01 },
   { key: 'snowBlue', label: '雪地蓝 [snowBlue]', min: 0, max: 1, step: 0.01 },
   { key: 'snowLift', label: '雪地提亮 [snowLift]', min: 1, max: 2, step: 0.01 },
@@ -62,9 +64,11 @@ const temperate: Readonly<Lush2Values> = Object.freeze({
   strength: 1,
   grassLight: 0.9,
   grassHue: 10,
-  grassChroma: 1,
-  // Live XMP27T8: shade chroma below r3's 1.5 total turned cloud-shaded grass sage/grey-teal.
-  shadeChroma: 1.45,
+  // Live XMP27T8 sunlit grass C* about 40 (r3 49, Sunday v2 42): the owner asked for 15-20 % below r3.
+  grassChroma: 0.95,
+  // Live XMP27T8 cloud-shaded grass C* about 41 at hue 123 (v2 44, r3 46): still emerald. A total shade chroma of 1.2
+  // (Sunday v1, C* 38) read sage/grey-teal, so the shade total 0.95 x 1.42 = 1.35 stays well above it.
+  shadeChroma: 1.42,
   snowLift: 1.05,
   objectFloor: 0.8,
   detail: 1,
@@ -82,6 +86,9 @@ const temperate: Readonly<Lush2Values> = Object.freeze({
   wetSandDepth: 0.45,
   wetShallow: 1,
   wetSheen: 0.8,
+  // The shore band renders exactly as with no tone (owner: keep Build 13's shore and water; every lush wet-sand recipe
+  // read as a film, contour or specks at 1:1). The wet-sand knobs stay available behind shoreKeep 0.
+  shoreKeep: 1,
   treeBlend: 1,
   snowBlue: 1,
   shadeDepth: 0.3,
@@ -154,6 +161,7 @@ export const LUSH2_R3_TEMPERATE: Readonly<Partial<CloudToneParams>> = Object.fre
   shadeChroma: 1.25,
   wetSand: 0,
   wetSheen: 0,
+  shoreKeep: 0,
   treeBlend: 0,
 });
 /** RA2 hull policy; generic grading and UI modules contain no game-specific values. */
@@ -234,6 +242,7 @@ export function lush2Mapping(
       wetLipLift: 0.12,
       wetFilm: 0.3,
       wetFilmStart: 0.85,
+      shoreKeep: values.shoreKeep,
       treeBlend: values.treeBlend,
       // Measured temperate grass albedo; shared by other theatres until separately calibrated.
       treeReference: [0.356, 0.372, 0.0884],
@@ -287,6 +296,7 @@ export function lush2FromMapping(tone: CloudToneParams, alive: AliveOptions): Lu
     wetSandDepth: tone.wetSandDepth,
     wetShallow: tone.wetShallow,
     wetSheen: tone.wetSheen,
+    shoreKeep: tone.shoreKeep,
     treeBlend: tone.treeBlend,
     snowBlue: tone.snowBlue,
     shadeDepth: alive.shape!.darkening,

@@ -1830,7 +1830,7 @@ capture listener first. The panel also stops immediate propagation when handling
 releases the reservation and all panel listeners. The page's existing debug shortcut remains unchanged
 outside these development sessions.
 
-Storage uses `hd-lush2-v6:<theatre>` so older recipes do not override the current defaults. Blocked/corrupt
+Storage uses `hd-lush2-v7:<theatre>` so older recipes do not override the current defaults. Blocked/corrupt
 storage still permits tuning. The panel starts collapsed at top-left (12px inset, 260px wide), with its state
 line and three buttons visible. After slider change/pointerup or a button click it blurs the control and invokes
 optional `returnFocus()`; the bridge focuses the existing game input canvas without scrolling. The owner disposes
@@ -1841,33 +1841,34 @@ DOM/listeners. Actual focus and layout acceptance requires a browser/game review
 `groundTone` and final `tone` null and restores the entry's exact URL alive options on current. Neither materials
 nor post graphs are rebuilt. Strength zero is exact identity with the added clouds off.
 
-| Slider                  | Range        | Temperate default | Meaning                                                |
-| ----------------------- | ------------ | ----------------- | ------------------------------------------------------ |
-| 总强度 [strength]       | 0–1.5        | 1                 | Grade, cloud and contact amount                        |
-| 草地明度 [grassLight]   | .7–1.15      | .9                | OKLab lightness multiplier                             |
-| 绿色色相 [grassHue]     | 0–30 degrees | 10                | OKLab hue rotation toward green                        |
-| 阴影色相 [shadeHue]     | 0–40 degrees | 12                | Extra shaded-grass hue rotation                        |
-| 饱和度 [grassChroma]    | .8–1.6       | 1                 | OKLab chroma multiplier                                |
-| 阴影饱和 [shadeChroma]  | .8–1.6       | 1.45              | Extra shaded-grass chroma multiplier                   |
-| 草纹对比 [detail]       | .4–1.2       | 1                 | Optional source/mean luma contrast exponent            |
-| 云影覆盖 [cover]        | 0–1          | .5                | World-area cloud coverage estimate                     |
-| 阴影深浅 [shadeDepth]   | 0–.5         | .3                | Physical cloud attenuation                             |
-| 金色量 [gold]           | 0–1          | .75               | Lit grass above source/mean luma ratio 1.12–1.32       |
-| 金色范围 [goldReach]    | 0–1          | .35               | Lowers the source/mean highlight thresholds            |
-| 片区大小 [patchScale]   | 6–24 cells   | 12                | Fine cloud lattice; coarse scale is twice this         |
-| 片区柔和 [softness]     | .2–1         | .7                | Penumbra width independent of coverage midpoint        |
-| 漂移速度 [drift]        | 0–1 cells/s  | .6                | Shared cloud clock; wind displacement disabled         |
-| 单位跟随 [objectShare]  | 0–1          | .5                | Object brightness/cloud-follow share                   |
-| 单位最暗 [objectFloor]  | .5–1         | .8                | Lower bound on object grade and cloud multipliers      |
-| 接触阴影 [contact]      | 0–1          | 1                 | Existing soft pool, peak `min(.9,.9*contact*strength)` |
-| 岸边湿润 [wet]          | 0–1          | .8                | Full warm wet-strip recipe at .8                       |
-| 湿沙暖色 [wetSand]      | 0–1          | 1                 | Replaces olive rim chroma with warm sand; 0 retains r3 |
-| 湿沙光泽 [wetSheen]     | 0–1          | .8                | Sheen (+6% max), swash line and waterline water film   |
-| 湿沙深浅 [wetSandDepth] | 0–1          | .45               | Contracts source luminance toward the L*66 floor       |
-| 岸边浅水 [wetShallow]   | 0–1          | 1                 | Painted shallows over sand stay turquoise water        |
-| 树木融合 [treeBlend]    | 0–1          | 1                 | Reference-grass grade and full ground cloud light      |
-| 雪地蓝 [snowBlue]       | 0–1          | 1                 | Eligible snow shade tint                               |
-| 雪地提亮 [snowLift]     | 1–2          | 1.05              | Snow luminance lift with highlight headroom            |
+| Slider                   | Range        | Temperate default | Meaning                                                |
+| ------------------------ | ------------ | ----------------- | ------------------------------------------------------ |
+| 总强度 [strength]        | 0–1.5        | 1                 | Grade, cloud and contact amount                        |
+| 草地明度 [grassLight]    | .7–1.15      | .9                | OKLab lightness multiplier                             |
+| 绿色色相 [grassHue]      | 0–30 degrees | 10                | OKLab hue rotation toward green                        |
+| 阴影色相 [shadeHue]      | 0–40 degrees | 12                | Extra shaded-grass hue rotation                        |
+| 饱和度 [grassChroma]     | .8–1.6       | .95               | OKLab chroma multiplier                                |
+| 阴影饱和 [shadeChroma]   | .8–1.6       | 1.42              | Extra shaded-grass chroma multiplier                   |
+| 草纹对比 [detail]        | .4–1.2       | 1                 | Optional source/mean luma contrast exponent            |
+| 云影覆盖 [cover]         | 0–1          | .5                | World-area cloud coverage estimate                     |
+| 阴影深浅 [shadeDepth]    | 0–.5         | .3                | Physical cloud attenuation                             |
+| 金色量 [gold]            | 0–1          | .75               | Lit grass above source/mean luma ratio 1.12–1.32       |
+| 金色范围 [goldReach]     | 0–1          | .35               | Lowers the source/mean highlight thresholds            |
+| 片区大小 [patchScale]    | 6–24 cells   | 12                | Fine cloud lattice; coarse scale is twice this         |
+| 片区柔和 [softness]      | .2–1         | .7                | Penumbra width independent of coverage midpoint        |
+| 漂移速度 [drift]         | 0–1 cells/s  | .6                | Shared cloud clock; wind displacement disabled         |
+| 单位跟随 [objectShare]   | 0–1          | .5                | Object brightness/cloud-follow share                   |
+| 单位最暗 [objectFloor]   | .5–1         | .8                | Lower bound on object grade and cloud multipliers      |
+| 接触阴影 [contact]       | 0–1          | 1                 | Existing soft pool, peak `min(.9,.9*contact*strength)` |
+| 岸边湿润 [wet]           | 0–1          | .8                | Full warm wet-strip recipe at .8                       |
+| 湿沙暖色 [wetSand]       | 0–1          | 1                 | Replaces olive rim chroma with warm sand; 0 retains r3 |
+| 湿沙光泽 [wetSheen]      | 0–1          | .8                | Sheen (+6% max), swash line and waterline water film   |
+| 湿沙深浅 [wetSandDepth]  | 0–1          | .45               | Contracts source luminance toward the L*66 floor       |
+| 岸边浅水 [wetShallow]    | 0–1          | 1                 | Painted shallows over sand stay turquoise water        |
+| 岸边保持原样 [shoreKeep] | 0–1          | 1                 | Wet band renders untoned; 0 restores the wet recipes   |
+| 树木融合 [treeBlend]     | 0–1          | 1                 | Reference-grass grade and full ground cloud light      |
+| 雪地蓝 [snowBlue]        | 0–1          | 1                 | Eligible snow shade tint                               |
+| 雪地提亮 [snowLift]      | 1–2          | 1.05              | Snow luminance lift with highlight headroom            |
 
 Urban/newurban use grassLight .98, grassHue 5, grassChroma 1.04, shadeChroma 1.25, cover .4 and shadeDepth .26. Desert uses
 1/3/1.02, shadeChroma 1.25, gold .1, cover .35 and shadeDepth .24. Snow uses identity grass parameters, gold 0, cover .28 and
@@ -1924,6 +1925,12 @@ by `wetLip*wetFilm` (.8*.3) toward a pale, slightly turquoise water film. Lip an
 ties to the wetSheen slider. The neutral sheen starts at wet=.7, reaches at most +6% at wetSheen=1 and is
 multiplied by daylight and `(1-shade)`. At wetShallow=0, wetLip=0 and wetSandStart=0 the first Sunday finish
 (8e2d8ce) is reproduced exactly.
+`shoreKeep` (RA2 default 1) hands the band back to the untoned source: the r3 wet tint/chroma share, the wet-sand
+replacement and the sheen are scaled by `1-shoreKeep`, and the finished band pixel blends to the source by
+`smoothstep(0,.3,wet)*shoreKeep` before gold (which the same gate already excludes). At 1 the band is the no-tone
+art exactly, fading in over the inner 30 % of the mask with no partial wet ring; only the physical cloud shadow
+still crosses it, so in sunlight the shore matches the current (no-tone) picture. The Sunday v2 wet recipes stay
+behind shoreKeep 0 (owner, 11-15: every lush wet band read as a pale film, a hard contour or specks at 1:1).
 Water signed distance, optics, colour, foam and night/snow water paths are unchanged. No texture fetch is added.
 
 Upright tree-wind instances borrow the ground's full cloud factor by treeBlend, then blend their r3 object grade
@@ -1941,7 +1948,7 @@ Lighting-none trees (including TIBTRE ore trees), grade-exempt instances and hou
 instances retain their r3 paths. Other upright sprites and all flat instances keep the object recipe.
 
 For same-build r3 temperate boards, assign the frozen `LUSH2_R3_TEMPERATE` partial to `settings.cloudTone`
-and call `applySettings()`: grassChroma 1.2, shadeChroma 1.25, wetSand 0, wetSheen 0, treeBlend 0. The new
+and call `applySettings()`: grassChroma 1.2, shadeChroma 1.25, wetSand 0, wetSheen 0, shoreKeep 0, treeBlend 0. The new
 sand floor/depth/tint and contact parameters are dormant under these gates; alive options need no changes.
 
 Snow uses the same smooth mean-only gain atlas. Its gate combines display-mean luminance relative to the context
