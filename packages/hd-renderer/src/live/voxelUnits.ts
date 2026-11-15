@@ -30,13 +30,15 @@ import { voxelPbrMaterialFor } from '../ra2/voxelPbr';
 import { createSmoothVoxelPool, type SmoothSectionBuilder } from '../ra2/voxelSmoothPool';
 import { projectionParts, voxelProjectionLibrary, type VoxelProjectionLibrary } from '../ra2/voxelProjection';
 import { setShadowContact } from '../ra2/voxelShadow';
-import type { VoxelCardTies } from '../ra2/voxelNativeDepth';
+import { voxelNativeDepthNode, type VoxelCardTies } from '../ra2/voxelNativeDepth';
 import { selectedVoxelTurretIndex } from '../ra2/voxelTurrets';
 
 export interface VoxelUnitsOptions {
   voxelLook?: 'engine' | 'remaster';
   smoothVoxel?: Partial<SmoothVoxelOptions>;
   voxelProjection?: string;
+  /** Opt-in native-resolution palette material; retains the original projected material for instant A/B. */
+  vehicleRefinement?: boolean;
   /**
    * Where the remaster look's smooth meshes are built. Default: a pool of Workers when the host has Workers, else
    * (and with null) on the calling thread at the first instance of a model.
@@ -94,6 +96,26 @@ export class VoxelUnits {
   /** The stand-in a geometry set was made from, while it is one. */
   private readonly standInOf = new Map<VoxelGeometry[], StandIn>();
   private disposed = false;
+  private refined = false;
+  private readonly optionsVehicleReview: boolean;
+  private readonly reviewUnits = new Map<VoxelUnit, { parts: VoxelGeometry[]; palette: Uint8Array }>();
+
+  /** Material replacement preserves geometry, articulated pivots, shadows and native depth ownership. */
+  setVehicleRefinement(enabled: boolean): void {
+    this.refined = enabled;
+    for (const unit of this.reviewUnits.keys()) this.refreshVehicleMaterial(unit);
+  }
+
+  private refreshVehicleMaterial(unit: VoxelUnit): void {
+    const review = this.reviewUnits.get(unit);
+    if (!review || !(unit.root instanceof VoxelRoot)) return;
+    const material = this.refined ? voxelPbrMaterialFor(review.palette, this.hd.nodes) : null;
+    if (material && !material.depthNode) material.depthNode = voxelNativeDepthNode();
+    for (let i = 0; i < unit.root.partMeshes.length; i++)
+      unit.root.partMeshes[i]!.material = material ?? review.parts[i]!.material ?? this.material;
+    const { anchor, bonus, enabled } = unit.root.nativeDepth;
+    updateVoxelNativeDepth(unit, anchor, bonus, enabled !== 0);
+  }
   /** Changes when a mesh or a redraw projection asked for earlier has arrived: what waited for it can draw now. */
   revision = 0;
 
@@ -104,6 +126,8 @@ export class VoxelUnits {
     readonly libraryBase?: string,
     options: VoxelUnitsOptions = {},
   ) {
+    this.optionsVehicleReview = options.vehicleRefinement !== undefined;
+    this.refined = options.vehicleRefinement ?? false;
     this.voxelLook = options.voxelLook ?? world.voxelLook ?? hd.settings.voxelLook;
     this.smoothVoxel = smoothVoxelOptions({ ...world.smoothVoxel, ...options.smoothVoxel });
     const projectionBase = options.voxelProjection ?? world.voxelProjection;
@@ -260,6 +284,7 @@ export class VoxelUnits {
               if (material) mesh.material = material;
             }
           });
+          this.refreshVehicleMaterial(unit);
           // A resting unit may receive no new pose after this callback. Preserve its active color/depth
           // pass immediately instead of showing the new physical source until a later publication.
           if (unit.root instanceof VoxelRoot) {
@@ -313,6 +338,10 @@ export class VoxelUnits {
     const unit = instantiateVoxel(parts, this.material, this.hd.nodes);
     this.pending.get(parts)?.add(unit);
     this.standInOf.get(parts)?.units.add(unit.root);
+    if (this.optionsVehicleReview) {
+      this.reviewUnits.set(unit, { parts, palette: this.cache.paletteRgb.get(paletteKey)! });
+      this.refreshVehicleMaterial(unit);
+    }
     return unit;
   }
 
@@ -346,6 +375,14 @@ export class VoxelUnits {
    * and finish (vpl.ts meshVehicleLook).
    */
   setBuildingPart(unit: VoxelUnit): void {
+    const review = this.optionsVehicleReview ? this.reviewUnits.get(unit) : undefined;
+    if (review) {
+      const enabled = this.refined;
+      this.refined = false;
+      this.refreshVehicleMaterial(unit);
+      this.refined = enabled;
+      this.reviewUnits.delete(unit);
+    }
     if (unit.root instanceof VoxelRoot) unit.root.setBuildingPart(true);
   }
 
@@ -395,6 +432,7 @@ export class VoxelUnits {
     this.disposed = true;
     this.smoothBuilder?.dispose?.();
     this.meshing.clear();
+    this.reviewUnits.clear();
     // Stand-ins belong to this instance alone (the smooth geometries they wait for follow their model).
     for (const standIn of this.standIns.values()) for (const geometry of standIn.geometries) geometry.dispose();
     this.standIns.clear();
@@ -403,6 +441,7 @@ export class VoxelUnits {
 
   /** Take a unit out of the scene (geometry stays cached for the next instance of its type). */
   dispose(unit: VoxelUnit): void {
+    if (this.optionsVehicleReview) this.reviewUnits.delete(unit);
     this.setCaptureCode(unit, NOT_CAPTURED_CODE);
     for (const waiting of this.pending.values()) waiting.delete(unit);
     for (const standIn of this.standIns.values()) standIn.units.delete(unit.root);

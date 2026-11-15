@@ -1461,7 +1461,10 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
           spriteIntegration: params.get('hd-sprite') === '1',
           surfaceClasses: params.get('hd-mask') === '1',
           modernClouds: params.has('hd-tone') || params.get('hd-blend') === '1',
-          ...(params.get('hd-vlook') === 'remaster' ? { voxelLook: 'remaster' } : {}),
+          ...(params.get('hd-vlook') === 'remaster' || (import.meta.env.DEV && params.get('hd-veh') === '1')
+            ? { voxelLook: 'remaster' }
+            : {}),
+          ...(import.meta.env.DEV && params.get('hd-veh') === '1' ? { vehicleRefinement: true } : {}),
           ...(projectionDir && !/\.\.|[\\:]/.test(projectionDir)
             ? { voxelProjection: `/hd-cache/${projectionDir}` }
             : {}),
@@ -1506,7 +1509,28 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
           };
         }
         live = view;
-        if (tuningModule) {
+        if (import.meta.env.DEV && params.get('hd-veh') === '1') {
+          const { mountVehicleTuning } = await import('../../../../packages/hd-renderer/src/ra2/vehicleTuning');
+          if (stopped || loading !== mapId) return view.dispose();
+          const panel = mountVehicleTuning(
+            canvas.parentElement!,
+            view,
+            params,
+            () => host.screen.focus({ preventScroll: true }),
+            chatEntry.isOpen,
+          );
+          const target = window as unknown as { __hdVehicle?: typeof panel };
+          target.__hdVehicle = panel;
+          setSessionShortcutCode('Backquote', true);
+          tuningPanel = {
+            dispose() {
+              panel.dispose();
+              setSessionShortcutCode('Backquote', false);
+              if (target.__hdVehicle === panel) delete target.__hdVehicle;
+            },
+          };
+        }
+        if (tuningModule && params.get('hd-veh') !== '1') {
           const panel = tuningModule.mountLush2Tuning(
             canvas.parentElement!,
             view.hd,

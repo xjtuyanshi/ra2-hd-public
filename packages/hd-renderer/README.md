@@ -2087,3 +2087,24 @@ silhouette attachment. `hd.surfaceDebug.value = 1` displays categories as exact 
 buildings 1, vehicles 2, infantry 3, trees 4, ore 5. Reset to zero to restore the picture. Categories come from
 instance metadata; no scene colour classifier is used. This is diagnostic output, not artwork or a new attachment.
 Ordinary worlds leave both code packing and the diagnostic branch out of their shader graphs.
+
+## Native-resolution vehicle review (development opt-in)
+
+The owner entry accepts `--hd-option hd-veh=1`. This retains the existing bounded surface-net geometry,
+articulated parts and native shadows, but displays the original palette material through the PBR path instead
+of the facing-projected redraw. No assets or caches are rewritten. Backquote toggles the original projected
+material and the review material; Shift+Backquote hides the development panel. The panel owns its listener and
+is disposed with the map view. With `hd-tone=lush2`, the tone remains active but its competing Backquote panel
+is omitted while vehicle review owns that key.
+
+`hd-veh-preset=dramatic` selects the stronger material contrast; otherwise the initial values are tuned.
+`hd-veh-<field>=<number>` accepts the finite, bounded fields in `src/ra2/vehicleTuning.ts`; panel edits are saved
+under `hd-veh-v1`. Procedural tread, dust, streak and noise patterns are disabled in this review. Palette class
+boundaries, source shading ramps and mesh curvature supply the material cues. Building voxel turrets retain
+their original material. Production buildings additionally review their source animation-layer ZAdjust;
+`hd-veh-factoryDepth=0` disables this independently. Explicit door depth planes remain unchanged.
+
+This is a prototype, not a claim of added source texture resolution or unified de-lit building albedo. The same
+scene sun, sky, map light and cloud context drive the PBR material, but building paintings still contain baked
+shading. The vehicle flag does not enable the sprite or tone pilots. Review those separately. Missing live
+captures, device GPU timing or a theatre comparison must be reported as unverified.

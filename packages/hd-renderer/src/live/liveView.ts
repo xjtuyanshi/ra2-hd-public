@@ -1,3 +1,4 @@
+import { isProductionBuilding, productionLayerPush } from '../ra2/productionDepth';
 import type { AliveChange, AliveOptions } from '../livingWorld';
 import { hdInfantryPageIsBare } from '../ra2/infantryArt';
 import {
@@ -962,6 +963,18 @@ export class LiveView {
   private objectsMaterials = false;
   private effectArtRevision = -1;
   private readonly root = new Group();
+  private productionDepth = 0;
+
+  /** Review only: restore source layer depth adjustments without moving or repainting production art. */
+  setProductionDepth(strength: number): void {
+    this.productionDepth = Math.max(0, Math.min(1, strength));
+  }
+
+  /** Toggle only placed vehicles; building turrets retain their building material. */
+  setVehicleRefinement(enabled: boolean): void {
+    this.voxelUnits.setVehicleRefinement(enabled);
+  }
+
   private readonly voxelUnits: VoxelUnits;
   private readonly placeholderGeometry = new BoxGeometry(1, 1, 1);
   private placeholderMaterial: MeshStandardNodeMaterial | null = null;
@@ -3412,7 +3425,13 @@ export class LiveView {
         card.depthWrite = false;
       } else if (layer.key === 'UnderDoorAnim' || layer.key === 'UnderRoofDoorAnim') {
         card.nativeDepth = { mode: 'ground', bonus: 1 };
-      } else card.nativeDepth = attachedLayerDepth(nativeDepth, [dx, dy], dy * GROUND_DEPTH);
+      } else {
+        const adjustment =
+          this.productionDepth && isProductionBuilding(type.building?.layers ?? EMPTY_LAYERS)
+            ? productionLayerPush(layer, this.productionDepth)
+            : 0;
+        card.nativeDepth = attachedLayerDepth(nativeDepth, [dx, dy], dy * GROUND_DEPTH + adjustment);
+      }
     }
     card.indexedHousePaint = !art.remap && art.palette !== 'iso';
     // The building hands its anims its own house converter, TerrainPalette or not (ra2/unlitPalette.ts).
