@@ -110,6 +110,18 @@ describe('clear water optical policy', () => {
     expect(clearPalette('snow')).not.toEqual(clearPalette('desert'));
     expect(clearPalette('urban')).toEqual(clearPalette('newurban'));
   });
+  it('gives the snow theatre a darker, murkier polar sea than the approved temperate one', () => {
+    const luma = (hex: number) => {
+      const c = new Color(hex);
+      return 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
+    };
+    const snow = clearPalette('snow'),
+      temperate = clearPalette('temperate');
+    expect(luma(snow.deep)).toBeLessThan(luma(temperate.deep));
+    expect(luma(snow.shallow)).toBeLessThan(luma(temperate.shallow));
+    expect(snow.murk).toBeGreaterThan(1);
+    for (const theater of ['temperate', 'desert', 'urban']) expect(clearPalette(theater).murk).toBe(1);
+  });
   it('keeps A at its approved physical scale, scroll directions and comfort clock', () => {
     // Prototype A's 1-second change per unit of local contrast (A 3.67 / 3.55): 0.8 moved about 1.45x A, 0.5 about
     // 0.9x A in open water once the half-direction-free relief lowered the contrast.

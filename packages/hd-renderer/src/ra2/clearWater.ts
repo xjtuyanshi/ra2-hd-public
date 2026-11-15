@@ -12,6 +12,8 @@ import {
   screenUV,
   sin,
   smoothstep,
+  sRGBTransferEOTF,
+  sRGBTransferOETF,
   texture,
   time,
   vec2,
@@ -81,6 +83,28 @@ export const CLEAR_WATER = {
    */
   nightTint: [1.38, 0.94, 0.52],
   nightLevel: 1,
+  /**
+   * Night share that map profiles report by day (lighting.ts: 1 - (sun intensity 1.44 - 0.6) / 0.9, about 0.067) and
+   * the body lift (luma 3.6) the approved day look was tuned with at that share.
+   */
+  dayNight: 0.0667,
+  dayLift: [5.0, 3.4, 1.9],
+  /**
+   * Map grade (WaterLookInputs.grade) of a normal day: the terrain multiplier's luma at or above which the water is
+   * left as approved. Day campaign and skirmish maps sit at 0.62-1.15 (ALL03UMD 0.8 x 0.78, the darkest day map); a
+   * map lit as night by its own [Lighting] sits far below (SOV07TMD 0.55 x 0.4/0.4/0.7 normalised: about 0.24), and
+   * its tile art is drawn that much darker while the clear water's colour is its own: the water read as a glowing sea.
+   * Below this level the water body and its sky reflection take the same sRGB-scale factor as the ground, and up to
+   * half of the grade's hue (the blue of a moonlit map).
+   */
+  dayGrade: 0.62,
+  gradeHue: 0.5,
+  /**
+   * How steeply the water darkens below dayGrade. The ground's art is scaled by the grade itself, from a multiplier
+   * of 1; the water by (grade / dayGrade) ^ gradePower, which reaches the ground's factor on a dark map (SOV07TMD:
+   * 0.24 / 0.62 = 0.39, ^ 1.5 = 0.24) while a normal day map stays at 1.
+   */
+  gradePower: 1.5,
   motionTarget: 1.5,
   anisotropyTarget: 0.4,
   highlightTarget: 0.04,
@@ -250,6 +274,16 @@ export function clearWaterLook(
   const { position: p, shore, waterness, uniforms } = inputs;
   const { night, sceneBrightness } = nodes;
   const palette = clearPalette(inputs.theater);
+  // The map's own light, relative to a normal day (CLEAR_WATER.dayGrade): 1 on day maps, so their look is unchanged.
+  const gradeLuma: ShaderNode = inputs.grade
+    ? dot(inputs.grade, vec3(0.2126, 0.7152, 0.0722)).max(0.001)
+    : float(CLEAR_WATER.dayGrade);
+  const dim = pow(gradeLuma.div(CLEAR_WATER.dayGrade).min(1), CLEAR_WATER.gradePower);
+  const gradeHue: ShaderNode = inputs.grade ? inputs.grade.div(gradeLuma) : vec3(1);
+  const waterGrade: ShaderNode = mix(vec3(1), gradeHue, float(1).sub(dim).mul(CLEAR_WATER.gradeHue)).mul(dim);
+  // Linear colours scaled like the art (srgbScale): the ground's tile art is darkened in the palette's sRGB scale.
+  const graded = (c: ShaderNode): ShaderNode =>
+    sRGBTransferEOTF((sRGBTransferOETF(c) as ShaderNode).mul(waterGrade)) as ShaderNode;
   const hard: ShaderNode = inputs.calm ?? float(0);
   // Quays, seawalls and pavement: no beach there (no turquoise shallows, no foam), deep water up to the wall.
   const quay: ShaderNode = (inputs.quay ?? float(0)).mul(float(1).sub(hard));
@@ -334,6 +368,8 @@ export function clearWaterLook(
         .mul(longCoast.mul(0.35).add(0.65))
     : float(1);
   const bed = inputs.bedAt ? inputs.bedAt(bounded) : color(palette.bed).mul(sandGrain).mul(tone);
+  // The painted lake bed (bedAt) is the map's art and already graded; the theatre's sand is not.
+  const bedLit = inputs.bedAt ? bed : graded(bed);
   // Seabed dapple: low-frequency, static patches of rock and weed and deeper holes, seen through the water as the
   // prototype's and RA3's dark blotches; the refraction offset makes their edges waver with the waves.
   const shifted = p.xz.add(bounded.mul(3));
@@ -384,14 +420,16 @@ export function clearWaterLook(
   );
   // The deep teal lighter than the palette: with the weaker sky reflection it would otherwise read darker
   // than the approved look (deep L* about 30 instead of 35-41).
-  const column = mix(
-    aqua,
-    color(palette.deep).mul(CLEAR_WATER.deepGain),
-    // Even a partial quay class (shaded bridge and pier faces read as mixed ground) takes the deep colour: the
-    // turquoise of a partial depth there drew cyan wisps under bridges.
-    // Beside very dark ground (asphalt ramps, shaded bridge heads; clearShoreTone near 0) there is no sand bed to
-    // light the water: a turquoise patch there floated in the gap of a broken bridge.
-    max(smoothstep(CLEAR_WATER.aquaEnd * 0.3, CLEAR_WATER.aquaEnd, tintDepth), masonry),
+  const column = graded(
+    mix(
+      aqua,
+      color(palette.deep).mul(CLEAR_WATER.deepGain),
+      // Even a partial quay class (shaded bridge and pier faces read as mixed ground) takes the deep colour: the
+      // turquoise of a partial depth there drew cyan wisps under bridges.
+      // Beside very dark ground (asphalt ramps, shaded bridge heads; clearShoreTone near 0) there is no sand bed to
+      // light the water: a turquoise patch there floated in the gap of a broken bridge.
+      max(smoothstep(CLEAR_WATER.aquaEnd * 0.3, CLEAR_WATER.aquaEnd, tintDepth), masonry),
+    ),
   )
     .mul(dapple)
     .mul(bedShade);
@@ -418,7 +456,7 @@ export function clearWaterLook(
     new Color(palette.shallow).g * 0.7152 +
     new Color(palette.shallow).b * 0.0722;
   // Wet sand and rock under the water are darker than the dry beach beside it.
-  const bedSeen = bed.mul(dapple).mul(smoothstep(0.0, 0.6, metres).mul(0.18).add(0.5));
+  const bedSeen = bedLit.mul(dapple).mul(smoothstep(0.0, 0.6, metres).mul(0.18).add(0.5));
   const cyanBed = color(palette.shallow)
     .div(aquaLuma)
     .mul(dot(bedSeen, vec3(0.2126, 0.7152, 0.0722)).mul(1.05));
@@ -457,10 +495,22 @@ export function clearWaterLook(
       .add(quay.mul(0.03))
       .sub(quay.mul(smoothstep(0.07, 0.0, edge)).mul(0.3)),
   );
-  // Night: the moonlight is blue; a greener body keeps the water a dark teal, never black navy, while its brightness
-  // follows the scene light like the ground's (CLEAR_WATER.nightTint, nightLevel).
+  // Night: the moonlight is blue; a greener body keeps the water a dark teal, never black navy. Its brightness follows
+  // the scene light like the ground's (CLEAR_WATER.nightTint, nightLevel). Day map profiles already report a small
+  // night share (CLEAR_WATER.dayNight), at which the approved day look includes the earlier lift; only the share
+  // beyond it takes the new night body, so the day look is unchanged.
+  const luma = (c: ShaderNode): ShaderNode => vec3(dot(c, vec3(0.2126, 0.7152, 0.0722)));
+  const dayLift = body.mul(vec3(...CLEAR_WATER.dayLift));
   const nightBody = body.mul(vec3(...CLEAR_WATER.nightTint).mul(CLEAR_WATER.nightLevel));
-  body = mix(body, mix(nightBody, vec3(dot(nightBody, vec3(0.2126, 0.7152, 0.0722))), 0.1), night);
+  body = mix(body, mix(dayLift, luma(dayLift), 0.1), night.min(CLEAR_WATER.dayNight));
+  body = mix(
+    body,
+    mix(nightBody, luma(nightBody), 0.1),
+    night
+      .sub(CLEAR_WATER.dayNight)
+      .max(0)
+      .div(1 - CLEAR_WATER.dayNight),
+  );
 
   // The RTS camera is orthographic: one view direction for the whole screen (IsoCamera, 30 degree pitch), so the
   // glitter is spread by the waves alone instead of gathering on one side of the screen.
@@ -476,8 +526,10 @@ export function clearWaterLook(
     .min(CLEAR_WATER.reflectionMax)
     .mul(float(1).sub(cliffFoot.mul(0.6)));
   const open = smoothstep(0, 0.45, edge);
-  const sky = mix(uniforms.skyHorizon, uniforms.skyZenith, smoothstep(0, 0.8, reflectedDirection.y)).mul(
-    mix(float(0.24), sceneBrightness.min(1).mul(0.12), night),
+  const sky = graded(
+    mix(uniforms.skyHorizon, uniforms.skyZenith, smoothstep(0, 0.8, reflectedDirection.y)).mul(
+      mix(float(0.24), sceneBrightness.min(1).mul(0.12), night),
+    ),
   );
   // The mirrored scene: at a cliff only the foot of the rock is mirrored (fading within about 0.4 cells) and in the
   // water's own colour, so tall walls do not smear brown far out over the deep water.

@@ -218,6 +218,12 @@ export interface WaterLookInputs {
   shoreTone?: ShaderNode;
   /** 0..1 shoreline within reach (shoreField.ts shore mass): low around islets and off headlands, high in bays. */
   shoreMass?: ShaderNode;
+  /**
+   * The map's own terrain light at this point (mapLighting.ts terrainGradeAt: the engine's per-channel multiplier of
+   * the tile art, in sRGB scale). The clear look follows it below a normal day's level, so on a dark map the water
+   * darkens with the ground instead of keeping its daylight colour. Without it the water is ungraded.
+   */
+  grade?: ShaderNode;
 }
 
 export interface WaterLook {
