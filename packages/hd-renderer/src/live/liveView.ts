@@ -292,6 +292,8 @@ export interface LiveViewOptions extends VoxelUnitsOptions {
   spriteIntegration?: boolean;
   surfaceClasses?: boolean;
   modernClouds?: boolean;
+  groundDenoise?: boolean;
+  cleanBuildings?: boolean;
   /** URL of the map's HD cache directory (manifest.json inside). */
   mapBase: string;
   /** URL of the type library root (holding <theater>/library.json and common/effects/), for players' art. */
@@ -1421,6 +1423,7 @@ export class LiveView {
         spriteIntegration: options.spriteIntegration,
         surfaceClasses: options.surfaceClasses,
         modernClouds: options.modernClouds,
+        groundDenoise: options.groundDenoise,
         smoothVoxel: options.smoothVoxel,
         voxelProjection: options.voxelProjection,
       }),
@@ -1429,7 +1432,11 @@ export class LiveView {
     const cache = world.cache!;
     // The theater's type library (art for everything players can build), when it has been extracted.
     const library = options.libraryBase
-      ? await LiveLibrary.load(`${options.libraryBase.replace(/\/$/, '')}/${cache.manifest.theater}`, cache)
+      ? await LiveLibrary.load(
+          `${options.libraryBase.replace(/\/$/, '')}/${cache.manifest.theater}`,
+          cache,
+          options.cleanBuildings,
+        )
       : null;
     // The map's own [Lighting] stages the view (engine-exact from the light sidecar when present).
     const lighting = cache.lights?.lighting.normal ??

@@ -1217,6 +1217,24 @@ describe('r186 vertex and uniform binding budget', () => {
     source.nodes!.dispose();
   });
 
+  it('compiles opt-in fine-grain filtering without changing cliff shaders or bindings', () => {
+    const off = cache();
+    const on = cache();
+    on.nodes!.groundDenoise = true;
+    const worlds = [buildRa2Terrain(off), buildRa2Terrain(on)];
+    const shaders = worlds.map((world) =>
+      (world.mesh.material as MeshBasicNodeMaterial[]).map((material) =>
+        assertLimits(new Mesh(world.mesh.geometry, material)),
+      ),
+    );
+    expect(shaders[1]![0]!.fragmentShader).not.toBe(shaders[0]![0]!.fragmentShader);
+    expect(shaders[1]![1]!.fragmentShader).toBe(shaders[0]![1]!.fragmentShader);
+    expect(shaders[1]![0]!.sampledTextures.length).toBe(shaders[0]![0]!.sampledTextures.length);
+    worlds.forEach((world) => dispose(world.mesh));
+    off.nodes!.dispose();
+    on.nodes!.dispose();
+  });
+
   it('audits terrain/cliffs, water, voxel units/projectiles/debris and their shadow materials', () => {
     const source = cache();
     const weatherMask = new DataTexture(new Uint8Array([255, 0, 0, 0]), 2, 2, RedFormat);

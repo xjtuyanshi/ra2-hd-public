@@ -2140,3 +2140,34 @@ post targets and needs separate GPU timing. Lush2 and sprite integration do not 
 
 Synthetic coverage and shader tests are asset-free. Exact rendered resource pixels, foreground occlusion and
 neighbouring post-filter footprints still require same-frame GPU comparisons against the default look.
+
+## Building de-dither and balanced ground review (development opt-in)
+
+The owner launcher accepts `--hd-option hd-bld=1 --hd-option hd-blend=1` independently.
+`hd-bld=1` requires `buildings-clean.json` in the selected farm's theatre library. It replaces colour pages only;
+layout, alpha, house-paint masks, source normals, animation timing and native shadows are retained. Missing or invalid
+explicit variants fail the view load, allowing the bridge's existing original-picture fallback; they do not silently
+claim the new art is present. With the flag absent, no variant is fetched. Map-only building fallbacks keep their
+original pages. The offline filter cannot infer the physical meaning of a baked stain, so large stains remain along
+with authored rust and wear.
+
+Create a new overlay using the existing farm tool, then generate each required theatre:
+
+```bash
+BASE="$SOURCE_FARM" bash "$MKFARM_SCRIPT" "$NEW_FARM"
+python3 packages/ra2-assets/python/building_clean_pages.py \
+  --source "$SOURCE_FARM" --farm "$NEW_FARM" --theater temperate --report "$REPORT_PATH"
+python3 -m unittest discover -s packages/ra2-assets/python -p test_shape_locked_denoise.py
+```
+
+The tool requires Pillow, NumPy and OpenCV. It filters building bodies and referenced layers, build-up and bib frames,
+leaving other atlas regions untouched. A median/bilateral filter removes fine speckle; a coarse residual retains
+8–32 texel variation. Eroded alpha, paint boundaries and structural gradients lock edges. Coverage and remap files
+are never changed. Reports use source-defined interior masks, luminance variance and before/after source hashes.
+Do not point this tool at a shared/base farm. Derived pages and reports stay outside Git.
+
+`hd-blend=1` uses the existing lush2 cloud/light mechanism with a restrained theatre-aware grade and shared object
+shade. It adds a small edge-aware four-neighbour colour filter to grass albedo, preserving the existing water and
+cliff material paths. It does not enable blanket sprite softening or replace vehicle materials. The disabled filter
+adds no shader nodes. The FX bench accepts `hd-bld=1` and `hd-blend=1` (also `blend=1`) for iteration. Sandbox clocks
+and snapshots remain synthetic: live same-frame captures, logic FPS and GPU timing require separate acceptance.

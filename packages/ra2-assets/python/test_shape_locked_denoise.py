@@ -1,0 +1,35 @@
+import unittest
+import cv2
+import numpy as np
+from shape_locked_denoise import denoise, metrics
+
+
+class ShapeLockedDenoiseTest(unittest.TestCase):
+    def test_noise_weathering_and_coverage(self):
+        y, x = np.mgrid[:128, :160]
+        broad = 100 + 28 * np.sin(x / 17) + 15 * np.sin(y / 21)
+        rgb = np.repeat((broad + 12 * ((x + y) % 2 * 2 - 1))[:, :, None], 3, axis=2)
+        source = np.zeros((128, 160, 4), np.uint8)
+        source[:, :, :3] = rgb.astype(np.uint8)
+        source[4:-4, 4:-4, 3] = 255
+        remap = np.zeros(source.shape[:2], np.uint8)
+        remap[:, 80:] = 255
+        result = denoise(source, remap)
+        m = metrics(source, result, remap)
+        self.assertTrue(m['alpha_exact'])
+        self.assertTrue(m['boundary_rgb_exact'])
+        self.assertLess(m['after']['hp_rms'], m['before']['hp_rms'] * .5)
+        for before, after in zip(m['before']['variance'], m['after']['variance']):
+            self.assertGreaterEqual(after / before, .8)
+        np.testing.assert_array_equal(result, denoise(source, remap))
+        np.testing.assert_array_equal(source[:, 79:82], result[:, 79:82])
+
+    def test_constant_and_tiny_pages(self):
+        for size in [1, 2, 3, 16]:
+            source = np.full((size, size, 4), 255, np.uint8)
+            source[:, :, :3] = [42, 99, 103]
+            np.testing.assert_array_equal(denoise(source, np.zeros((size, size), np.uint8)), source)
+
+
+if __name__ == '__main__':
+    unittest.main()

@@ -36,6 +36,7 @@ import { emptyHeightGrid, frontMaxTexture } from './groundRay';
 export class AtmosphereNodes extends SceneLightingUniforms {
   /** Compile diagnostic category packing only for explicitly opted-in worlds. */
   surfaceClasses = false;
+  groundDenoise = false;
   /** Resource art follows the Build 13 cloud field independently of experimental scene controls. */
   readonly resourceClouds = new LegacyLivingWorldNodes();
   private disposed = false;

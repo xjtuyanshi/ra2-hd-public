@@ -1,3 +1,4 @@
+import { buildingArtPages } from '../ra2/buildingArt';
 import { DataTexture, NearestFilter, NoColorSpace, RedFormat, Texture, UnsignedByteType } from 'three/webgpu';
 import { scenarioTypeTable, type LibraryType, type TypeLibrary } from '../../../ra2-assets/src/library';
 import { indexedBitmapPixels } from './indexedPixels';
@@ -83,7 +84,7 @@ export class LiveLibrary {
   ) {}
 
   /** Null when the theater has no extracted library (pnpm hd:library), in which case the map cache is used alone. */
-  static async load(base: string, cache: Ra2Cache): Promise<LiveLibrary | null> {
+  static async load(base: string, cache: Ra2Cache, cleanBuildings = false): Promise<LiveLibrary | null> {
     const root = base.replace(/\/$/, '');
     const response = await fetch(`${root}/library.json`).catch(() => null);
     if (!response?.ok) return null;
@@ -136,6 +137,12 @@ export class LiveLibrary {
         );
         delete materials!.pages[index];
       }
+    }
+    if (cleanBuildings) {
+      const response = await fetch(`${root}/buildings-clean.json`);
+      if (!response.ok) throw new Error(`${root}/buildings-clean.json: ${response.status}`);
+      // Validate normals against their source atlas first. Colour-only variants retain the same coordinates/materials.
+      library.spriteAtlasesHd = buildingArtPages(library.spriteAtlasesHd ?? [], await response.json());
     }
     // Publish before LiveView constructs any sprite materials: every atlas page uses this same texture.
     // An absent descriptor deliberately retains the analytic path; a declared but invalid payload is an error.

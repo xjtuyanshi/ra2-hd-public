@@ -1,3 +1,4 @@
+import { calmFineGrain } from '../fineGrain';
 import { uvPositionTexture } from '../uvPositions';
 import { LUSH2_SHORE, LUSH2_MEAN } from './lush2Tone';
 import { surfaceCloudFactor } from '../objectCloudTone';
@@ -1067,6 +1068,14 @@ function plainArtMaterial(
 }
 
 /** Clear/rough green texels only: roads, shore, rock and non-green sand cannot borrow the ripple. */
+function calmGrass(raw: ShaderNode, tap: (offset: ShaderNode) => ShaderNode, nodes: AtmosphereNodes): ShaderNode {
+  if (!nodes.groundDenoise) return raw;
+  const share = smoothstep(0.92, 1.07, raw.g.div(raw.r.max(0.001)))
+    .mul(smoothstep(1.2, 1.55, raw.g.div(raw.b.max(0.001))))
+    .mul(attribute('contact', 'vec3').z);
+  return calmFineGrain(raw, tap, share);
+}
+
 function grassArt(colour: ShaderNode, raw: ShaderNode, nodes: AtmosphereNodes): ShaderNode {
   const green = smoothstep(0.97, 1.07, raw.g.div(raw.r.max(0.001)))
     .mul(smoothstep(1.2, 1.55, raw.g.div(raw.b.max(0.001))))
@@ -1080,10 +1089,14 @@ function grassArt(colour: ShaderNode, raw: ShaderNode, nodes: AtmosphereNodes): 
  */
 function createPlainGround(cache: Ra2Cache, toneMap: CloudToneMap | null): MeshStandardNodeMaterial {
   const { sample } = terrainArtSampler(cache);
-  const { colour: raw, uv } = sample('atlasUv', 'atlasRect');
+  const { colour: raw, uv, tap } = sample('atlasUv', 'atlasRect');
   const nodes = cache.nodes ?? DEFAULT_ATMOSPHERE_NODES;
   return plainArtMaterial(
-    grassArt(srgbScale(raw.rgb, terrainGradeAt(cache.mapLight, positionWorld.xz)), raw.rgb, nodes),
+    grassArt(
+      srgbScale(calmGrass(raw.rgb, tap, nodes), terrainGradeAt(cache.mapLight, positionWorld.xz)),
+      raw.rgb,
+      nodes,
+    ),
     nodes,
     toneMap ? (colour) => mappedArtGrade(colour, toneMap, uv, nodes) : undefined,
   );
@@ -1160,7 +1173,7 @@ function createMaterials(
   const { uv, colour: raw, tap } = sample('atlasUv', 'atlasRect');
   // Tile art under the map's own light (see mapLighting.ts), as the engine draws it.
   const grade: ShaderNode = terrainGradeAt(cache.mapLight, positionWorld.xz);
-  const art: ShaderNode = vec4(grassArt(srgbScale(raw.rgb, grade), raw.rgb, nodes), raw.a);
+  const art: ShaderNode = vec4(grassArt(srgbScale(calmGrass(raw.rgb, tap, nodes), grade), raw.rgb, nodes), raw.a);
   // The surface texture is linearly filtered for ordinary light dressing. Weather must not borrow paving from a
   // neighbouring road into a grass/sand cell; retain the established continuous night blend.
   const paved: ShaderNode = mix(

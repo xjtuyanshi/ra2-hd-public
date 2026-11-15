@@ -1,3 +1,4 @@
+import { applyBlendTone } from '../src/ra2/blendTone';
 import { needsSurfaceClasses } from '../src/ra2/lookFlags';
 import { applyLush2 } from '../src/ra2/lush2Tone';
 import { mountLush2Tuning } from '../src/ra2/lush2Tuning';
@@ -146,8 +147,10 @@ const live = await LiveView.create(canvas, {
       ]),
     ),
   ),
-  modernClouds: params.has('tone') || params.get('blend') === '1',
+  modernClouds: params.has('tone') || params.get('blend') === '1' || params.get('hd-blend') === '1',
   spriteIntegration: params.get('sprite') === '1',
+  cleanBuildings: params.get('hd-bld') === '1',
+  groundDenoise: params.get('blend') === '1' || params.get('hd-blend') === '1',
   ...parseWeatherParams(params),
   mapBase: `/${encodeURIComponent(mapName)}`,
   libraryBase: '/_library',
@@ -245,6 +248,10 @@ if (params.has('tone')) {
   applyMoistTone(live.hd.settings, live.theater, parseToneStyle(params.get('tone')));
   if (params.get('tone') === 'lush2') live.hd.setAlive(applyLush2(live.hd.settings, live.theater));
   applyToneOverrides(live.hd.settings.tone, params.get('toneset'));
+  live.hd.applySettings();
+}
+if (params.get('blend') === '1' || params.get('hd-blend') === '1') {
+  live.hd.setAlive(applyBlendTone(live.hd.settings, live.theater));
   live.hd.applySettings();
 }
 if (params.has('ground')) {

@@ -1,3 +1,4 @@
+import { applyBlendTone } from '../../../../packages/hd-renderer/src/ra2/blendTone';
 import { needsSurfaceClasses } from '../../../../packages/hd-renderer/src/ra2/lookFlags';
 import { setSessionShortcutCode, trackGameChatEntry } from './gameInput';
 import { createChatEntryGuess } from './chatEntryGuess';
@@ -1460,6 +1461,8 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
             ? { crystalSparkle: Number(params.get('hd-sparkle')) }
             : {}),
           spriteIntegration: params.get('hd-sprite') === '1',
+          cleanBuildings: params.get('hd-bld') === '1',
+          groundDenoise: params.get('hd-blend') === '1',
           surfaceClasses: needsSurfaceClasses(params),
           trackTimestamp: import.meta.env.DEV && params.get('hd-gpu') === '1',
           modernClouds: params.has('hd-tone') || params.get('hd-blend') === '1',
@@ -1475,7 +1478,8 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
           renderer.applyLookPreset(view.hd.settings, preset);
         }
         if (tone) tone.applyMoistTone(view.hd.settings, view.theater, tone.parseToneStyle(params.get('hd-tone')));
-        if (preset || tone) view.hd.applySettings();
+        if (params.get('hd-blend') === '1') view.hd.setAlive(applyBlendTone(view.hd.settings, view.theater));
+        if (preset || tone || params.get('hd-blend') === '1') view.hd.applySettings();
         if (topEffects) view.hd.enableTopEffects();
         // A watched view never waits for a pipeline compiler: what is new appears a few frames later instead of the
         // whole picture standing still (?hd-pipelines=sync keeps three's own behaviour).

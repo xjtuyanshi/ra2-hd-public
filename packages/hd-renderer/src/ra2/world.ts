@@ -110,6 +110,7 @@ export async function loadRa2World(
     spriteIntegration?: boolean;
     surfaceClasses?: boolean;
     modernClouds?: boolean;
+    groundDenoise?: boolean;
     smoothVoxel?: Partial<SmoothVoxelOptions>;
     /** Optional base URL of view-dependent vehicle redraw atlases; absent/failed types keep their current look. */
     voxelProjection?: string;
@@ -127,6 +128,7 @@ export async function loadRa2World(
   const nodes = options.nodes ?? new AtmosphereNodes(options.modernClouds === true);
   nodes.surfaceClasses =
     options.surfaceClasses === true || options.spriteIntegration === true || options.modernClouds === true;
+  nodes.groundDenoise = options.groundDenoise === true;
   configureSpriteIntegration(nodes, options.spriteIntegration === true);
   spriteIntegrationFor(nodes).protectedCategory = 5;
   const voxelLook = options.voxelLook ?? 'engine';
