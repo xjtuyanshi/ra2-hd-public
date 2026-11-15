@@ -63,9 +63,12 @@ export const LIGHT_LOOK_NEW = {
  *   inner colour's own linear ratios, which showed ~272 deg instead of the original's ~291 deg (violet read blue).
  *   Single-channel colours (the red house) are unchanged by this.
  * - beamKnee: the soft saturation acts on the glow's amplitude, not on its radial profile, so a full-gain beam keeps
- *   the same falloff as a budgeted one instead of growing a flat saturated plateau (the "neon tube").
- * - beamDepthLift: glow fragments are depth-tested as if lifted towards the camera by the height their screen offset
- *   would need above the ground, so a glow below a low, near-horizontal beam is not cut off by the terrain it covers.
+ *   the same falloff as a budgeted one instead of growing a flat saturated plateau (the "neon tube"). With a slightly
+ *   smaller glow radius and tail (2 and 0.4; live SOV07TMD): the violet tower beam's bright band is ~19-25 device px
+ *   instead of 34, while the budgeted red Prism tank beams keep round 7's look.
+ * - beamDepthLift: a gain on the depth lift of glow fragments towards the camera, by the height their screen offset
+ *   would need above the ground (plus a little at the core). A glow below a low, near-horizontal beam is otherwise cut
+ *   off by the terrain it is drawn over; the original draws its lasers over the scene, so a generous lift is faithful.
  */
 export const LIGHT_LOOK_BEAM = {
   ...LIGHT_LOOK_NEW,
@@ -76,15 +79,23 @@ export const LIGHT_LOOK_BEAM = {
   smokeDetail: LIGHT_LOOK_CURRENT.smokeDetail,
   smokeEdge: LIGHT_LOOK_CURRENT.smokeEdge,
   smokeRidge: LIGHT_LOOK_CURRENT.smokeRidge,
-  beamGlow: 1.3,
-  beamTail: 0.15,
+  beamGlow: 2,
+  beamTail: 0.4,
   beamOverbright: 1.64,
   beamKnee: 1,
-  beamDepthLift: 1,
+  beamDepthLift: 2.5,
 } as const;
 export type LightLookPreset = 'new' | 'beam';
 /** Parameters that are gains or widths rather than 0..1 shares. */
-const WIDE = new Set<string>(['smokeDetail', 'beamGlow', 'beamSpread', 'beamCoreGain', 'beamImpact', 'beamOverbright']);
+const WIDE = new Set<string>([
+  'smokeDetail',
+  'beamGlow',
+  'beamSpread',
+  'beamCoreGain',
+  'beamImpact',
+  'beamOverbright',
+  'beamDepthLift',
+]);
 export type LightLookValues = { [K in keyof typeof LIGHT_LOOK_NEW]: number };
 const lookUniform = (v: number) => uniform(v);
 export type LightLook = { [K in keyof LightLookValues]: ReturnType<typeof lookUniform> };

@@ -298,14 +298,16 @@ export class RealEmissiveLayer {
       .add(glowRgb.mul(float(1).sub(laserCore.mul(0.6))))
       .add(mix(vec3(1), tint, 0.45).mul(impact).mul(flicker).mul(colour.w));
     const rgb = mix(legacy, lightRgb, phase.w.greaterThan(1.5).select(this.look.beamLight, float(0)));
-    // beamDepthLift (hd-light=beam): the glow is depth-tested as if lifted towards the camera by the height its
-    // screen-vertical offset would need above the ground (offset x cot(elevation)). A low near-horizontal beam's glow
+    // beamDepthLift (hd-light=beam, a gain): the glow is depth-tested as if lifted towards the camera by the height
+    // its screen-vertical offset would need above the ground (offset x cot(elevation)). A low near-horizontal beam's glow
     // below the core otherwise falls behind the very terrain it is drawn over and ends in a hard edge within 2 px
     // (round-7 review, live SOV07TMD frame 222), while the glow above survives. The core (offset ~0) keeps its depth.
     const offset = side.mul(uv().y.sub(0.5).mul(width));
     const elevation = this.toCamera.y.max(0.05);
     const cotangent = sqrt(float(1).sub(elevation.mul(elevation)).max(0)).div(elevation);
+    // The small core term covers beams that touch or dip into the terrain where they hit the ground.
     const lift = abs(dot(offset, this.up))
+      .add(width.mul(0.15))
       .mul(cotangent)
       .mul(phase.w.greaterThan(1.5).select(this.look.beamDepthLift.mul(this.look.beamLight), float(0)));
     m.depthNode = depth.sub(lift.div(cameraFar.sub(cameraNear)));

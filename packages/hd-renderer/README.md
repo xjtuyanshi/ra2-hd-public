@@ -423,6 +423,26 @@ reaches zero inside it), `beamFlicker=0.12`, `beamImpact=0.7` (hit-point bloom);
 policies, and `look('cur')` restores all of them. Detail, glow, spread, core gain and impact accept 0..4; other
 controls accept 0..1. These controls have no visual effect without the opted-in, enabled physical path.
 
+### Default-on candidate (`hd-light=beam`)
+
+`?hd=1&hd-light=beam` selects the same physical light path with the `beam` preset (`look('beam')`, round 8): the
+round-7 laser light, `chronoPool=0` and the warm, smaller flashes, but smoke exactly as Build 13 draws it. The
+preset sets `AtmosphereNodes.smokeVolume` to false, so the smoke volume and smoke-card noise graphs are not even
+built (physical light still lights the smoke). Three laser controls (all inert, i.e. `1/0/0`, in `cur` and `new`):
+
+- `beamOverbright=1.64`: the glow takes the hue the original shows at the beam centre. The original adds the house
+  colour over the scene, so a two-channel colour overbrights: a live SOV07TMD Prism beam with the inner colour
+  (137, 0, 197) displayed (225, 43, 255), about 1.64x per display channel, clipped. Round 7 used the inner colour's
+  own ratios and showed ~272 deg where the original shows ~291 deg. Single-channel reds are practically unchanged.
+- `beamKnee=1`: the glow's soft saturation acts on its amplitude, not its radial profile, so a full-gain beam keeps
+  the falloff of a budgeted one instead of growing a flat saturated plateau. With `beamGlow=2` and `beamTail=0.4`
+  the violet tower beam's bright band (more than 80 levels over the ground) measured 23 device px live instead of
+  round 7's 33, while the budgeted red Prism tank beams keep their look.
+- `beamDepthLift=2.5` (a gain, 0..4): laser glow fragments are depth-tested as if lifted towards the camera by their
+  screen-vertical offset (plus 0.15 of the quad width at the core) times the cotangent of the camera elevation, the
+  height that offset would need above flat ground. The glow below a low, near-horizontal beam is then no longer cut
+  off by the terrain it is drawn over; the original draws its lasers over the scene.
+
 Procedural smoke density uses the existing noise texture (four additional taps per puff: a domain-warped coarse
 octave, a ridged fine octave, a finer octave and an overhead tap for self-shadow), in a frame aligned with the puff's
 on-screen drift (rise plus the shared wind) and stretched along it with age, so edges pull into wisps downwind and

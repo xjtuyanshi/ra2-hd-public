@@ -81,13 +81,14 @@ describe('round 8: hd-light=beam preset', () => {
     // Round 7: the full-gain beam's relative falloff is wider (the plateau). Beam preset: one shape for every gain.
     expect(width(LIGHT_LOOK_NEW, 1, 0.25)).toBeGreaterThan(width(LIGHT_LOOK_NEW, 0.3, 0.25) + 0.2);
     expect(Math.abs(width(LIGHT_LOOK_BEAM, 1, 0.25) - width(LIGHT_LOOK_BEAM, 0.3, 0.25))).toBeLessThan(0.02);
-    // And the beam preset's glow ends sooner than round 7's at full gain.
-    const absolute = (look: LightLookValues) => {
+    // And at full gain the beam preset's bright band is much narrower than round 7's, its faint tail no wider.
+    const absolute = (look: LightLookValues, threshold: number) => {
       let r = 0.5;
-      while (r < 8 && laserLightProfile(r, violet, 1.4, look, 1)[2] > 0.02) r += 0.01;
+      while (r < 8 && laserLightProfile(r, violet, 1.4, look, 1)[2] > threshold) r += 0.01;
       return r;
     };
-    expect(absolute(LIGHT_LOOK_BEAM)).toBeLessThan(absolute(LIGHT_LOOK_NEW) * 0.75);
+    expect(absolute(LIGHT_LOOK_BEAM, 0.3)).toBeLessThan(absolute(LIGHT_LOOK_NEW, 0.3) * 0.8);
+    expect(absolute(LIGHT_LOOK_BEAM, 0.02)).toBeLessThan(absolute(LIGHT_LOOK_NEW, 0.02));
     // White-hot core: near-white, keeps a violet tint (blue >= red > green).
     const core = laserLightProfile(0, violet, 1.4, LIGHT_LOOK_BEAM, 1);
     expect(Math.min(...core) / Math.max(...core)).toBeGreaterThan(0.6);
