@@ -76,6 +76,8 @@ describe('offline local cache export boundaries', () => {
           out,
           '--evaluations',
           '1',
+          '--search',
+          'multi',
           '--no-render',
         ],
         { stdio: 'pipe' },
@@ -90,6 +92,12 @@ describe('offline local cache export boundaries', () => {
       expect(manifest.files['HOURS.md']).toBeDefined();
       expect(manifest.colour.rgb).toEqual([0.6, 0.6, 0.6]);
       expect(manifest.runtime).toContain('UNVERIFIED');
+      expect(manifest.sourceFilesChangedDuringRun).toEqual([]);
+      const searches = JSON.parse(await readFile(join(out, 'searches.json'), 'utf8'));
+      expect(Object.keys(searches['body:0'])).toEqual(['strict', 'broad']);
+      expect(Object.keys(searches['body:1'])).toEqual(['strict', 'broad']);
+      const selection = JSON.parse(await readFile(join(out, 'search_selection.json'), 'utf8'));
+      expect(selection).toEqual({ 'body:0': 'strict', 'body:1': 'strict' });
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

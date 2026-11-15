@@ -10,7 +10,11 @@ import { hardSurfaceSolid, type Vec3 } from '../../../packages/hd-renderer/src/h
 import { buildPart, type HardSurfaceSpec } from '../../../packages/hd-renderer/src/hardSurfaceMesh';
 import { occupiedCells, proposeHardSurface } from '../../../packages/hd-renderer/src/hardSurfacePropose';
 import { tubeLanes } from '../../../packages/hd-renderer/src/hardSurfaceTube';
-import { refineHardSurface, type RefinementResult } from '../../../packages/hd-renderer/src/hardSurfaceRefine';
+import {
+  refineHardSurface,
+  type RefinementResult,
+  type FitAcceptance,
+} from '../../../packages/hd-renderer/src/hardSurfaceRefine';
 import {
   compareSilhouettes,
   partMeshes,
@@ -47,6 +51,7 @@ for (let i = 0; i < args.length; i++) {
       '--python',
       '--font',
       '--cell',
+      '--search',
     ].includes(k) ||
     !args[i + 1] ||
     args[i + 1].startsWith('--')
@@ -65,6 +70,8 @@ const numeric = (name: string, fallback: number) => {
   if (!Number.isFinite(n) || n <= 0) throw new Error(`Invalid ${name}`);
   return n;
 };
+const searchMode = flags.get('--search') ?? 'broad';
+if (!['strict', 'broad', 'multi'].includes(searchMode)) throw new Error('Search must be strict, broad or multi');
 const evaluations = numeric('--evaluations', 32),
   seconds = numeric('--seconds', 300);
 if (!Number.isInteger(evaluations)) throw new Error('Evaluation budget must be an integer');
@@ -124,7 +131,7 @@ for (const input of [source, resolve(flags.get('--palette')!)]) {
     throw new Error('Output directory must not contain source inputs');
 }
 await log(
-  `Automatic run start; model=${flags.get('--id')}; per-section compute budgets ${evaluations} evaluations / ${seconds}s; offline`,
+  `Automatic run start; model=${flags.get('--id')}; per-section per-search budgets ${evaluations} evaluations / ${seconds}s; search=${searchMode}; offline`,
 );
 const paletteBytes = await readFile(flags.get('--palette')!),
   paletteImage = decodePng(paletteBytes);
@@ -152,6 +159,8 @@ const spec: HardSurfaceSpec = {
 const exported: Record<string, unknown> = {},
   results: Record<string, RefinementResult> = {},
   proposals: Record<string, unknown> = {},
+  searches: Record<string, Record<string, RefinementResult>> = {},
+  selectedSearch: Record<string, string> = {},
   timings: Record<string, number> = {};
 const viewsByKey: Record<string, SilhouetteView[]> = {},
   solids: Record<string, ReturnType<typeof hardSurfaceSolid>> = {};
@@ -245,21 +254,43 @@ for (const part of model.parts) {
     await log(
       `Proposed ${key}: ${proposed.regions.length} broad regions; budget=${proposed.options.budget}; tubes=${tubes}; mirror at ${proposed.symmetry.at}, IoU ${proposed.symmetry.iou.toFixed(5)}`,
     );
-    // Checkpoint every formal evaluation, including rejected candidates; a timeout must leave a usable selection.
-    const result = refineHardSurface(solid, proposed, views, {
-      maxEvaluations: evaluations,
-      maxMilliseconds: seconds * 1000,
-      onEvaluation: (entry, selected) => {
-        const line =
-          JSON.stringify({ at: new Date().toISOString(), key, ...entry }, (_, v: unknown) =>
-            typeof v === 'number' && !Number.isFinite(v) ? String(v) : v,
-          ) + '\n';
-        process.stdout.write(line);
-        appendFileSync(join(out, 'evaluations.jsonl'), line);
-        spec.parts[key] = selected;
-        writeFileSync(join(out, 'checkpoint.json'), json(spec));
-      },
-    });
+    // Every trial starts from the same raw-source proposal. Selection is automatic, never a hand part edit.
+    const modes = searchMode === 'multi' ? (tubes ? ['broad'] : ['strict', 'broad']) : [searchMode];
+    let result: RefinementResult | undefined, checkpoint: FitAcceptance | undefined;
+    const better = (a: FitAcceptance, b: FitAcceptance | undefined) =>
+      !b || (a.pass !== b.pass ? a.pass : a.loss < b.loss);
+    searches[key] = {};
+    for (const mode of modes) {
+      const trialStart = performance.now();
+      const trial = refineHardSurface(solid, proposed, views, {
+        maxEvaluations: evaluations,
+        maxMilliseconds: seconds * 1000,
+        neighborhood: mode as 'strict' | 'broad',
+        onEvaluation: (entry, selected) => {
+          const line =
+            JSON.stringify({ at: new Date().toISOString(), key, search: mode, ...entry }, (_, v: unknown) =>
+              typeof v === 'number' && !Number.isFinite(v) ? String(v) : v,
+            ) + '\n';
+          process.stdout.write(line);
+          appendFileSync(join(out, 'evaluations.jsonl'), line);
+          if (entry.accepted && entry.result && better(entry.result, checkpoint)) {
+            checkpoint = entry.result;
+            spec.parts[key] = structuredClone(selected);
+            writeFileSync(join(out, 'checkpoint.json'), json(spec));
+          }
+        },
+      });
+      searches[key][mode] = trial;
+      timings[`search:${key}:${mode}`] = performance.now() - trialStart;
+      if (better(trial.result, result?.result)) {
+        result = trial;
+        selectedSearch[key] = mode;
+      }
+      await save('searches.json', searches);
+      await log(`Search ${key}/${mode}: loss=${trial.result.loss}; pass=${trial.result.pass}; stop=${trial.stop}`);
+    }
+    if (!result) throw new Error('No search result');
+    await save('search_selection.json', selectedSearch);
     results[key] = result;
     spec.parts[key] = result.part;
     timings[`fit:${key}`] = performance.now() - fitStart;
@@ -292,7 +323,7 @@ await save('timing.json', {
   totalMs: performance.now() - started,
   phasesMs: timings,
   manualModelDecisions: [],
-  note: 'Automatic execution durations; external tool development and visual review must be logged separately.',
+  note: 'Automatic execution durations; fit includes proposal and all search trials. External tool development and visual review must be logged separately.',
 });
 let assembledPass = false;
 if (!booleans.has('--export-only')) {
@@ -367,7 +398,7 @@ await writeFile(
     .map(([k, v]) => `| ${k} | ${(v / 1000).toFixed(3)} |`)
     .join(
       '\n',
-    )}\n\nNo model-specific coordinates or seed decisions were supplied to this run. Tool development, diagnosis, run selection and visual review are external hand-directed work and must be recorded separately; this file does not establish zero human labour. Elapsed includes serial computation, not active human typing.\n`,
+    )}\n\nNo model-specific coordinates or seed decisions were supplied to this run. Tool development, diagnosis, run selection and visual review are external hand-directed work and must be recorded separately; this file does not establish zero human labour. fit includes proposal plus all search phases; these overlapping phase rows must not be summed. Elapsed includes serial computation, not active human typing.\n`,
 );
 await log('Automatic delivery complete; visual acceptance remains a separate gate');
 const finalHashes = await snapshotSources();

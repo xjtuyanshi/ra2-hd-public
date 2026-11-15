@@ -53,4 +53,13 @@ describe('source cross-section tube chain', () => {
     );
     expect(() => tubeSegments(gap, 'x', 1)).toThrow('axial runs');
   });
+  it('retains a real one-slice terminal radius step within the tube budget', () => {
+    const source = occupiedCells(grid([15, 7, 7], ([x, y, z]) => Math.hypot(y - 3, z - 3) < (x === 14 ? 1.5 : 2.5)));
+    const segments = tubeSegments(source, 'x', 2);
+    expect(segments).toHaveLength(2);
+    expect(segments.map((s) => [Math.min(...s.map((p) => p[0])), Math.max(...s.map((p) => p[0])) + 1])).toEqual([
+      [0, 14],
+      [14, 15],
+    ]);
+  });
 });

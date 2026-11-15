@@ -30,6 +30,7 @@ import { proposeRecesses } from './hardSurfaceRecess';
 export interface RefinementOptions {
   maxEvaluations: number;
   maxMilliseconds: number;
+  neighborhood?: 'strict' | 'broad';
   p99?: number;
   iou?: number;
   onEvaluation?: (entry: RefinementEntry, part: PartSpec) => void;
@@ -208,7 +209,7 @@ export function refineHardSurface(
         if (tried.has(key)) continue;
         tried.add(key);
         candidate = { ...structuredClone(part), carve: [...(part.carve ?? []), recess.carve] };
-        action = `${key}; ${recess.cells} residual cells, source overlap ${recess.sourceOverlap}, enclosed axes ${recess.enclosedAxes.join(',')}`;
+        action = `${key}; ${recess.cells} residual cells, source overlap ${recess.sourceOverlap}, enclosed axes ${recess.enclosedAxes.join(',')}, source-face trim axes ${recess.trimAxes.join(',')}`;
         break;
       }
     }
@@ -256,7 +257,13 @@ export function refineHardSurface(
         }
         const state = r.id + (r.primitive.type === 'cyl' ? JSON.stringify(r.primitive.c) : '');
         if (!splitCandidates.has(state))
-          splitCandidates.set(state, splitRegionCandidates(r, whole, model.options, true).slice(0, 4));
+          splitCandidates.set(
+            state,
+            splitRegionCandidates(r, whole, model.options, options.neighborhood !== 'strict').slice(
+              0,
+              options.neighborhood === 'strict' ? 1 : 4,
+            ),
+          );
         const choices = splitCandidates.get(state)!;
         const alternative = choices.findIndex((_, j) => !tried.has(`split:${state}:${j}`));
         if (alternative < 0) continue;
@@ -298,6 +305,7 @@ export function refineHardSurface(
     if (!candidate)
       for (const { r, i } of ranked) {
         const q = part.primitives[i];
+        if (options.neighborhood === 'strict') break;
         if (q.type !== 'poly') continue;
         for (let plane = 0; plane < q.planes.length; plane++) {
           const p = q.planes[plane];

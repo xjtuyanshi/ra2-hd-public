@@ -124,8 +124,9 @@ export function tubeSegments(cells: readonly Vec3[], axis: Axis, budget: number)
   for (let n = 1; n <= budget; n++)
     for (let j = 1; j < cuts.length; j++)
       for (let i = 0; i < j; i++) {
-        // A sleeve needs real axial extent. A one-slice endpoint remains in its adjacent region.
-        if (cuts[j] - cuts[i] < 2 && hi - lo > 1) continue;
+        // Interior sleeves need axial extent. A source-supported terminal muzzle/cap may
+        // occupy one slice; it is still a coaxial circular segment, never a voxel box.
+        if (cuts[j] - cuts[i] < 2 && hi - lo > 1 && cuts[i] !== lo && cuts[j] !== hi) continue;
         const candidate = dp[n - 1][i] + cost(cuts[i], cuts[j]) + 0.15;
         if (candidate < dp[n][j]) {
           dp[n][j] = candidate;

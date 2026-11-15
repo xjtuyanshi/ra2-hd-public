@@ -28,6 +28,7 @@ for (let i = 0; i < args.length; i++) {
       '--font',
       '--cell',
       '--python',
+      '--search',
     ].includes(args[i]) ||
     !args[i + 1] ||
     args[i + 1].startsWith('--') ||

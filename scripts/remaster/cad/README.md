@@ -34,7 +34,8 @@ The generic modules in `packages/hd-renderer/src/` own:
   axis/1:1/1:2/2:1 planes plus configurable ratios, occupancy-supported circular hypotheses,
   and parallel tube lanes with source-step dynamic-programming chains. A majority of disjoint
   axial slices can separate tubes joined at a short root. Axial gaps are never bridged.
-  Each chain shares one axis and receives its own caller-supplied segment budget. Slice-median
+  Each chain shares one axis and receives its own caller-supplied segment budget. A real
+  one-slice terminal muzzle/cap is eligible; interior segments still require axial extent. Slice-median
   axes prevent a short asymmetric base from displacing a long tube; centre search moves every
   segment of one coaxial group together. Semantic
   names are geometric hypotheses, not recognition of a particular game's model.
@@ -58,8 +59,9 @@ The generic modules in `packages/hd-renderer/src/` own:
   changing a radius cannot suppress a newly useful centre move or another step in the same direction.
 - `hardSurfaceRecess.ts`: broad connected overfill pockets with source occupancy on opposite
   sides. Convex subtraction candidates need at least twelve source-empty cells, a long span
-  of six cells, and at most one percent source overlap. Tiny dimples, paint-only marks and
-  unconstrained exterior space cannot become residual-cell cuts. Every subtraction still
+  of six cells, and at most one percent source overlap. Broad source-face trim panels are also eligible when their thickness is at most two cells
+  and at least half their cells directly contact an occupied source face. Tiny dimples,
+  paint-only marks and unconstrained exterior space cannot become residual-cell cuts. Every subtraction still
   goes through the same expanded primitive, surface and silhouette gates. If a connected
   pocket wraps around source material, bounded broad subdivisions can yield safe convex
   sub-pockets. Recursion stops at depth three; the same extent/enclosure/source-overlap
@@ -75,7 +77,7 @@ drums, panels, or other decoration. There is no learned semantic model or promis
 source feature will be recognized. Broad convex partitions can still underfit concavities or
 miss thin source features. Numerical, visual and runtime acceptance remain separate gates.
 
-`--evaluations 32` and `--seconds 300` bound refinement **per section**. Proposal/export time
+`--evaluations 32` and `--seconds 300` bound refinement **per section per search trial**. Proposal/export time
 is reported separately. The last in-flight formal evaluation completes before a time-budget
 stop, so wall time can exceed the soft compute budget. Failure, budget exhaustion and a
 search with no improving broad candidate are explicit outcomes, not passes. Every evaluated
@@ -149,3 +151,14 @@ The summary can be refreshed after author review without regenerating geometry.
 without changing model scale, projection, thresholds or masks; the default remains 190.
 A larger tile is useful for long models. Clipping still fails. The batch itself has no
 implicit wall deadline: select compute limits and start early enough for review and delivery.
+
+`--search broad` (default) uses diverse broad split alternatives and independent snapped-plane
+updates. `--search strict` uses one strictly occupancy-improving split per region and grouped
+plane offsets. `--search multi` runs both from the same proposal, with the configured compute
+budget independently applied to each trial, and selects automatically per section: a full
+part pass outranks a failure, then lower unchanged formal loss wins; ties keep the first trial.
+Tube searches are identical between these neighborhoods and run once. `searches.json` retains
+every trial, `search_selection.json` records the choice, and checkpoints retain the best
+observed part across trials. The assembled silhouette is evaluated after automatic selection;
+part passes alone never establish vehicle acceptance. `fit:*` timings include proposal and all
+`search:*` rows and must not be summed with those nested rows.

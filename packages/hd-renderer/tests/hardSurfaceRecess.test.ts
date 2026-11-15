@@ -57,4 +57,16 @@ describe('source-empty broad recess proposals', () => {
     expect(evaluateHardSurface(source, carved).iou).toBeGreaterThan(evaluateHardSurface(source, envelope).iou);
     expect(buildPart(carved).primitives.length).toBeLessThan(35);
   });
+  it('trims a broad thin overshoot only when an adjacent source face supports it', () => {
+    const source = grid([12, 10, 5], ([, y]) => y < 9);
+    const proposals = proposeRecesses(source, partPrimitives(shell));
+    expect(proposals).toHaveLength(1);
+    expect(proposals[0]).toMatchObject({ enclosedAxes: [], trimAxes: [1], sourceOverlap: 0 });
+    const carved = { ...shell, carve: [proposals[0].carve] };
+    const metrics = evaluateHardSurface(source, carved);
+    expect(metrics.iou).toBe(1);
+    expect(metrics.extra).toBe(0);
+    expect(metrics.missing).toBe(0);
+    expect(metrics.dev_cad_to_vox.p99).toBeLessThanOrEqual(0.85);
+  });
 });

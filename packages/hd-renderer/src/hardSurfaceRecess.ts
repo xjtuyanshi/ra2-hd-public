@@ -8,6 +8,7 @@ export interface RecessProposal {
   bounds: [Vec3, Vec3];
   cells: number;
   enclosedAxes: number[];
+  trimAxes: number[];
   sourceOverlap: number;
   carve: Carve;
 }
@@ -45,8 +46,24 @@ export function proposeRecesses(solid: SolidGrid, primitives: readonly ExpandedP
       }
       if (enclosed / queue.length >= 0.25) enclosedAxes.push(a);
     }
-    if (!enclosedAxes.length) return;
     const [lo, hi] = bounds;
+    const trimAxes: number[] = [];
+    if (!enclosedAxes.length)
+      for (let a = 0; a < 3; a++) {
+        if (hi[a] - lo[a] > 2) continue;
+        const contact =
+          queue.filter((p) =>
+            [-1, 1].some((sign) => {
+              const q = [...p] as Vec3;
+              q[a] += sign;
+              return gridCell(solid, q);
+            }),
+          ).length / queue.length;
+        // A broad, thin overshoot directly supported by a source face is a trim panel.
+        // Unconstrained exterior volumes and isolated cells remain ineligible.
+        if (contact >= 0.5) trimAxes.push(a);
+      }
+    if (!enclosedAxes.length && !trimAxes.length) return;
     let boxOverlap = false;
     for (let x = lo[0]; x < hi[0]; x++)
       for (let y = lo[1]; y < hi[1]; y++)
@@ -96,6 +113,7 @@ export function proposeRecesses(solid: SolidGrid, primitives: readonly ExpandedP
       bounds,
       cells: queue.length,
       enclosedAxes,
+      trimAxes,
       sourceOverlap,
       carve: { type: 'poly', planes: compact },
     });
