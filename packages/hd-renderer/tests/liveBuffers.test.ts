@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { Vector3 } from 'three/webgpu';
 import { SpriteLayer, objectAnchor, type SpriteInstance } from '../src/ra2/sprites';
 import { paletteFor, paletteRowOf, ra2Screen, screenToCell, type Ra2Cache } from '../src/ra2/cache';
-import { ShroudLayer, shroudCorners } from '../src/live/shroud';
+import { ShroudLayer, shroudCorners, shroudOpacity } from '../src/live/shroud';
 import { SpritePool } from '../src/live/spritePool';
 import type { DirtyAttribute } from '../src/dirtyAttribute';
 import type { MapObject } from '../../ra2-assets/src/manifest';
@@ -172,6 +172,32 @@ describe('shroud reuse', () => {
     expect(layer.texture.version).toBe(updated);
     expect(layer.isLocationShrouded(2 * 256, 2 * 256, 0)).toBe(false);
   });
+  it('answers the post-pass visibility of a ground point from the same corner field', () => {
+    const layer = new ShroudLayer(8, 8);
+    expect(layer.visibilityAt(3.5, 3.5)).toBe(1);
+    // Everything revealed except a shrouded 2x2 block of cells (3..4, 3..4), like a gap generator's patch.
+    const cells = { originX: 0, originY: 0, width: 8, height: 8, cells: new Uint8Array(64).fill(2) };
+    for (const [x, y] of [
+      [3, 3],
+      [4, 3],
+      [3, 4],
+      [4, 4],
+    ])
+      cells.cells[y * 8 + x] = 0;
+    layer.update(cells);
+    // Corners 3..5 touch a shrouded cell, so the whole block from world 3 to 5 is black and its centre is too.
+    expect(layer.visibilityAt(4, 4)).toBe(0);
+    expect(layer.visibilityAt(3.5, 4.5)).toBe(0);
+    expect(layer.visibilityAt(1, 1)).toBeCloseTo(1, 6);
+    // Halfway between a dark corner (3) and a clear one (2): the filtered field is 0.5.
+    expect(layer.visibilityAt(2.5, 4)).toBeCloseTo(1 - shroudOpacity(0.5, 0.5), 6);
+    expect(layer.visibilityAt(2.5, 4)).toBeGreaterThan(0);
+    expect(layer.visibilityAt(2.5, 4)).toBeLessThan(1);
+    // Outside the map the edge corners repeat (clamped texture); non-finite points stay visible.
+    expect(layer.visibilityAt(-5, 1)).toBe(layer.visibilityAt(0, 1));
+    expect(layer.visibilityAt(Number.NaN, 1)).toBe(1);
+  });
+
   it('matches full corner reconstruction through sparse edits and shifted reader boxes', () => {
     const layer = new ShroudLayer(12, 9);
     const cells = { originX: -1, originY: -1, width: 15, height: 12, cells: new Uint8Array(180).fill(2) };

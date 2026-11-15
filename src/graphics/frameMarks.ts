@@ -6,7 +6,8 @@
  * present unchanged inside the key rectangle. Matched pixels become the key colour in a copy of the picture and the
  * art is drawn over the same native box at output resolution. Anything drawn over a mark afterwards breaks the exact
  * match, so that mark keeps its native pixels; nothing is erased by guessed rectangle or colour. Where opaque pixels
- * of several candidates overlap, the template with more opaque pixels wins and the other is rejected.
+ * of several candidates overlap, the template with more opaque pixels wins and the other is rejected. An optional light
+ * (FrameMarkLight) darkens the art where the native game would have darkened the mark through its own lighting buffer.
  *
  * Game policy (which frames, palette, file names) lives with the game's asset tools; this module only consumes the
  * resulting manifest and art.
@@ -246,14 +247,33 @@ export function clearFrameMarks(
   }
 }
 
-/** Two triangles per match: clip-space position over the native box and atlas texture coordinates. */
+/**
+ * Display-space colour multiplier of the art at a picture point (native pixel units, box corners). The native game
+ * draws some marks through its per-pixel lighting/shroud buffer; a renderer that no longer feeds that buffer supplies
+ * the same darkening here (0 = black, 1 = unchanged). Values are clamped to 0..1.
+ */
+export type FrameMarkLight = (x: number, y: number) => number;
+
+/** Floats per vertex: clip-space position, atlas texture coordinates and light. */
+export const FRAME_MARK_VERTEX_FLOATS = 5;
+
+/**
+ * Two triangles per match: clip-space position over the native box, atlas texture coordinates and the light at each
+ * box corner (1 without `light`), interpolated across the quad.
+ */
 export function frameMarkVertices(
   matches: readonly FrameMarkMatch[],
   set: FrameMarkSet,
   frameWidth: number,
   frameHeight: number,
+  light?: FrameMarkLight | null,
 ): Float32Array {
-  const values = new Float32Array(matches.length * 24);
+  const values = new Float32Array(matches.length * 6 * FRAME_MARK_VERTEX_FLOATS);
+  const shade = (x: number, y: number): number => {
+    if (!light) return 1;
+    const value = light(x, y);
+    return Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : 1;
+  };
   let at = 0;
   for (const match of matches) {
     const template = set.templates[match.template]!;
@@ -265,18 +285,27 @@ export function frameMarkVertices(
       u1 = (template.atlas.x + template.atlas.width) / set.atlasWidth;
     const v0 = template.atlas.y / set.atlasHeight,
       v1 = (template.atlas.y + template.atlas.height) / set.atlasHeight;
-    for (const [x, y, u, v] of [
-      [left, top, u0, v0],
-      [right, top, u1, v0],
-      [left, bottom, u0, v1],
-      [left, bottom, u0, v1],
-      [right, top, u1, v0],
-      [right, bottom, u1, v1],
+    const x0 = match.x,
+      x1 = match.x + template.width,
+      y0 = match.y,
+      y1 = match.y + template.height;
+    const topLeft = shade(x0, y0),
+      topRight = shade(x1, y0),
+      bottomLeft = shade(x0, y1),
+      bottomRight = shade(x1, y1);
+    for (const [x, y, u, v, l] of [
+      [left, top, u0, v0, topLeft],
+      [right, top, u1, v0, topRight],
+      [left, bottom, u0, v1, bottomLeft],
+      [left, bottom, u0, v1, bottomLeft],
+      [right, top, u1, v0, topRight],
+      [right, bottom, u1, v1, bottomRight],
     ] as const) {
       values[at++] = x;
       values[at++] = y;
       values[at++] = u;
       values[at++] = v;
+      values[at++] = l;
     }
   }
   return values;
@@ -345,18 +374,22 @@ export class FrameMarkPass {
           `#version 300 es
           layout(location = 0) in vec2 position;
           layout(location = 1) in vec2 texel;
+          layout(location = 2) in float light;
           out vec2 uv;
-          void main() { gl_Position = vec4(position, 0.0, 1.0); uv = texel; }`,
+          out float shade;
+          void main() { gl_Position = vec4(position, 0.0, 1.0); uv = texel; shade = light; }`,
         ],
         [
           gl.FRAGMENT_SHADER,
-          // A small negative bias keeps edges crisp when the art is shown below its own resolution.
+          // A small negative bias keeps edges crisp when the art is shown below its own resolution. Light darkens the
+          // premultiplied colour and keeps coverage, as the native lighting buffer darkens the mark's pixels.
           `#version 300 es
           precision highp float;
           uniform sampler2D atlas;
           in vec2 uv;
+          in float shade;
           out vec4 colour;
-          void main() { colour = texture(atlas, uv, -0.5); }`,
+          void main() { vec4 art = texture(atlas, uv, -0.5); colour = vec4(art.rgb * shade, art.a); }`,
         ],
       ] as const) {
         const shader = gl.createShader(kind);
@@ -407,16 +440,19 @@ export class FrameMarkPass {
       gl.bindVertexArray(this.vao);
       gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
       gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.DYNAMIC_DRAW);
+      const stride = FRAME_MARK_VERTEX_FLOATS * 4;
       gl.enableVertexAttribArray(0);
-      gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 16, 0);
+      gl.vertexAttribPointer(0, 2, gl.FLOAT, false, stride, 0);
       gl.enableVertexAttribArray(1);
-      gl.vertexAttribPointer(1, 2, gl.FLOAT, false, 16, 8);
+      gl.vertexAttribPointer(1, 2, gl.FLOAT, false, stride, 8);
+      gl.enableVertexAttribArray(2);
+      gl.vertexAttribPointer(2, 1, gl.FLOAT, false, stride, 16);
       gl.useProgram(this.program);
       gl.bindTexture(gl.TEXTURE_2D, this.texture);
       gl.uniform1i(this.atlasLocation, 4);
       gl.enable(gl.BLEND);
       gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
-      gl.drawArrays(gl.TRIANGLES, 0, vertices.length / 4);
+      gl.drawArrays(gl.TRIANGLES, 0, vertices.length / FRAME_MARK_VERTEX_FLOATS);
       gl.disable(gl.BLEND);
       // Only context loss is checked per draw: gl.getError() synchronises with the GPU process and would also report
       // errors of unrelated earlier calls. The allocation was validated once in the constructor.

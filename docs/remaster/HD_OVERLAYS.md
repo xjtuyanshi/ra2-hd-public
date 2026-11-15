@@ -161,6 +161,16 @@ The page loads them in development HD sessions unless `native-mark-art=0`; the c
 the number of marks replaced in the last keyed picture. Mark templates must stay distinctive: small or repeated
 pieces such as health ticks, pips that overlap each other, lines and text are not suitable for exact matching.
 
+Shroud: `0x70AA4F` draws the rank shape with blitter flags `0xE00` (centred, alpha), so the engine darkens it through
+the same per-pixel lighting buffer that the cell draw `0x4801F0` fills with `SHROUD.SHP`. The original therefore shows no
+chevron in black shroud, including the shroud of an enemy Gap Generator. Terrain passthrough skips those cell passes,
+so the keyed picture's chevrons arrive at full brightness wherever they are. The art pass takes a per-corner light
+(`FrameMarkLight`, darkening the premultiplied colour and keeping coverage): the HD bridge supplies the HD shroud's
+visibility at the same pixel (`LiveView.shroudVisibilityAt`, the flat Z = 0 corner field the post pass masks with) as
+`v^(1/2.2)`, because the post pass darkens linear light. A chevron in black shroud is drawn black on black, and one on
+the shroud edge darkens with the ground beneath it. Native chevrons that are not replaced (no art, `native-mark-art=0`,
+a partly covered mark) keep their undarkened native pixels.
+
 ### Step smoothing of thin diagonal marks
 
 Lines and text cannot be matched exactly (building bracket diagonals, target and rally lines, the primary-building

@@ -944,6 +944,8 @@ export class LiveView {
    */
   private cameraShown?: { x: number; y: number } | null;
   private cameraFrom?: { x: number; y: number } | null;
+  /** Engine pixel of the view's top-left corner the camera was last placed at (snapped), for shroudVisibilityAt. */
+  private cameraPixel: { x: number; y: number } | null = null;
   private readonly shpPose: ReturnType<typeof shpUnitPose> = { state: 'stand', step: 0 };
   private readonly hidden = (x: number, y: number, z: number): boolean => this.shroud.isLocationShrouded(x, y, z);
   private readonly effectPalette = (resolved: ResolvedAnim, owner: number | undefined): string =>
@@ -2465,6 +2467,20 @@ export class LiveView {
     };
   }
 
+  /**
+   * Shroud visibility (0 black .. 1 clear) of the HD picture at a tactical-view pixel (engine pixels from the view's
+   * top-left corner), at the camera position last presented; 1 before any camera or shroud is known. The ground point
+   * is the flat Z = 0 one the post pass masks, so a native mark composited over that pixel can be darkened exactly as
+   * the HD picture beneath it.
+   */
+  shroudVisibilityAt(px: number, py: number): number {
+    const camera = this.cameraPixel;
+    if (!camera) return 1;
+    const diff = (camera.x + px) / 30;
+    const sum = (camera.y + py) / 15;
+    return this.shroud.visibilityAt((sum + diff) / 2, (sum - diff) / 2);
+  }
+
   private applyCamera(from: LiveSnapshot['view'], to: LiveSnapshot['view'], alpha: number): void {
     if (!to) return;
     const jump = from ? Math.hypot(to.x - from.x, to.y - from.y) > 400 : true;
@@ -2477,6 +2493,7 @@ export class LiveView {
     this.cameraShown = { x: shownX, y: shownY };
     const x = jump || !from ? to.x : snapToPixelGrid(shownX, grid);
     const y = jump || !from ? to.y : snapToPixelGrid(shownY, grid);
+    this.cameraPixel = { x, y };
     // The camera looks at the ground point (level 0) under the view's centre; orthographic, so height is irrelevant.
     const diff = (x + this.viewWidth / 2) / 30;
     const sum = (y + this.viewHeight / 2) / 15;
