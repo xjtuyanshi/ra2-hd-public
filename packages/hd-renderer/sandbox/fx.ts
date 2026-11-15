@@ -1,3 +1,4 @@
+import { parseBuildingPilot } from '../src/buildingPilot';
 import { mountLush2Tuning } from '../src/ra2/lush2Tuning';
 import { parseAliveParams } from '../src/livingWorld';
 /**
@@ -95,6 +96,7 @@ import { BUILDING_LIGHTS, displayLinear } from '../src/live/buildingLights';
 import { voxelLookParams } from './look';
 import { voxelProjectionFor } from '../src/ra2/voxelProjection';
 import { voxelPbrFor } from '../src/ra2/voxelPbr';
+import { parsePaintStyle } from '../src/ra2/paintLook';
 import { applyVoxelShadowParams } from '../src/ra2/voxelShadow';
 import { advanceShpReview, shpUnitReview } from './shpUnitReview';
 import type { TypeLibrary } from '../../ra2-assets/src/library';
@@ -147,6 +149,9 @@ const live = await LiveView.create(canvas, {
   // The shared parser requires alive-wind=1 in addition to the entry's cloud flag.
   alive: parseAliveParams(params),
   water: parseWaterStyle(params.get('water')),
+  paint: parsePaintStyle(params.get('paint')),
+  buildingPilot: parseBuildingPilot(params.get('bld')),
+  buildingContact: params.get('contact') === '1',
   ...(params.get('glints') === 'off' ? { oreGlints: false } : {}),
   ...(params.has('sparkle') ? { crystalSparkle: Number(params.get('sparkle')) } : {}),
 });

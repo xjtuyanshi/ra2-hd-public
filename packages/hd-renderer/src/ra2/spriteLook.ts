@@ -536,13 +536,24 @@ export function glassReflection(
   return { sky, glint };
 }
 
-/** Soft darkening of ground around a rectangle [0, w] x [0, h] (world units, local xz): 1 inside, fading outside. */
+/**
+ * Soft darkening of ground around a rectangle [0, w] x [0, h] (world units, local xz): 1 inside, fading outside, and
+ * zero from CONTACT_SHADE_REACH cells out, so the decal quad (CONTACT_SHADE_MARGIN engine px around the foundation,
+ * whose east and west edges are margin / 60 * sqrt(2) cells from it) never shows a straight cut-off edge (snow).
+ */
 export function contactShade(local: ShaderNode, w: ShaderNode, h: ShaderNode): ShaderNode {
   const dx: ShaderNode = max(max(local.x.negate(), local.x.sub(w)), 0);
   const dz: ShaderNode = max(max(local.y.negate(), local.y.sub(h)), 0);
   const outside: ShaderNode = sqrt(dx.mul(dx).add(dz.mul(dz)));
-  return exp(outside.mul(-1 / 0.32));
+  return exp(outside.mul(-1 / 0.32)).mul(
+    float(1).sub(smoothstep(CONTACT_SHADE_REACH * 0.6, CONTACT_SHADE_REACH, outside)),
+  );
 }
+
+/** Cells outside the foundation where the contact shade has faded to zero. */
+export const CONTACT_SHADE_REACH = 1.3;
+/** Engine px of the contact decal quad around the foundation's screen diamond (reach 1.3 cells needs >= 56). */
+export const CONTACT_SHADE_MARGIN = 60;
 
 /** Screen row (engine px below the draw point) of the base line of a foundation w x h at screen column px. */
 export function foundationBase(px: ShaderNode, w: ShaderNode, h: ShaderNode): ShaderNode {

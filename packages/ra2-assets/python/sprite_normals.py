@@ -927,5 +927,124 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
+
+
+def refine_building_faces(rgb, alpha, prob):
+    """Fuse fine and coarse isometric edge evidence; suppress isolated face labels.
+
+    Only oriented line support is used, not brightness-to-normal regression (which
+    would trivially improve a baked-light agreement score without establishing geometry).
+    """
+    import cv2
+    weight = (alpha > .5).astype(np.float32)
+    guide = cv2.bilateralFilter(luminance(rgb).astype(np.float32), 5, .08, 1.5)
+    energy = oriented_energy(guide, weight, sigma=2.5)
+    ev, ea, eb = energy['v'], energy['a'], energy['b']
+    total = ev + ea + eb + 1e-5
+    scores = np.stack([ea+eb-2*ev, ev+ea-2*eb, ev+eb-2*ea], -1) / total[..., None]
+    scores *= (3*np.clip(np.sqrt(total)/.05, 0, 1))[..., None]
+    fine = np.exp(scores-scores.max(-1, keepdims=True)); fine /= fine.sum(-1, keepdims=True)
+    fused = .8*prob + .2*fine
+    for channel in range(3):
+        fused[..., channel] = guided_filter(guide, fused[..., channel], 4, .002)
+    fused = np.clip(fused, 1e-4, None)
+    return fused/fused.sum(-1, keepdims=True)
+
+def enhanced_building_material(rgb, alpha, prob, exclude=None):
+    """Opt-in art-derived curves/slopes and crevice AO for hard-surface sprites.
+
+    Round chromatic components must pass area, circularity and ellipse-residual
+    checks before a sphere is fitted to their own pixels. Slender neutral components
+    can supply horizontal cylinder normals along either isometric ground axis.
+    No filenames, feature coordinates or asset-specific thresholds are used.
+    Existing CLI/default classification remains unchanged.
+    """
+    import cv2
+    prob = refine_building_faces(rgb, alpha, prob)
+    normal, spec, ao = building_material(rgb, alpha, prob, None)
+    mask = alpha > .5
+    valid = mask if exclude is None else mask & ~exclude
+    y = luminance(rgb)
+    # Sloped plates interpolate only in the winning wall/up plane, guided by low-frequency shading.
+    smooth = masked_blur(y, mask.astype(np.float32), 3)
+    deviation = smooth - masked_blur(smooth, mask.astype(np.float32), 10)
+    winner = prob.argmax(-1)
+    slope = valid & (winner != ROOF) & (deviation > .035) & (prob.max(-1) < .85)
+    wall = FACE_NORMALS[winner]
+    tilted = normalise(wall + np.array([0, .55, 0], np.float32))
+    normal[slope] = tilted[slope]
+    # Blue/violet translucent components, excluding exact paint/emission indices supplied by the caller.
+    cool = valid & (rgb[..., 2] - rgb[..., 0] > .025) & (rgb[..., 2] - rgb[..., 1] > .008) & (y > .28)
+    cool = cv2.morphologyEx(cool.astype(np.uint8), cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
+    cool = cv2.morphologyEx(cool, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)))
+    n, labels, stats, centers = cv2.connectedComponentsWithStats(cool)
+    curves = []; curve_families = np.zeros(mask.shape, np.uint8); yy, xx = np.indices(mask.shape)
+    for k in range(1, n):
+        x, top, w, h, area = stats[k]
+        if not (max(40, .02 * mask.sum()) <= area <= .3 * mask.sum() and .65 < w / max(h, 1) < 1.5 and area / (w*h) > .48):
+            continue
+        cx, cy = centers[k]; rx, ry = w/2, h/2
+        component = labels == k
+        u = (xx-cx)/max(rx, 1); v = -(yy-cy)/max(ry, 1)
+        disk = u*u+v*v <= 1
+        fit_iou = (disk & component).sum()/max(1, (disk | component).sum())
+        if fit_iou < .64:
+            continue
+        cam = np.stack([u, v, np.sqrt(np.clip(1-u*u-v*v, 0, 1))], -1)
+        world = normalise(to_world(normalise(cam)))
+        # The two-channel material format cannot encode downward-facing normals.
+        world[..., 1] = np.maximum(world[..., 1], .02); world = normalise(world)
+        support = component & valid
+        normal[support] = world[support]; spec[support] = SPEC_GLASS; curve_families[support] = 1
+        curves.append(dict(kind='sphere', bbox=[int(x),int(top),int(w),int(h)], fit_iou=float(fit_iou), pixels=int(support.sum())))
+    neutral = valid & ((rgb.max(-1)-rgb.min(-1)) < .12) & (y > .24) & (y < .72)
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(neutral.astype(np.uint8))
+    for k in range(1, n):
+        if not 12 <= stats[k, 4] <= .04*mask.sum():continue
+        ys, xs = np.nonzero(labels == k)
+        if len(xs)<8:continue
+        cov = np.cov(np.stack([xs,ys])); vals, vecs = np.linalg.eigh(cov)
+        if vals[1] < 7*max(vals[0],1):continue
+        axis = vecs[:,1]; target = np.array([1.,.5]) if axis.prod()>0 else np.array([-1.,.5]); target/=np.linalg.norm(target)
+        if abs(axis@target)<.94:continue
+        across=np.array([-target[1],target[0]]); q=(xx-xs.mean())*across[0]+(yy-ys.mean())*across[1]
+        radius=max(1,np.max(np.abs(q[labels==k]))); s=np.clip(q/radius,-.95,.95)
+        axis_world=np.array([1,0,0]) if target[0]>0 else np.array([0,0,1])
+        radial=normalise(np.cross(axis_world,CAM_TOWARDS)); front=normalise(CAM_TOWARDS-axis_world*(CAM_TOWARDS@axis_world))
+        curved=normalise(s[...,None]*radial+np.sqrt(1-s*s)[...,None]*front)
+        curved[...,1]=np.maximum(curved[...,1],.02);curved=normalise(curved)
+        support=(labels==k)&valid;normal[support]=curved[support];curve_families[support]=2 if target[0]>0 else 3
+        curves.append(dict(kind='horizontal_cylinder',pixels=int(support.sum())))
+    # Dark residuals at concave/detail junctions only; broad weathering is not occlusion.
+    crevice=np.clip((masked_blur(y,mask.astype(np.float32),2)-y-.025)*1.5,0,.22)
+    ao=np.clip(ao-crevice,AO_FLOOR,1)
+    return normal,spec,ao,dict(curves=curves,sloped_pixels=int(slope.sum()),curve_families=curve_families)
+
+
+def snap_normal_families(raw, curve_families):
+    """Snap an assist to up/+x/+z and wall/up slopes; allow smooth art-supported curves.
+
+    Curve labels: 0 hard surface, 1 sphere, 2 cylinder along world x,
+    3 cylinder along world z. This uses the art classifier's independent support,
+    never a hand-painted per-asset mask. Downward normals are unrepresentable in RG.
+    """
+    import cv2
+    families = list(FACE_NORMALS)
+    for wall in (FACE_NORMALS[WALL_Z], FACE_NORMALS[WALL_X]):
+        for degrees in (20, 35, 50, 65):
+            theta = math.radians(degrees)
+            families.append(wall * math.cos(theta) + np.array([0, math.sin(theta), 0]))
+    families = np.asarray(families)
+    snapped = families[(raw @ families.T).argmax(-1)]
+    smooth = normalise(cv2.GaussianBlur(raw.astype(np.float32), (0, 0), 1.2))
+    curved = (curve_families > 0) & ((raw * smooth).sum(-1) > .97)
+    smooth[..., 0] = np.where(curve_families == 2, 0, smooth[..., 0])
+    smooth[..., 2] = np.where(curve_families == 3, 0, smooth[..., 2])
+    smooth[..., 1] = np.maximum(smooth[..., 1], .02)
+    smooth = normalise(smooth)
+    snapped[curved] = smooth[curved]
+    return snapped, curved
+
+
 if __name__ == "__main__":
     raise SystemExit(main())

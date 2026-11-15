@@ -29,6 +29,7 @@ import { InstancedQuad } from '../src/instancedQuad';
 import { SpriteLayer, type SpriteInstance } from '../src/ra2/sprites';
 import { spriteLookFor } from '../src/ra2/spriteLook';
 import { waterPreset } from '../src/ra2/waterLook';
+import { paintPreset } from '../src/ra2/paintLook';
 import { EffectSpriteLayer, MESH_IDLE_SECONDS, type EffectInstance } from '../src/live/effectSprites';
 import { ENHANCED, EffectsLayer } from '../src/effects';
 import { EmitterLayer } from '../src/emitters';
@@ -212,6 +213,36 @@ function dispose(mesh: Mesh): void {
 }
 
 describe('r186 vertex and uniform binding budget', () => {
+  it('compiles building-pilot material paint and restores the identical default-off shader', () => {
+    const source = cache();
+    const colour = texture();
+    const remap = texture();
+    const materials = { texture: texture() };
+    const before = { ...paintPreset };
+    const layers: SpriteLayer[] = [];
+    try {
+      const shaders = [false, true, false].map((pilot) => {
+        paintPreset.style = pilot ? 'material' : 'classic';
+        paintPreset.buildingPilot = pilot;
+        const layer = new SpriteLayer(source, [], 1, undefined, { color: colour, remap }, null, materials);
+        layers.push(layer);
+        return assertLimits(layer.mesh).fragmentShader;
+      });
+      expect(shaders[1]).not.toBe(shaders[0]);
+      expect(shaders[2]).toBe(shaders[0]);
+    } finally {
+      Object.assign(paintPreset, before);
+      for (const layer of layers) {
+        layer.mesh.geometry.dispose();
+        layer.mesh.material.dispose();
+        for (const pass of layer.groundPasses) pass.material.dispose();
+      }
+      colour.dispose();
+      remap.dispose();
+      materials.texture.dispose();
+    }
+  });
+
   it.each([false, true])(
     'hoists one neutral cloud factor before unlit ore/gem and lit sprite branches (WebGL=%s)',
     (forceWebGL) => {

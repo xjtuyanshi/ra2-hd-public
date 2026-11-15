@@ -11,7 +11,7 @@ import { Ra2NightDressing } from './nightDressing';
 import { SpriteLayer, cardPush, isUnlitMapOverlay, objectAnchor, type SpriteInstance } from './sprites';
 import { buildingBodyUsesHouseConverter, mapObjectUsesHouseConverter } from './unlitPalette';
 import { loadSpriteMaterials } from './spriteMaterials';
-import type { SpriteMaterialAtlas } from './spriteLook';
+import { CONTACT_SHADE_MARGIN, type SpriteMaterialAtlas } from './spriteLook';
 import { objectYSort, painterObject } from './painterOrder';
 import { HIGH_BRIDGE_HEIGHT, highBridgeLight, isHighBridge } from './bridgeDepth';
 import { buildRa2Terrain } from './terrain';
@@ -268,7 +268,7 @@ export async function loadRa2World(
       });
     if (object.kind === 'building' && entry.foundation) {
       const [w, h] = entry.foundation;
-      const margin = 30;
+      const margin = CONTACT_SHADE_MARGIN;
       lookDecals.push({
         anchor,
         frame: {

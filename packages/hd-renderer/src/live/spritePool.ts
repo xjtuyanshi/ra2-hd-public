@@ -78,6 +78,7 @@ export class SpritePool {
     instance.deckHeight = !flat && !shadow ? this.deckHeight : undefined;
     instance.nativeDepth = undefined;
     instance.depthWrite = undefined;
+    instance.kind = undefined;
     return instance;
   }
 }

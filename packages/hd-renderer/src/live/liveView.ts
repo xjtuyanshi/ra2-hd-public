@@ -78,9 +78,10 @@ import { HIGH_BRIDGE_HEIGHT, isHighBridge } from '../ra2/bridgeDepth';
 import { setShadowOrigin } from '../ra2/voxelShadow';
 import { loadRa2World, type HdWorld } from '../ra2/world';
 import { waterPreset, parseWaterStyle, type WaterStyle } from '../ra2/waterLook';
+import { paintPreset, type PaintStyle } from '../ra2/paintLook';
 import { LEVEL_HEIGHT, PIXELS_PER_CELL_EDGE } from '../world';
 import { VolumetricBlastLayer, type VolumetricBlast } from '../volumetricBlasts';
-import { spriteLookFor } from '../ra2/spriteLook';
+import { CONTACT_SHADE_MARGIN, spriteLookFor } from '../ra2/spriteLook';
 import { EffectArt, type ResolvedAnim } from './effectArt';
 import {
   EffectSpriteLayer,
@@ -321,6 +322,15 @@ export interface LiveViewOptions extends VoxelUnitsOptions {
   water?: WaterStyle;
   /** Living-world presentation: true enables clouds; wind requires {wind: true}. All defaults are off. */
   alive?: AliveChange;
+  /** House paint on HD building pages (ra2/paintLook.ts): 'classic' (default) or the opt-in 'material'. */
+  paint?: PaintStyle;
+  /** Development building gate: material paint, fractional coverage and attached-layer art depth. */
+  buildingPilot?: boolean;
+  /**
+   * Opt-in: the enhanced look's soft contact shade on the ground around every building's foundation (the decal map
+   * buildings already get in world.ts), so low base buildings stand on the ground. Off by default until approved.
+   */
+  buildingContact?: boolean;
   /**
    * The engine's own field-wide ore/gem glints (ra2/cellGlints.ts, the pass HD mode skips on the native surface):
    * on by default; false leaves them out.
@@ -912,6 +922,9 @@ export class LiveView {
   private readonly spriteBatch: SpriteBatch = new Map();
   private readonly spritePool = new SpritePool();
   private readonly painterObjects: PainterObject[] = [];
+  /** LiveViewOptions.buildingContact, and the contact decal frames by foundation and draw-point offset. */
+  private buildingContact = false;
+  private readonly contactFrames = new Map<string, SpriteFrame>();
   private painterDirty = false;
   private readonly cellPool = new SpritePool();
   private readonly cellInstances: CellSprite[] = [];
@@ -1227,6 +1240,7 @@ export class LiveView {
       exists: cache.exists,
     };
     this.overlayInstances = new OverlayInstanceCache(cellTerrain);
+    this.buildingContact = options.buildingContact === true;
     if (options.oreGlints !== false) {
       const overlay = hd.emissiveOverlay;
       const layer = new GlintLayer(hd.nodes, overlay.cameraRight, overlay.cameraUp, overlay.toCamera);
@@ -1396,6 +1410,8 @@ export class LiveView {
 
   static async create(canvas: HTMLCanvasElement, options: LiveViewOptions): Promise<LiveView> {
     waterPreset.style = options.water ?? 'classic';
+    paintPreset.style = options.buildingPilot ? 'material' : (options.paint ?? 'classic');
+    paintPreset.buildingPilot = options.buildingPilot === true;
     // Only trees are static: overlays and smudges change during a match and are drawn by the view (cellLayer).
     const [world, requiredLimits] = await Promise.all([
       loadRa2World(options.mapBase, {
@@ -3139,6 +3155,42 @@ export class LiveView {
   }
 
   /**
+   * The enhanced look's contact shade around a building's foundation (sprites.ts contactShade, as world.ts adds for
+   * map buildings): a ground decal whose quad covers the foundation and one cell around it. The shader measures the
+   * foundation from the painter (its northwest cell and size), so only the quad depends on the draw point.
+   */
+  private queueContact(
+    batch: SpriteBatch,
+    anchor: Vector3,
+    foundation: readonly [number, number],
+    palette: string,
+  ): void {
+    const painter = this.spritePool.painter;
+    if (!painter?.foundation) return;
+    const [w, h] = foundation;
+    const dx = anchor.x - painter.x;
+    const dz = anchor.z - painter.z;
+    // The foundation's north corner on screen, relative to the draw point (engine px).
+    const cornerX = Math.round(-(dx - dz) * 30);
+    const cornerY = Math.round(-(dx + dz) * 15);
+    const margin = CONTACT_SHADE_MARGIN;
+    const key = `${w},${h},${cornerX},${cornerY}`;
+    let frame = this.contactFrames.get(key);
+    if (!frame)
+      this.contactFrames.set(
+        key,
+        (frame = {
+          rect: [0, 0, 30 * (w + h) + 2 * margin, 15 * (w + h) + 2 * margin],
+          offset: [cornerX - 30 * h - margin, cornerY - margin],
+        }),
+      );
+    const contact = this.spritePool.take(anchor, frame, palette, 0, false, true);
+    contact.kind = 'contact';
+    contact.painter = painter;
+    this.queue(batch, contact, true);
+  }
+
+  /**
    * A building's library art: bib, shadow, native body frame and its independently damaged animation layers;
    * while it is being built, its make anim instead. Unit-palette buildings wear their owner's colour scheme (the engine
    * remaps unit-palette buildings, e.g. civilian CAOILD shows Neutral light grey), whatever art Remapable= says.
@@ -3219,6 +3271,8 @@ export class LiveView {
       card.houseConverter = buildingBodyUsesHouseConverter(type.building?.terrainPalette, bib.palette);
       this.queue(batch, card);
     }
+    if (this.buildingContact && type.foundation)
+      this.queueContact(batch, anchor, type.foundation, this.buildingPalette(entry, visual.paletteKey));
     const layers = type.building?.layers ?? EMPTY_LAYERS;
     // The native picture changes the delivery image one logic frame after the state (BuildingVisualHistory).
     const unloading = this.buildingVisualHistory
@@ -3422,7 +3476,13 @@ export class LiveView {
         card.depthWrite = false;
       } else if (layer.key === 'UnderDoorAnim' || layer.key === 'UnderRoofDoorAnim') {
         card.nativeDepth = { mode: 'ground', bonus: 1 };
-      } else card.nativeDepth = attachedLayerDepth(nativeDepth, [dx, dy], dy * GROUND_DEPTH);
+      } else
+        card.nativeDepth = attachedLayerDepth(
+          nativeDepth,
+          [dx, dy],
+          dy * GROUND_DEPTH,
+          this.options?.buildingPilot ? layer.zAdjust : undefined,
+        );
     }
     card.indexedHousePaint = !art.remap && art.palette !== 'iso';
     // The building hands its anims its own house converter, TerrainPalette or not (ra2/unlitPalette.ts).

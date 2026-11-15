@@ -21,6 +21,13 @@ All tests prohibit `.only`. After editing boot.asm, run `pnpm run build:boot` an
 Offline sprite QA has separate Python synthetic regressions in `tests/python/test_hd_asset_qa.py`.
 They require NumPy, Pillow and pytest, but no game resources. Run `python -m pytest tests/python/test_hd_asset_qa.py`
 in the isolated environment described in [Offline sprite QA](../scripts/remaster/qa/README.md).
+Own-frame albedo preservation, context-checked transfer, conservative material regions,
+and geometry-proxy helpers have additional
+asset-free regressions. With NumPy, Pillow and OpenCV already available, run
+`python3 tests/python/test_sprite_albedo_clean.py` and
+`python3 tests/python/test_sprite_geometry_proxy.py` (unittest entry points;
+pytest can discover the same functions). They do not invoke image models or games.
+
 These tests are additional to `pnpm run check`; the actual private-cache sweep and visual/runtime review remain separate evidence.
 
 Classify by required resources, not whether filenames contain “game”:

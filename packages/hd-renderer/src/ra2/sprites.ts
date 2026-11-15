@@ -72,6 +72,7 @@ import {
   weatherGroundClearAt,
 } from '../atmosphere';
 import type { ShaderNode } from '../tsl';
+import { PAINT_MATERIAL, materialPaint, paintPreset, recolourDesignFringe } from './paintLook';
 import { sceneLitColour } from '../lighting';
 import { bindUnlitSpriteMaterial } from './unlitSprites';
 import {
@@ -516,6 +517,9 @@ interface SpriteGraphFeatures {
   hdSupersample: boolean;
   /** The HD page's house-paint saturation; below 1 it adds nodes. */
   paintSaturation: number;
+  /** HD house paint keeps the redraw's material (paintLook.ts 'material'); else the classic ramp replacement. */
+  paintMaterial: boolean;
+  buildingPilot: boolean;
   windows: boolean;
   materials: boolean;
   capture: TerrainDepth | null;
@@ -1013,11 +1017,12 @@ class SpriteGraph {
         const local: ShaderNode = objectLightAt(ground, own, building, nodes)
           .div(referenceLevel)
           .mul(exp(height.mul(-LOCAL_LIGHT_HEIGHT_FALLOFF)));
-        // The map's light, then the scene light on the night-desaturated colour (house paint keeps its colour) and local
-        // lights on the full colour.
+        // The map's light, then the scene light on the night-desaturated colour (classic house paint keeps its colour;
+        // a building's material paint is painted metal like the rest of it) and local lights on the full colour.
         const shade = (c: ShaderNode, paint: ShaderNode): ShaderNode => {
           const lit: ShaderNode = objectLit(c);
-          const base = mix(moonlit(lit, nodes), lit, paint).mul(this.light);
+          const keep: ShaderNode = features.paintMaterial ? paint.mul(float(1).sub(building)) : paint;
+          const base = mix(moonlit(lit, nodes), lit, keep).mul(this.light);
           const eventBase = shadeSurface(sceneLitColour(base, sceneMultiplier));
           return select(
             isUnlit.greaterThan(0.5),
@@ -1094,7 +1099,10 @@ class SpriteGraph {
             hdPaint = paintSum.div(taps);
           }
           const sourcePaint: ShaderNode = indexedHousePaint.mul(step(15.5, index)).mul(step(index, 31.5));
-          const paint: ShaderNode = max(hdPaint, sourcePaint);
+          // Pilot pages carry exact antialiased coverage in R. The indexed binary fallback would erase it.
+          const paint: ShaderNode = features.buildingPilot
+            ? mix(max(hdPaint, sourcePaint), hdPaint, building)
+            : max(hdPaint, sourcePaint);
           // House paint was written as grey(i) = 255 - (i - 16) * 15 in sRGB; invert it to a fractional remap index and
           // take the instance's house colours from its palette row, blending between neighbouring entries.
           const grey = pow(hdArt.g.max(0), 1 / 2.2).mul(255);
@@ -1121,7 +1129,56 @@ class SpriteGraph {
             const greyHouse = house.dot(vec3(0.2126, 0.7152, 0.0722));
             house = mix(vec3(greyHouse), house, features.paintSaturation);
           }
-          const colour = mix(hdArt.rgb, house, paint);
+          let colour: ShaderNode;
+          if (!features.paintMaterial) {
+            colour = mix(hdArt.rgb, house, paint);
+          } else {
+            // Remap steps (0 = brightest) of the paint around this texel: the texel and four bilinear taps
+            // PAINT_MATERIAL.tapOffset HD texels away (each averaging 2x2), weighted by their own mask.
+            const stepOf = (g: ShaderNode): ShaderNode =>
+              clamp(
+                float(255)
+                  .sub(pow(g.max(0), 1 / 2.2).mul(255))
+                  .div(15),
+                0,
+                15,
+              );
+            const own: ShaderNode = stepOf(hdArt.g).toVar('paintStep');
+            const reach: ShaderNode = vec2(PAINT_MATERIAL.tapOffset).div(atlasSize.mul(this.hdScale)).toVar();
+            const stepSum: ShaderNode = own.mul(hdPaint).toVar();
+            const tapPaint: ShaderNode = float(0).toVar();
+            for (const [sx, sy] of [
+              [-1, -1],
+              [1, -1],
+              [-1, 1],
+              [1, 1],
+            ] as const) {
+              const at: ShaderNode = atlasUv.add(reach.mul(vec2(sx, sy)));
+              const p: ShaderNode = texture(hdRemap, at).r.toVar();
+              stepSum.addAssign(stepOf(texture(hdColour, at).g).mul(p));
+              tapPaint.addAssign(p);
+            }
+            const weight: ShaderNode = tapPaint.add(hdPaint);
+            const detail: ShaderNode = own
+              .sub(stepSum.div(max(weight, 1e-4)))
+              .mul(step(1e-4, weight))
+              .mul(float(1).sub(indexedFallback));
+            // The owner's hue near the paint (the indexed taps' mean ramp entry) for the bake's DarkBlue fringe; only
+            // its direction is used. Only where this texel's own original 1x texel is house paint (paintLook.ts
+            // recolourDesignFringe): bluish chrome next to the paint is the original's design colour.
+            const neighbour: ShaderNode = paletteColour(floor(originalIndex));
+            const near: ShaderNode = step(15.5, index).mul(step(index, 31.5)).mul(float(1).sub(paint));
+            // Upright building cards only (body and layers); units, infantry and decals keep the classic ramp.
+            colour = mix(
+              mix(hdArt.rgb, house, paint),
+              mix(
+                recolourDesignFringe(hdArt.rgb, neighbour, near),
+                materialPaint(house, detail, remapIndex.sub(16)),
+                paint,
+              ),
+              building,
+            );
+          }
           // The upscaler saw the art over a flat background, so HD texels next to transparent ones carry a light fringe
           // of it (pale rings around the holes in foliage). Within about one original texel of any transparent texel the
           // HD colour keeps its own hue but is never brighter than the original's texel there (the palette colour of the
@@ -1545,6 +1602,8 @@ function spriteGraphFor(cache: Ra2Cache, features: SpriteGraphFeatures): SpriteG
   if (!graphs) spriteGraphs.set(cache, (graphs = new Map()));
   const key = [
     features.hd ? `hd${features.paintSaturation < 1 ? features.paintSaturation : ''}` : 'indexed',
+    features.paintMaterial ? 'paintmat' : '',
+    features.buildingPilot ? 'bldpilot' : '',
     features.hdSupersample ? 'supersample' : '',
     features.windows ? 'windows' : '',
     features.materials ? 'materials' : '',
@@ -1673,6 +1732,8 @@ export class SpriteLayer {
       hd: !!hd,
       hdSupersample: hdSupersampled(hd, hdScale),
       paintSaturation: hd ? (hd.paintSaturation ?? 1) : 1,
+      paintMaterial: !!hd && paintPreset.style === 'material',
+      buildingPilot: !!hd && paintPreset.buildingPilot,
       windows: !!windows,
       materials: !!materials,
       capture,

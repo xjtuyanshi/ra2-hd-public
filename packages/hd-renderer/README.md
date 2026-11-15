@@ -1347,6 +1347,26 @@ edge, house-index taps, the fringe limit, materials, windows, shadows, depth, oc
 the frame rectangle in indexed texels and is the same at any scale. `LiveLibrary.hdPageLooks()` reports
 `supersample` per look, and `LiveView.warmStandIns` builds those graphs (`page-hd<saturation>-ss`) before a view is shown.
 
+**House paint material (opt-in).** By default (`classic`) a paint-mask texel of an HD page is decoded from its encoded
+grey to a fractional remap index and replaced by the owner's 16-step ramp colour: only the redraw's luminance survives,
+so the paint reads as a flat, saturated sticker, and the night desaturation skips it. `LiveViewOptions.paint:
+'material'` (game `hd-paint=material`, FX bench `paint=material`; `paintPreset`, chosen before the world is built, its
+own sprite graph `paintmat`) keeps the ramp's luminance and turns the redraw's local structure into material
+(`ra2/paintLook.ts`): four bilinear taps 1.5 HD texels away give the paint neighbourhood's mean remap step; a texel
+darker than it takes a desaturated warm grime, a lighter one desaturated worn metal, the brightest encoded steps a
+neutral sheen, with a mild extra luminance contrast and the ramp at 0.86 saturation. Warm houses (Gold, Orange,
+Yellow: min(r, g) - b of the ramp colour over its maximum) keep full saturation, half the grime and wear, and darken
+their own colour instead of taking the warm-brown grime, which turned Gold olive-cream. Every building redraw was
+composed with DarkBlue and its mask is binary, so a bluish texel outside the HD mask whose own original 1x texel is a
+remap index (16..31) is turned to the owner's hue at its own luminance and chroma. Bluish texels on non-remap 1x texels
+keep their colour: Allied lavender chrome beside the paint (GAREFN's domes, GAWEAP's tower plate) is the original's
+design, not paint. Material paint takes the night desaturation like the rest of the building. Indexed pages and voxel
+paint are unchanged. `LiveViewOptions.buildingContact` (game `hd-contact=on`, bench `contact=1`) queues the enhanced
+look's contact shade decal (`contactShade`, as `world.ts` does for map buildings) around every live building's
+foundation; it shows only while the look's occlusion is on (cinematic). Both are off by default until approved. The
+contact shade fades to zero 1.3 cells out (`CONTACT_SHADE_REACH`) inside a quad of `CONTACT_SHADE_MARGIN` (60) engine px
+around the foundation, for map and live buildings alike, so its quad never shows a straight edge (it did on snow).
+
 Higher-resolution art enters a library on pages of its own (`ra2-assets/python/sprite_hd_pages.py`): the redrawn
 frames of a sprite are moved to a new indexed page (a byte-exact copy of their indexed pixels) with an HD pair at the
 new scale, and only those frames' `page`/`rect` change. The infantry shadow frames (`sprite.shadows`) stay on their
@@ -2051,3 +2071,16 @@ terrain/wall/fallback bindings, cloud/object sharing and DOM focus/storage/A/B c
 workspace types, asset-free regressions and the production build. These checks do not establish GPU numeric
 execution, real UI acceptance, 1:1 visual quality or the <=+1.0 ms budget at 3456x1926; those remain **UNVERIFIED**
 until a same-scene runtime review.
+
+### Building pilot
+
+The development-only `hd-bld=pilot` bridge query (`bld=pilot` in the FX bench)
+selects material house paint on upright buildings, uses the HD remap page's red
+channel as fractional paint coverage, and applies attached building layers' signed
+art `zAdjust` at the native depth scale. Layers without an adjustment retain the
+four-row seam guard. Door/UnderDoor depth policies retain their existing ownership.
+Units and decals keep their existing paint coverage. With the flag absent or an
+unknown value, all three paths retain Build 13 behavior; `paint=material` alone
+retains its existing behavior. Pilot assets are selected by the farm, separately
+from this flag. Geometry/albedo comparisons require real FX captures at DPR 1 and
+zoom 2.5; offline Python relights are approximations, not runtime acceptance.

@@ -822,6 +822,9 @@ sets the HD star twinkle on crystals (0 by default while the glints are drawn);
 water keeps the look colour, objects take most of the colour and all of the depth (foliage all of it), and night
 reduces the colour share.
 See "Moist final tone" in `packages/hd-renderer/README.md` for controls and unverified visual/performance scope.
+`hd-paint=material` keeps the HD redraw's material in house paint (grime, wear, sheen; night desaturation) and
+`hd-contact=on` adds a soft contact shade around building foundations, both opt-in (see "House paint material" in
+`packages/hd-renderer/README.md`);
 `hd-vlook=remaster` selects the remaster voxel look; `hd-vproj=<dir>` selects vehicle redraw projection atlases under
 the HD cache (e.g. `vehicles-hd`); `hd-rect=x,y,w,h`
 overrides the tactical rectangle (default: the frame minus YR's 168 px sidebar and 32 px command bar).
@@ -1383,3 +1386,14 @@ frame median L* falls from 66 to 43 (the owner's reference 40), lit patches are 
 the reference), clear water stays within dE 0.6 of the current look, and the night base frame goes from L* 30.5 to
 24 without turning yellow. The first tuning cost about 0.5-0.6 ms at 1920x1080 on the development Mac. Not yet seen
 live in a match on the owner's display.
+
+### Building pilot gate
+
+`hd-bld=pilot` opts into material paint, fractional HD remap R coverage and signed
+per-layer art `zAdjust` for attached building cards. Absent/unknown values preserve
+Build 13 behavior. Layers without `zAdjust` retain the four-row seam guard; door
+policies and non-building paint coverage retain their existing behavior. The FX
+bench uses `bld=pilot` for the same gate. Select the comparison farm independently;
+the flag does not install resources or change the default farm. Validate the
+powered animation, damage, house colors and night beside a vehicle at DPR 1,
+zoom 2.5 before selecting a winner. Offline relights do not establish GPU behavior.

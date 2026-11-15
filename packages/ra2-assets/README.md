@@ -2868,3 +2868,61 @@ edits, and preserved sibling JSON keys:
 ```sh
 python3 -B -m unittest discover -s packages/ra2-assets/python -p test_cache_install_receipt.py -v
 ```
+
+### Deterministic sprite cleanup and geometry proxies
+
+`python/sprite_albedo_clean.py` accepts explicit decoded original RGB and current
+straight-alpha 2x RGBA. Its JSON CLI takes `frames` entries with `original`, `hd`,
+and `output` paths, optional native-resolution `protected` mask paths, and optional
+`settings.strength`. Cleanup removes only intra-native-pixel variation: each 2x2
+RGB sum is preserved exactly after quantization. Original-scale edges and small
+contrast features are guarded. Callers must supply glass/emission protection from
+material classes and exact original indices. Alpha is copied byte for byte.
+
+The module also exposes exact-index fractional masks and anchored layer transfer.
+Transfer requires the original index and its full 3x3 context to match at the same
+anchor, plus compatible HD colours; every other texel keeps its own cleaned frame.
+Protected texels stay local. Damaged frames are cleaned from their own current art;
+they are never reconstructed from the intact body. Frame lists, palette ranges,
+body/layer relationships, mask strength and acceptance/fallback policy belong in
+the caller's configuration. Derived art stays outside Git.
+
+`python/sprite_geometry_proxy.py CONFIG OUTPUT.npz` rasterizes JSON
+`primitives` (`kind`, `center`, `size`; boxes, wedges, horizontal cylinders and
+spheres) with explicit `size`, `origin`, and `pixels_per_world` projection fields.
+It emits normals, world height, connected plane IDs, depth, coverage and approximate
+hemisphere AO, with no colour rendering. Silhouette and material coverage use pixel
+centers; inclusive rounded polygon fills can overstate small-sprite IoU. The fitter
+accepts original silhouette, optional interior edges, primitive parameter bounds
+and an absolute wall-clock deadline. The sampled AO cannot account for hidden
+occluders. Material encoding stores normal x/z and reconstructs nonnegative y;
+downward-facing curved normals cannot be represented.
+
+`python/sprite_material_regions.py` starts conservative refinement from supplied
+current material buffers. Independently detected curves and projected paint planes
+are the only edit masks. A region-level baked-shading comparison resolves ambiguous
+wall/up orientation families; callers inject the light vector and exact masks.
+Connected-plane Spearman and cross-family shading-order diagnostics include the
+current-material baseline and measured pixel coverage. Synthetic reversed geometry
+must score worse than the correctly ordered fixture. These diagnostics are affected
+by original albedo and AO, so they do not establish recovered geometry or visual
+acceptance. Full-context static seams must include preserved unmatched texels;
+measuring only copied pixels is not a complete seam gate.
+
+`sprite_normals.enhanced_building_material` and `snap_normal_families` remain opt-in
+feature proposals; the existing normal CLI default is unchanged. Snapped assists
+must still pass `load_assist`, `check_assist`, and `assist_passes`; failed source
+frames retain classifier materials. Independent owner-scale detail gates and exact
+alpha/protection audits remain necessary. Where legacy sharpening caps conflict
+with immutable protected details, retain both measurements and report the failed
+cap instead of claiming all gates pass.
+
+```bash
+python3 packages/ra2-assets/python/sprite_albedo_clean.py "$ALBEDO_CONFIG"
+python3 packages/ra2-assets/python/sprite_geometry_proxy.py "$PROXY_CONFIG" "$PROXY_BUFFERS"
+python3 tests/python/test_sprite_albedo_clean.py
+python3 tests/python/test_sprite_geometry_proxy.py
+```
+
+These synthetic tests need NumPy, Pillow and OpenCV, use unittest when run
+directly, and are also discoverable by pytest. They read no game files.

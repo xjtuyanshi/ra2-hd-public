@@ -1015,6 +1015,16 @@ describe('HD bridge look parameters', () => {
     expect(liveView.create).toHaveBeenCalledWith(harness.hdCanvas, expect.objectContaining({ nativeDetail }));
     harness.stop();
   });
+  it.each([
+    ['', false],
+    ['&hd-bld=unknown', false],
+    ['&hd-bld=pilot', true],
+  ] as const)('forwards building pilot only for the explicit bridge gate %s', async (query, buildingPilot) => {
+    const harness = setup(`?hd=1${query}`);
+    await goLive(harness);
+    expect(liveView.create.mock.calls[0]![1]).toMatchObject({ buildingPilot, paint: 'classic' });
+    harness.stop();
+  });
   it('applies the cinematic preset and vehicle options before the first snapshot push and render', async () => {
     const harness = setup('?hd=1&hd-look=cinematic&hd-vlook=remaster&hd-vproj=/vehicles-hd/');
     const view = fakeLookView();

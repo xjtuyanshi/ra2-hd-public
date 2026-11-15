@@ -113,9 +113,9 @@ export function attachedBodyDepth(
  * exceed a row step plus a column step, so a one-texel miss in any direction can no longer let the body through.
  *
  * The engine draws these anims test-only with their art ZAdjust (GAWETH_E..H: -20, other layers up to -200), so it
- * never shows its body through them either. The full ZAdjust is not used here: HD units also depth-test against the
- * layer, while the engine orders test-only units and anims by traversal, so a -200 layer would hide units standing
- * in front of the building.
+ * never shows its body through them either. The default omits full ZAdjust because HD units also depth-test against
+ * the layer, while the engine orders test-only units and anims by traversal: -200 can hide units in front. The
+ * building pilot explicitly tests the full signed art value; it requires a building/unit occlusion review.
  */
 export const ATTACHED_LAYER_FRONT_ROWS = 4;
 
@@ -124,8 +124,10 @@ export function attachedLayerDepth(
   body: NativeSpriteDepth,
   offset: readonly [number, number],
   anchorPush: number,
+  zAdjust?: number,
 ): NativeSpriteDepth {
-  return attachedBodyDepth(body, offset, anchorPush - ATTACHED_LAYER_FRONT_ROWS * GROUND_DEPTH);
+  // Negative art ZAdjust moves a layer towards the viewer. Omission preserves Build 13's seam guard.
+  return attachedBodyDepth(body, offset, anchorPush + (zAdjust ?? -ATTACHED_LAYER_FRONT_ROWS) * GROUND_DEPTH);
 }
 
 export function bodyTemplatePush(
