@@ -90,6 +90,13 @@ backup/restore behavior and local Go helper are documented in
   in that case `moviePlaying` is unknown (`null`). Picture delivery and existing
   state queries forward observed playback transitions to the page, with no
   timer-generated keys or altered playback clocks.
+- A tracked Bink handle's `BinkCopyToBuffer` calls are skipped until the handle
+  has decoded a frame (`BinkDoFrame` or `BinkGoto`; `agent/movie-copy.h`). YR
+  copies a new menu panel clip (632x570) one to three times before its first
+  decode; the empty YUV buffers became a flat green left panel (RGB565 0x04C0)
+  for 30-90 ms on every 上一页 (Back) into the single-player menu. The surface
+  keeps the picture the game drew before; `INPUT_STATE` reports
+  `undecodedMovieCopiesSkipped`.
 - Request/reply concurrency is bounded with backpressure. Pending work waits for
   room; input success follows GUI consumption of its cursor/key state before
   original callbacks that may enter a modal loop. Native reply mailbox pressure

@@ -67,6 +67,12 @@ Every integration edit in C source is marked `Native-host bridge`.
   wrappers. The wrappers delegate without tracking when the agent is not
   configured. Existing IAT teardown restores the original imports. No film
   clock, decoder, resource or game input is changed.
+- `src/hook.c`: also route `_BinkDoFrame@4`, `_BinkGoto@12` and
+  `_BinkCopyToBuffer@28` through agent wrappers. A tracked handle's copies are
+  skipped until it has decoded a frame (`agent/movie-copy.h`): YR copies a new
+  menu clip's empty YUV buffers once or more before its first decode, which
+  showed a flat green (RGB565 0x04C0) left panel for 30-90 ms. Decoding and the
+  clip's timing are unchanged.
 - `src/hook.c`: build-time isolation omits agent-added input, Bink, and hidden
   paint/focus import hooks when their component is disabled, and omits all such
   entries when building without agent objects. Default hook tables are unchanged.

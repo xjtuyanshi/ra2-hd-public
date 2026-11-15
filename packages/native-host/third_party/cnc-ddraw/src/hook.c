@@ -263,11 +263,15 @@ HOOKLIST g_hook_hooklist[] =
     },
 #if NH_ENABLE_AGENT && NH_ENABLE_INPUT
     {
-        /* Native-host bridge: observe real film lifetime without changing playback. */
+        /* Native-host bridge: observe real film lifetime without changing playback, and skip copies of a
+         * handle's frame buffer before it decoded a frame (agent/movie-copy.h). */
         "BINKW32.DLL",
         {
             { "_BinkOpen@8", (PROC)nh_movie_open, (PROC*)&nh_real_bink_open, HOOK_SKIP_2 },
             { "_BinkClose@4", (PROC)nh_movie_close, (PROC*)&nh_real_bink_close, HOOK_SKIP_2 },
+            { "_BinkDoFrame@4", (PROC)nh_movie_do_frame, (PROC*)&nh_real_bink_do_frame, HOOK_SKIP_2 },
+            { "_BinkGoto@12", (PROC)nh_movie_goto, (PROC*)&nh_real_bink_goto, HOOK_SKIP_2 },
+            { "_BinkCopyToBuffer@28", (PROC)nh_movie_copy, (PROC*)&nh_real_bink_copy, HOOK_SKIP_2 },
             { "", NULL, NULL, 0 }
         }
     },
@@ -756,6 +760,9 @@ void hook_init()
     {
         nh_real_bink_open = (nh_bink_open_proc)real_GetProcAddress(bink, "_BinkOpen@8");
         nh_real_bink_close = (nh_bink_close_proc)real_GetProcAddress(bink, "_BinkClose@4");
+        nh_real_bink_do_frame = (nh_bink_do_frame_proc)real_GetProcAddress(bink, "_BinkDoFrame@4");
+        nh_real_bink_goto = (nh_bink_goto_proc)real_GetProcAddress(bink, "_BinkGoto@12");
+        nh_real_bink_copy = (nh_bink_copy_proc)real_GetProcAddress(bink, "_BinkCopyToBuffer@28");
     }
 #endif
     if (!g_hook_active)

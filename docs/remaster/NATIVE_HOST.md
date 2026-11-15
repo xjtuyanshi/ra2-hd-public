@@ -50,6 +50,12 @@ successful opens and matching closes provide `INPUT_STATE.moviePlaying`, `movieO
 hidden-window validation as menu startup, the launcher also accepts observed successful playback with no visible
 input-owning dialog as usable input. It logs film readiness separately in Chinese and releases the page to show
 the skip control before the main menu; the existing startup timeout and ordinary menu gate remain unchanged.
+
+Native agents also wrap `BinkDoFrame`, `BinkGoto` and `BinkCopyToBuffer`: a tracked handle is not copied until it has
+decoded a frame (`agent/movie-copy.h`, `INPUT_STATE.undecodedMovieCopiesSkipped`). YR copies a new menu panel clip
+(632x570) one to three times right after `BinkOpen` and before its first decode; the empty YUV buffers became a flat
+green left panel (RGB565 0x04C0) for 30-90 ms on each 上一页 (Back) into the single-player menu (Build 13, YR 1.001,
+2026-11-14). The surface keeps the game's previous picture; decoding, clip timing and films are unchanged.
 Films completed before attachment have no page button; the retained counters measure those completed lifetimes.
 
 ### Free Wine and first-run setup
