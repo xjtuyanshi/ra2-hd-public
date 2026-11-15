@@ -2108,3 +2108,14 @@ This is a prototype, not a claim of added source texture resolution or unified d
 scene sun, sky, map light and cloud context drive the PBR material, but building paintings still contain baked
 shading. The vehicle flag does not enable the sprite or tone pilots. Review those separately. Missing live
 captures, device GPU timing or a theatre comparison must be reported as unverified.
+
+The optional `hd-veh-preset=target` is a source-palette review candidate: reduced brightness/fill,
+less palette-ramp smoothing and stronger source-derived cavities. The original tuned preset remains the default.
+The FX bench accepts the same `hd-veh=1`, preset and bounded knob parameters and exposes `__fx.vehicle`
+for frozen comparisons; its panel is disposed with the view. Sandbox captures are iteration evidence only.
+
+`hd-gpu=1` explicitly enables the existing GPU timestamp diagnostics in the development game entry and FX bench.
+Read `live.hd.stats().gpuTimestampMs` (`__hdBridge.live` in-game or `__fx.live` in the bench). Unsupported
+adapters report null. Samples include every render pass and may reflect shared-machine contention; compare
+same-scene windows and report presentation rate and logic FPS separately. The deterministic bench clock makes
+its CPU `frameMs` zero, so those values are not runtime performance measurements.

@@ -59,7 +59,7 @@ import {
   type VoxelMeshGains,
 } from './vpl';
 import { inheritSlotBinder, slotMaterial, textureSlot } from '../materialSlots';
-import { setSilhouette } from '../silhouette';
+import { objectSilhouette, setSilhouette } from '../silhouette';
 import { applyObjectTint, meshObjectTint } from '../objectTint';
 import {
   VOXEL_REFLECTION_AMBIENT,
@@ -321,7 +321,14 @@ function createGraph(
   nodes: AtmosphereNodes,
 ): { prototype: MeshStandardNodeMaterial; lookup: ShaderNode } {
   const state = voxelPbrFor(nodes);
-  const material = nodes.own(setSilhouette(new RemasterMaterial()));
+  const material = nodes.own(
+    setSilhouette(
+      new RemasterMaterial(),
+      nodes.surfaceClasses
+        ? vec2(objectSilhouette.x, floor(objectSilhouette.y.mul(256).div(8)).mul(8).add(2).div(256))
+        : objectSilhouette,
+    ),
+  );
   material.sceneMultiplier = nodes.sceneObjectMul;
   const cloud = objectCloudTone(nodes);
   material.cloudShadow = cloud.shadow;

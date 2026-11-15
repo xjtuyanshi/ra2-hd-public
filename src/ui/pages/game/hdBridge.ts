@@ -1460,6 +1460,7 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
             : {}),
           spriteIntegration: params.get('hd-sprite') === '1',
           surfaceClasses: params.get('hd-mask') === '1',
+          trackTimestamp: import.meta.env.DEV && params.get('hd-gpu') === '1',
           modernClouds: params.has('hd-tone') || params.get('hd-blend') === '1',
           ...(params.get('hd-vlook') === 'remaster' || (import.meta.env.DEV && params.get('hd-veh') === '1')
             ? { voxelLook: 'remaster' }

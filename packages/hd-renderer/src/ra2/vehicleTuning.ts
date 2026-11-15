@@ -19,6 +19,18 @@ export const VEHICLE_TUNED = {
   edgeLight: 0.04,
 };
 export const VEHICLE_DRAMATIC = { ...VEHICLE_TUNED, shadeSmooth: 0.25, aoStrength: 0.85, cavity: 0.5, specular: 0.7 };
+// Preserve palette detail while reducing the prototype's bright, flat fill. Live acceptance remains separate.
+export const VEHICLE_TARGET = {
+  ...VEHICLE_TUNED,
+  brightness: 0.85,
+  shadeSmooth: 0.25,
+  aoStrength: 0.65,
+  fill: 0.5,
+  specular: 0.4,
+  envStrength: 0.3,
+  cavity: 0.35,
+};
+const PRESETS = { tuned: VEHICLE_TUNED, dramatic: VEHICLE_DRAMATIC, target: VEHICLE_TARGET };
 type Key = keyof typeof VEHICLE_TUNED;
 export const VEHICLE_SCHEMA: readonly TuningField<Key>[] = [
   ['factoryDepth', '工厂动画层深度', 0, 1],
@@ -44,7 +56,8 @@ export const VEHICLE_SCHEMA: readonly TuningField<Key>[] = [
 
 export function parseVehicleParams(params: URLSearchParams) {
   if (params.get('hd-veh') !== '1') return null;
-  const values = { ...(params.get('hd-veh-preset') === 'dramatic' ? VEHICLE_DRAMATIC : VEHICLE_TUNED) };
+  const name = params.get('hd-veh-preset');
+  const values = { ...(name && Object.hasOwn(PRESETS, name) ? PRESETS[name as keyof typeof PRESETS] : VEHICLE_TUNED) };
   for (const field of VEHICLE_SCHEMA) {
     const raw = params.get(`hd-veh-${field.key}`);
     if (raw === null || raw.trim() === '') continue;
@@ -65,6 +78,11 @@ export function mountVehicleTuning(
   // Procedural tread bands/dust/streaks invent patterns absent from the source. Disable those for this review.
   for (const key of ['tread', 'dust', 'streaks', 'grime', 'microNoise'] as const) state[key].value = 0;
   let values = parseVehicleParams(params) ?? { ...VEHICLE_TUNED };
+  let preset: HTMLSelectElement | undefined;
+  const selectedPreset = () =>
+    Object.entries(PRESETS).find(([, recipe]) =>
+      Object.entries(recipe).every(([key, value]) => values[key as Key] === value),
+    )?.[0] ?? 'custom';
   const panel = mountTuningPanel(host, {
     schema: VEHICLE_SCHEMA,
     recommended: VEHICLE_TUNED,
@@ -80,6 +98,7 @@ export function mountVehicleTuning(
       values = next;
       for (const [key, value] of Object.entries(next))
         if (key !== 'factoryDepth') state[key as VoxelPbrKnob].value = value;
+      if (preset) preset.value = selectedPreset();
     },
     ab: (enabled) => {
       view.setVehicleRefinement(enabled);
@@ -89,21 +108,24 @@ export function mountVehicleTuning(
   // An explicit URL review takes precedence over persisted panel edits.
   if ([...params.keys()].some((key) => key.startsWith('hd-veh-'))) panel.set(parseVehicleParams(params)!);
   const root = host.querySelector('section[aria-label="高清车辆"]')!;
-  const preset = document.createElement('select');
+  preset = document.createElement('select');
   preset.setAttribute('aria-label', '车辆预设');
   for (const [value, label] of [
     ['tuned', '微调'],
     ['dramatic', '强化'],
+    ['target', '目标保真（试验）'],
+    ['custom', '自定义'],
   ] as const) {
     const option = document.createElement('option');
     option.value = value;
     option.textContent = label;
+    option.disabled = value === 'custom';
     preset.append(option);
   }
-  preset.value = params.get('hd-veh-preset') === 'dramatic' ? 'dramatic' : 'tuned';
+  preset.value = selectedPreset();
   const change = () => {
-    panel.set(preset.value === 'dramatic' ? VEHICLE_DRAMATIC : VEHICLE_TUNED);
-    preset.blur();
+    panel.set(PRESETS[preset!.value as keyof typeof PRESETS]);
+    preset!.blur();
     returnFocus();
   };
   preset.addEventListener('change', change);
@@ -111,7 +133,7 @@ export function mountVehicleTuning(
   return {
     ...panel,
     dispose() {
-      preset.removeEventListener('change', change);
+      preset!.removeEventListener('change', change);
       panel.dispose();
     },
   };

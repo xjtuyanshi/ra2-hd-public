@@ -8,7 +8,7 @@ import { VoxelUnit as VoxelRoot } from '../src/ra2/voxels';
 import { VoxelUnits } from '../src/live/voxelUnits';
 import { voxelMaterialFor } from '../src/ra2/vpl';
 import { voxelPbrMaterialFor } from '../src/ra2/voxelPbr';
-import { parseVehicleParams, VEHICLE_TUNED, VEHICLE_DRAMATIC } from '../src/ra2/vehicleTuning';
+import { parseVehicleParams, VEHICLE_TUNED, VEHICLE_DRAMATIC, VEHICLE_TARGET } from '../src/ra2/vehicleTuning';
 import { syntheticModel, syntheticSection } from './fixtures/syntheticVoxels';
 
 describe('native-resolution vehicle review', () => {
@@ -21,6 +21,9 @@ describe('native-resolution vehicle review', () => {
     expect(result?.brightness).toBe(1.5);
     expect(result?.wear).toBe(VEHICLE_TUNED.wear);
     expect(result?.fill).toBe(VEHICLE_TUNED.fill);
+    const target = parseVehicleParams(new URLSearchParams('hd-veh=1&hd-veh-preset=target&hd-veh-fill=.8'));
+    expect(target).toEqual({ ...VEHICLE_TARGET, fill: 0.8 });
+    expect(parseVehicleParams(new URLSearchParams('hd-veh=1&hd-veh-preset=unknown'))).toEqual(VEHICLE_TUNED);
   });
 
   it('restores the exact original material and preserves geometry, shadow, opacity and building turrets', () => {

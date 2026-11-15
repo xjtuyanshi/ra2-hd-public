@@ -286,6 +286,8 @@ function visibleObjectEffects(snapshot: LiveSnapshot): LiveEffects | null | unde
 }
 
 export interface LiveViewOptions extends VoxelUnitsOptions {
+  /** Opt-in GPU diagnostics; unavailable adapters keep reporting null timestamps. */
+  trackTimestamp?: boolean;
   /** Compile sprite integration once; its parameters remain uniforms. */
   spriteIntegration?: boolean;
   surfaceClasses?: boolean;
@@ -1461,6 +1463,7 @@ export class LiveView {
     const hd = new HdRenderer(canvas, state, {
       nodes: world.nodes,
       forceWebGL: options.forceWebGL ?? false,
+      trackTimestamp: options.trackTimestamp ?? false,
       requiredLimits,
     });
     await hd.init(world);
