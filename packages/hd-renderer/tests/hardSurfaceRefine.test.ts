@@ -96,15 +96,17 @@ describe('mesh silhouette and acceptance-driven refinement', () => {
     expect(centres[0][0]).toBeLessThan(primitive.c[0] + 0.45);
   });
   it('revisits radius deltas after an accepted change instead of stopping after a single sweep', () => {
-    const source = grid([2, 5, 5], ([, y, z]) => Math.hypot(y - 2, z - 2) < 1.4);
-    const model = proposeHardSurface(source, { category: 'tube', budget: 1 });
+    // Use a wheel disc: this isolates repeated radius updates from the separately tested
+    // coaxial-axis search and finishes by evaluation count even under concurrent batch load.
+    const source = grid([5, 2, 5], ([x, , z]) => Math.hypot(x - 2, z - 2) < 1.8);
+    const model = proposeHardSurface(source, { category: 'chassis', budget: 1 });
     const q = model.part.primitives[0];
-    if (q.type !== 'cyl') throw new Error('Expected tube');
-    q.r = 2.35;
-    const result = refineHardSurface(source, model, views, { maxEvaluations: 50, maxMilliseconds: 15000 });
+    if (q.type !== 'cyl') throw new Error('Expected circular disc');
+    q.r = 2.6;
+    const result = refineHardSurface(source, model, views, { maxEvaluations: 12, maxMilliseconds: 15000 });
     const after = result.part.primitives[0];
     if (after.type !== 'cyl') throw new Error('Expected tube');
-    expect(after.r).toBeLessThan(2.0);
+    expect(after.r).toBeLessThan(2.25);
     expect(result.history.filter((h) => h.accepted && h.action.startsWith('offset:')).length).toBeGreaterThanOrEqual(3);
   });
 });
