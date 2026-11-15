@@ -184,7 +184,7 @@ function hashNode(x: ShaderNode, z: ShaderNode): ShaderNode {
     .toVar();
   return float(h.bitXor(h.shiftRight(uint(16))).shiftRight(uint(8))).div(16777216);
 }
-function noiseNode(p: ShaderNode): ShaderNode {
+export function worldValueNoiseNode(p: ShaderNode): ShaderNode {
   const i: ShaderNode = floor(p).toVar(),
     f: ShaderNode = fract(p).toVar();
   const w: ShaderNode = f.mul(f).mul(float(3).sub(f.mul(2)));
@@ -200,8 +200,8 @@ export function groundPatchNode(xz: ShaderNode, p: GroundToneUniforms): ShaderNo
     s = sin(a);
   const uv = vec2(xz.x.mul(c).add(xz.y.mul(s)).div(p.stretch.max(1)), xz.y.mul(c).sub(xz.x.mul(s))).toVar();
   const n = mix(
-    noiseNode(uv.div(p.scale.max(1e-4))),
-    noiseNode(uv.div(p.detailScale.max(1e-4)).add(vec2(19.25, -7.75))),
+    worldValueNoiseNode(uv.div(p.scale.max(1e-4))),
+    worldValueNoiseNode(uv.div(p.detailScale.max(1e-4)).add(vec2(19.25, -7.75))),
     p.detailMix,
   );
   const threshold = float(0.5).add(

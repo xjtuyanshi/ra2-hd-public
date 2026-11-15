@@ -1,5 +1,8 @@
+import { float, int, texture as textureNode } from 'three/tsl';
+import type { ShaderNode } from './tsl';
 import {
   DataTexture,
+  DataArrayTexture,
   LinearFilter,
   LinearMipmapLinearFilter,
   RGBAFormat,
@@ -202,6 +205,8 @@ function repeatTexture(data: Uint8Array, size: number, mipmaps: boolean): DataTe
 }
 
 export interface WaterTextures {
+  /** Identical repeating mipmapped fields in separate layers, sharing one texture/sampler binding. */
+  layers: DataArrayTexture;
   ripple: DataTexture;
   /**
    * Like ripple, but its waves stay within about +-25 degrees of +x: long-crested chop whose crests read as strokes
@@ -254,7 +259,22 @@ export function waterTextures(): WaterTextures {
     noiseData[i * 4 + 2] = toByte(fine[i]!);
     noiseData[i * 4 + 3] = toByte(random());
   }
+  const layerBytes = new Uint8Array(rippleData.length * 4);
+  layerBytes.set(rippleData, 0);
+  layerBytes.set(chopData, rippleData.length);
+  layerBytes.set(causticData, rippleData.length * 2);
+  layerBytes.set(noiseData, rippleData.length * 3);
+  const layers = new DataArrayTexture(layerBytes, size, size, 4);
+  layers.name = 'water-procedural-layers';
+  layers.type = UnsignedByteType;
+  layers.format = RGBAFormat;
+  layers.wrapS = layers.wrapT = RepeatWrapping;
+  layers.minFilter = LinearMipmapLinearFilter;
+  layers.magFilter = LinearFilter;
+  layers.generateMipmaps = true;
+  layers.needsUpdate = true;
   shared = {
+    layers,
     ripple: repeatTexture(rippleData, size, true),
     chop: repeatTexture(chopData, size, true),
     caustics: repeatTexture(causticData, size, true),
@@ -262,6 +282,14 @@ export function waterTextures(): WaterTextures {
     noise: repeatTexture(noiseData, size, false),
   };
   return shared;
+}
+
+/** Separate array layers preserve the original bytes, UVs, repeat filtering and per-layer mip chains. */
+export function waterTextureNode(kind: 'ripple' | 'chop' | 'caustics' | 'noise', uv: ShaderNode): ShaderNode {
+  const layer = { ripple: 0, chop: 1, caustics: 2, noise: 3 }[kind];
+  const sample = textureNode(waterTextures().layers, uv).depth(int(layer));
+  // The original noise uses bilinear base-level filtering; never blend its hash channel across mips.
+  return kind === 'noise' ? sample.level(float(0)) : sample;
 }
 
 /** Candidate A: integer Fourier modes repeat over one tile; all distances below are tile fractions. */

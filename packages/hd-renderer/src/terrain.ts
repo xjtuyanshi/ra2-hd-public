@@ -7,6 +7,7 @@ import {
   Mesh,
   MeshStandardNodeMaterial,
   RedFormat,
+  type WebGPURenderer,
 } from 'three/webgpu';
 import {
   attribute,
@@ -35,6 +36,8 @@ const SUBDIVISIONS = 4;
 const CHANNEL: Partial<Record<TerrainClass, number>> = { road: 0, pavement: 1, beach: 2, water: 2, rough: 3 };
 
 export interface TerrainBuild {
+  /** Refresh owned low-frequency surface data before scene, mirror and depth draws. */
+  updateGradeMap?(renderer: WebGPURenderer): void;
   /** Optional game-owned live surface preset controller. */
   setWaterLook?(style: string): string;
   /** Release parked surface materials and their mirror targets with the view. */

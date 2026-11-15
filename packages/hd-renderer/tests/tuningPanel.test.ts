@@ -25,13 +25,13 @@ describe('generic tuning model', () => {
       },
       storage,
     );
-    model.set({ strength: 1.4, patchScale: Infinity, depth: -1, chroma: 5, softness: -1, shadeDepth: 1 });
-    expect(current.chroma).toBe(2);
+    model.set({ strength: 1.4, patchScale: Infinity, grassLight: -1, grassChroma: 5, softness: -1, shadeDepth: 1 });
+    expect(current.grassChroma).toBe(1.6);
     expect(current.softness).toBe(0.2);
     expect(current.shadeDepth).toBe(0.5);
     expect(current.strength).toBe(1.4);
     expect(current.patchScale).toBe(recommended.patchScale);
-    expect(current.depth).toBe(0);
+    expect(current.grassLight).toBe(0.7);
     model.reset();
     expect(model.get()).toEqual(recommended);
     const write = vi.fn(() => {
@@ -138,6 +138,7 @@ class ElementDouble extends EventTarget {
     if (this.parent) this.parent.children = this.parent.children.filter((x) => x !== this);
     this.parent = null;
   }
+  blur = vi.fn();
   setAttribute() {}
   closest() {
     return this.isContentEditable || ['input', 'textarea', 'select'].includes(this.tag) ? this : null;
@@ -159,8 +160,10 @@ it('owns the DOM and capture hotkey, ignores inputs, supports hide and releases 
     },
   });
   let nativeTyping = false;
+  const returnFocus = vi.fn();
   const panel = mountTuningPanel(host as unknown as HTMLElement, {
     textEntryActive: () => nativeTyping,
+    returnFocus,
     schema: LUSH2_SCHEMA,
     recommended: lush2Defaults('temperate'),
     storageKey: 'test',
@@ -170,7 +173,15 @@ it('owns the DOM and capture hotkey, ignores inputs, supports hide and releases 
   });
   expect(host.children).toHaveLength(1);
   const root = host.children[0]!;
-  expect(root.style).toMatchObject({ maxHeight: 'calc(100vh - 24px)', overflowY: 'auto', boxSizing: 'border-box' });
+  expect(root.children.at(-1)!.hidden).toBe(true);
+  expect(root.style).toMatchObject({
+    left: '12px',
+    top: '12px',
+    width: '260px',
+    maxHeight: 'calc(100vh - 24px)',
+    overflowY: 'auto',
+    boxSizing: 'border-box',
+  });
   const rows = root.children.at(-1)!.children;
   expect(rows).toHaveLength(LUSH2_SCHEMA.length);
   for (const [i, field] of LUSH2_SCHEMA.entries()) {
@@ -181,9 +192,23 @@ it('owns the DOM and capture hotkey, ignores inputs, supports hide and releases 
     input.value = String(field.max);
     input.dispatchEvent(new Event('input'));
     expect(panel.get()[field.key]).toBe(field.max);
+    for (const event of ['change', 'pointerup']) {
+      const before = returnFocus.mock.calls.length;
+      input.dispatchEvent(new Event(event));
+      expect(input.blur).toHaveBeenCalled();
+      expect(returnFocus).toHaveBeenCalledTimes(before + 1);
+      expect(input.blur.mock.invocationCallOrder.at(-1)).toBeLessThan(returnFocus.mock.invocationCallOrder.at(-1)!);
+    }
   }
   root.children[1]!.dispatchEvent(new Event('click'));
   expect(panel.get()).toEqual(lush2Defaults('temperate'));
+  for (const button of root.children.slice(1, 4)) {
+    const before = returnFocus.mock.calls.length;
+    button.dispatchEvent(new Event('click'));
+    expect(button.blur).toHaveBeenCalled();
+    expect(returnFocus).toHaveBeenCalledTimes(before + 1);
+  }
+  panel.ab(true);
 
   expect(add).toHaveBeenCalledWith('keydown', expect.any(Function), { capture: true });
   const key = (code: string, shiftKey = false, input = false) => {
@@ -271,7 +296,7 @@ it('the actual RA2 controller restores URL clouds and no-tone settings, preservi
     url,
   );
   try {
-    expect(readStorage).toHaveBeenCalledWith('hd-lush2-v2:temperate');
+    expect(readStorage).toHaveBeenCalledWith('hd-lush2-v3:temperate');
     expect(panel.get()).toEqual(lush2Defaults('temperate'));
     for (let i = 0; i < 3; i++) {
       panel.ab(false);

@@ -1,3 +1,4 @@
+import { linearCloudFactor, shadeCloudColour } from '../src/livingWorldNodes';
 import { describe, expect, it } from 'vitest';
 import { float, vec2, vec3, vec4 } from 'three/tsl';
 import {
@@ -20,6 +21,7 @@ import {
   cloudGreenness,
   cloudNeutralGradeTint,
   cloudToneMeanNode,
+  cloudToneGain,
 } from '../src/cloudTone';
 import {
   lush2Defaults,
@@ -62,22 +64,28 @@ const decode = (rgb: readonly number[]) =>
   }) as [number, number, number];
 const encode = (rgb: readonly number[]) =>
   rgb.map((v) => 255 * (v <= 0.0031308 ? v * 12.92 : 1.055 * v ** (1 / 2.4) - 0.055)) as [number, number, number];
+const snowGain = (y: number, p: ReturnType<typeof lush2Mapping>['tone']) => {
+  const lift = p.snowLift;
+  const lifted = y * lift,
+    excess = Math.max(0, lifted - p.neutralGradeLuma);
+  return p.bareDepth * lift * (1 - excess ** 2 / ((1 - p.neutralGradeLuma + excess) * Math.max(lifted, 1e-6)));
+};
 const recommended = (theater = 'temperate') => lush2Mapping(lush2Defaults(theater), theater).tone;
 
 describe('lush2 colour reference', () => {
-  it('hits reference A lit hue/value/saturation and retains chromatic green-cyan cloud shade', () => {
+  it('keeps lit grass bright with the new OKLab hue and adds a green-cyan shade shift', () => {
     const rgb = decode([157, 161, 68]),
       p = recommended();
     const lit = encode(cloudToneRgb(rgb, 0, p)),
       shade = encode(cloudToneRgb(rgb, 1, p));
-    expect(hue(lit)).toBeGreaterThanOrEqual(64);
-    expect(hue(lit)).toBeLessThanOrEqual(69);
-    expect(Math.max(...lit) / 255).toBeGreaterThanOrEqual(0.4);
-    expect(Math.max(...lit) / 255).toBeLessThanOrEqual(0.43);
-    expect(saturation(lit)).toBeGreaterThanOrEqual(0.85);
-    expect(saturation(lit)).toBeLessThanOrEqual(0.92);
+    expect(hue(lit)).toBeGreaterThanOrEqual(70);
+    expect(hue(lit)).toBeLessThanOrEqual(80);
+    expect(Math.max(...lit) / 255).toBeGreaterThanOrEqual(0.56);
+    expect(Math.max(...lit) / 255).toBeLessThanOrEqual(0.66);
+    expect(saturation(lit)).toBeGreaterThanOrEqual(0.6);
+    expect(saturation(lit)).toBeLessThanOrEqual(0.8);
     expect(hue(shade)).toBeGreaterThan(hue(lit));
-    expect(saturation(shade)).toBeGreaterThanOrEqual(0.8);
+    expect(saturation(shade)).toBeGreaterThanOrEqual(0.5);
     // Physical attenuation uses this same coverage, outside the albedo grade.
     expect(luma(cloudToneRgb(rgb, 1, p)) * (1 - lush2Defaults('temperate').shadeDepth)).toBeLessThan(
       luma(cloudToneRgb(rgb, 0, p)),
@@ -104,7 +112,7 @@ describe('lush2 colour reference', () => {
           expect(a[0] / a[1] / (grass[0] / grass[1])).toBeCloseTo(b[0] / b[1] / (stripe[0] / stripe[1]), 5);
       }
   });
-  it('does not amplify the 64x64 diagonal-stripe display-luma RMS and softens it at default detail', () => {
+  it('does not amplify diagonal-stripe display-luma RMS and supports optional detail reduction', () => {
     const grass = decode([150, 160, 60]),
       stripe = decode([190, 190, 110]);
     const source = Array.from({ length: 64 * 64 }, (_, i) =>
@@ -178,28 +186,34 @@ describe('lush2 colour reference', () => {
     }
   });
   it('keeps the graded grass mean above the display-space channel floor, including chroma extremes', () => {
-    // Linear .15*Y would make the separately requested sRGB S>=.85 impossible; this is a display-space boundary.
+    // Check the graded mean before source multiplication; a zero source channel still stays zero.
     for (const r of [0, 80, 120, 150, 180])
       for (const g of [r, r + 10, r + 30, 160])
         for (const b of [0, 20, 60, 100]) {
           const rgb = decode([r, g, b]);
           if (cloudGreenness(rgb, recommended()) < 0.99) continue;
-          for (const chroma of [0.6, 1.4, 2])
+          for (const grassChroma of [0.8, 1.08, 1.6])
             for (const shade of [0, 0.5, 1]) {
-              const out = encode(cloudToneRgb(rgb, shade, { ...recommended(), chroma }));
+              const gain = cloudToneGain(rgb, rgb, shade, { ...recommended(), grassChroma });
+              const out = encode(gain.map((v, i) => v * Math.max(rgb[i]!, 1e-6)));
+              const sourceOut = cloudToneRgb(rgb, shade, { ...recommended(), grassChroma });
+              rgb.forEach((v, i) => {
+                if (v === 0) expect(sourceOut[i]).toBe(0);
+              });
               expect(Math.min(...out)).toBeGreaterThanOrEqual(0.15 * luma(out));
             }
         }
   });
-  it('retains monotonic chroma without changing depth or object colours', () => {
+  it('retains monotonic grass chroma without changing object colours', () => {
     const rgb = decode([150, 160, 60]),
-      a = { ...recommended(), chroma: 0.6 },
-      b = { ...recommended(), chroma: 2 };
+      a = { ...recommended(), grassChroma: 0.8 },
+      b = { ...recommended(), grassChroma: 1.6 };
     for (const shade of [0, 0.5, 1]) {
       expect(saturation(encode(cloudToneRgb(rgb, shade, b)))).toBeGreaterThan(
         saturation(encode(cloudToneRgb(rgb, shade, a))),
       );
-      expect(luma(cloudToneRgb(rgb, shade, b))).toBeCloseTo(luma(cloudToneRgb(rgb, shade, a)), 12);
+      // OKLab lightness is fixed; linear luminance may change with hue/chroma.
+      expect(luma(cloudToneRgb(rgb, shade, b))).toBeGreaterThan(0.8 * luma(rgb));
       expect(cloudToneRgb(rgb, shade, a, 0, rgb, true)).toEqual(cloudToneRgb(rgb, shade, b, 0, rgb, true));
     }
   });
@@ -221,7 +235,9 @@ describe('lush2 colour reference', () => {
           expect(Math.abs(hue(display) - hue(pixel))).toBeLessThanOrEqual(2);
           expect(saturation(display) + 1e-12).toBeGreaterThanOrEqual(saturation(pixel));
           expect(luma(out)).toBeGreaterThanOrEqual(0.95 * luma(rgb));
-          expect(cloudToneRgb(rgb, shade, { ...p, chroma: 2, gold: 1, grassSunTint: [0.1, 1, 0.1] })).toEqual(out);
+          expect(cloudToneRgb(rgb, shade, { ...p, grassChroma: 1.6, gold: 1, grassSunTint: [0.1, 1, 0.1] })).toEqual(
+            out,
+          );
         }
         expect(cloudToneRgb(rgb, 1, p, 1)).not.toEqual(cloudToneRgb(rgb, 1, { ...p, moonTint: [1, 1, 1] }, 1));
       }
@@ -300,7 +316,7 @@ describe('lush2 colour reference', () => {
       cloudToneRgb(decode(rgb), 0, recommended(), 0, mean).forEach((v, i) => expect(v).toBeCloseTo(neutral[i]!, 6));
     expect(cloudGreenness([0.3, 0.3, 0.3], recommended())).toBe(0);
   });
-  it('gates the small scalar gold lift by absolute/relative source highlights and clear-lit mean grass', () => {
+  it('gates luma-normalised warm gold by relative source highlights and clear-lit mean grass', () => {
     const p = { ...recommended(), gold: 1 },
       noGold = { ...p, gold: 0 },
       mean = [0.3, 0.48, 0.15] as const;
@@ -311,44 +327,43 @@ describe('lush2 colour reference', () => {
     const a = cloudToneRgb(bright, 0, p, 0, mean),
       b = cloudToneRgb(bright, 0, noGold, 0, mean);
     expect(luma(a) / luma(b)).toBeGreaterThan(1);
-    expect(luma(a) / luma(b)).toBeLessThanOrEqual(1.03 + 1e-12);
-    expect(a[0] / a[1]).toBeCloseTo(b[0] / b[1], 12);
+    expect(luma(a) / luma(b)).toBeLessThanOrEqual(1.04 + 1e-12);
+    expect(a[0] / a[2]).toBeGreaterThan(b[0] / b[2]);
   });
-  it('neutralises cyan lit snow, adds blue only in shade and preserves grass/rock patches', () => {
+  it('grades dim lavender snow and its darker strokes with the same mean-only gain', () => {
     const p = recommended('snow');
-    for (const pixel of [
-      [195, 222, 217],
-      [230, 240, 242],
-      [255, 255, 255],
-    ] as const) {
-      const rgb = decode(pixel);
-      const lit = encode(cloudToneRgb(rgb, 0, p));
-      expect(saturation(lit)).toBeLessThan(0.05);
-      expect(luma(cloudToneRgb(rgb, 0, p)) / luma(rgb)).toBeCloseTo(p.bareDepth, 12);
-      const shade = cloudToneRgb(rgb, 1, p);
-      expect(shade[2]).toBeGreaterThan(shade[0]);
-      expect(shade[2] / shade[0]).toBeLessThan(1.23);
-      expect(cloudToneRgb(rgb, 0, { ...p, snowBlue: 0 })).toEqual(cloudToneRgb(rgb, 0, p));
-    }
-    // Every pixel above sRGB luma .45 and below HSV S .3 receives the full .85 neutralisation.
-    for (const pixel of [
-      [118, 118, 118],
-      [135, 175, 170],
-      [200, 160, 145],
-    ] as const) {
-      const rgb = decode(pixel);
-      const out = cloudToneRgb(rgb, 0, p);
-      const y = luma(rgb);
-      const expected = rgb.map((v) => (y + (v - y) * 0.15) * p.bareDepth);
-      out.forEach((v, i) => expect(v).toBeCloseTo(Math.max(0, expected[i]!), 12));
-    }
-    for (const rgb of [decode([90, 110, 45]), decode([90, 90, 90]), decode([225, 190, 100])]) {
-      for (const shade of [0, 1]) {
-        expect(cloudToneRgb(rgb, shade, p)).toEqual(cloudToneRgb(rgb, shade, { ...p, snowWhite: 0, snowBlue: 0 }));
+    expect(p.snowLift).toBe(1.12);
+    expect(p.snowWhite).toBe(0.75);
+    const mean = [0.18, 0.2, 0.27] as const;
+    const pixels = [mean, [0.08, 0.09, 0.15], [0.28, 0.3, 0.38]] as const;
+    for (const shade of [0, 0.4, 1]) {
+      const gain = cloudToneGain(mean, mean, shade, p);
+      for (const rgb of pixels) {
+        const out = cloudToneRgb(rgb, shade, p, 0, mean);
+        out.forEach((v, i) => expect(v / rgb[i]!).toBeCloseTo(gain[i]!, 12));
+        expect(out[2] / out[0]).toBeLessThan(rgb[2] / rgb[0]);
       }
     }
+    const lit = cloudToneRgb(mean, 0, p),
+      shadow = cloudToneRgb(mean, 1, p);
+    expect(lit[2]).toBeGreaterThan(lit[0]); // Retain a hint of mission colour.
+    expect(shadow[2] / shadow[0]).toBeGreaterThan(lit[2] / lit[0]);
+    expect(cloudToneRgb(mean, 0, { ...p, snowBlue: 0 })).toEqual(lit);
+    for (const rgb of [decode([90, 110, 45]), decode([225, 190, 100])])
+      expect(cloudToneRgb(rgb, 0, p)).toEqual([...rgb]);
+    // A dark neutral patch relative to its surroundings is not snow, even though its saturation is zero.
+    expect(cloudToneRgb([0.01, 0.01, 0.01], 0, p, 0, [0.01, 0.01, 0.01], false, 0, 0, mean)).toEqual([
+      0.01, 0.01, 0.01,
+    ]);
+    const ramp = [0.7, 0.8, 0.9, 1].map((y) => cloudToneRgb([y, y, y], 0, { ...p, snowLift: 1.3 }));
+    ramp.forEach((rgb) => expect(Math.max(...rgb)).toBeLessThan(1));
+    for (let i = 1; i < ramp.length; i++) expect(luma(ramp[i]!)).toBeGreaterThan(luma(ramp[i - 1]!));
+    for (const rgb of pixels)
+      expect(cloudToneRgb(rgb, 0.5, p, 0, mean, true)).toEqual(
+        cloudToneRgb(rgb, 0.5, { ...p, snow: 0 }, 0, mean, true),
+      );
   });
-  it('keeps lit snow below S .05 through the real cinematic grade, including its brightest whites', () => {
+  it('keeps a mild cool hint through the real cinematic grade, including its brightest whites', () => {
     const nodes = new AtmosphereNodes(),
       mirror = new AtmosphereNodes();
     const settings = { ...LOOK_PRESETS.cinematic.settings, debugView: 'none', cloudTone: recommended('snow') };
@@ -368,10 +383,10 @@ describe('lush2 colour reference', () => {
       expect(mirror.cloudTone.neutralGradeTint.value.toArray()).toEqual(p.neutralGradeTint);
       for (const rgb of [decode([195, 222, 217]), decode([230, 240, 242]), decode([255, 255, 255])]) {
         const out = encode(cinematicGradeRgb(cloudToneRgb(rgb, 0, p), settings));
-        expect(saturation(out)).toBeLessThan(0.05);
+        expect(saturation(out)).toBeLessThan(0.08);
         expect(Math.max(...out)).toBeGreaterThan(210);
         if (luma(rgb) <= p.neutralGradeLuma)
-          expect(luma(cloudToneRgb(rgb, 0, p)) / luma(rgb)).toBeCloseTo(p.bareDepth, 12);
+          expect(luma(cloudToneRgb(rgb, 0, p)) / luma(rgb)).toBeCloseTo(snowGain(luma(rgb), p), 12);
       }
       // Highlight headroom remains monotonic: adjacent painted whites do not collapse to a flat clipped plateau.
       const ramp = [0.7, 0.8, 0.9, 1].map((y) => luma(cloudToneRgb([y, y, y], 0, p)));
@@ -403,9 +418,12 @@ describe('lush2 colour reference', () => {
   });
   it('keeps black exactly black and stays finite/nonnegative at slider extremes', () => {
     for (const strength of [0.5, 1, 1.5])
-      for (const depth of [0, 1])
-        for (const chroma of [0.6, 2]) {
-          const p = lush2Mapping({ ...lush2Defaults('temperate'), strength, depth, chroma }, 'temperate').tone;
+      for (const grassLight of [0.7, 1.15])
+        for (const grassChroma of [0.8, 1.6]) {
+          const p = lush2Mapping(
+            { ...lush2Defaults('temperate'), strength, grassLight, grassChroma },
+            'temperate',
+          ).tone;
           expect(cloudToneRgb([0, 0, 0], 0, p, 0, [0.5, 0.8, 0.1])).toEqual([0, 0, 0]);
           for (const rgb of [
             [0.001, 0.002, 0.001],
@@ -418,16 +436,16 @@ describe('lush2 colour reference', () => {
             });
         }
   });
-  it('matches object/ground depth, adds a hue-preserving highlight shoulder and subtle low bounce, retaining moonlight', () => {
+  it('gives objects their independent floor/share, hue-preserving shoulder and subtle low bounce', () => {
     const p = recommended(),
       rgb = decode([150, 160, 60]);
-    expect(p.unitMatch).toBe(1);
-    expect(luma(cloudToneRgb(rgb, 0, p, 0, rgb, true)) / luma(rgb)).toBeCloseTo(p.depth, 12);
-    expect(luma(cloudToneRgb(rgb, 0, p)) / luma(rgb)).toBeCloseTo(p.depth, 12);
+    const multiplier = Math.max(p.objectFloor, 1 + (p.grassLight - 1) * p.objectShare);
+    expect(luma(cloudToneRgb(rgb, 0, p, 0, rgb, true)) / luma(rgb)).toBeCloseTo(multiplier, 12);
+    expect(multiplier).toBe(0.975);
     const white = [0.8, 0.75, 0.7] as const;
     const high = cloudToneRgb(white, 0, { ...p, bounce: 0 }, 0, white, true),
       plain = cloudToneRgb(white, 0, { ...p, bounce: 0, objectShoulder: 0 }, 0, white, true);
-    expect(luma(high)).toBeCloseTo((luma(white) - 0.3 * (luma(white) - 0.55)) * p.depth, 12);
+    expect(luma(high)).toBeCloseTo((luma(white) - p.objectShoulder * (luma(white) - 0.55)) * multiplier, 12);
     expect(high[0] / high[1]).toBeCloseTo(plain[0] / plain[1], 12);
     const lower = cloudToneRgb(white, 0, p, 0, white, true, 0, 0),
       upper = cloudToneRgb(white, 0, p, 0, white, true, 0, p.bounceHeight);
@@ -436,7 +454,8 @@ describe('lush2 colour reference', () => {
     const night = { ...p, objectShoulder: 0 },
       ground = cloudToneRgb(rgb, 0, night, 1),
       object = cloudToneRgb(rgb, 0, night, 1, rgb, true);
-    object.forEach((v, i) => expect(v).toBeCloseTo(ground[i]!, 12));
+    expect(luma(object)).toBeGreaterThan(p.objectFloor * luma(rgb));
+    expect(ground[2] / ground[0]).toBeGreaterThan(rgb[2] / rgb[0]);
   });
 });
 
@@ -462,13 +481,14 @@ describe('lush2 runtime policy', () => {
   });
   it('uses the requested ranges and theatre cloud depths; softer edges widen the same field', () => {
     const field = (key: string) => LUSH2_SCHEMA.find((f) => f.key === key)!;
+    expect([field('snowLift').min, field('snowLift').max]).toEqual([1, 1.3]);
     expect([field('drift').min, field('drift').max]).toEqual([0, 1]);
-    expect([field('chroma').min, field('chroma').max]).toEqual([0.6, 2]);
+    expect([field('grassChroma').min, field('grassChroma').max]).toEqual([0.8, 1.6]);
     expect([field('softness').min, field('softness').max]).toEqual([0.2, 1]);
     expect([field('patchScale').min, field('patchScale').max]).toEqual([6, 24]);
     expect([field('shadeDepth').min, field('shadeDepth').max]).toEqual([0, 0.5]);
     for (const [theater, depth] of [
-      ['temperate', 0.3],
+      ['temperate', 0.2],
       ['desert', 0.24],
       ['snow', 0.12],
       ['urban', 0.26],
@@ -514,7 +534,7 @@ describe('lush2 runtime policy', () => {
       deep = structuredClone(ALIVE_CLOUD_SHAPES.deep);
     try {
       const identities = Object.values(a.cloudTone);
-      const grass = a.cloudTone.grassShadeTint.value;
+      const grass = a.cloudTone.goldTint.value;
       const mapped = lush2Mapping({ ...lush2Defaults('snow'), patchScale: 9, shadeDepth: 0, drift: 0.1 }, 'snow');
       a.cloudTone.set(mapped.tone);
       a.alive.set(mapped.alive);
@@ -524,7 +544,7 @@ describe('lush2 runtime policy', () => {
       expect(a.alive.cloudForm.value.x).toBe(1);
       expect(a.alive.cloudStrength.value).toBe(0);
       expect(a.alive.cloudAmount.value).toBe(1);
-      expect(a.cloudTone.grassShadeTint.value).toBe(grass);
+      expect(a.cloudTone.goldTint.value).toBe(grass);
       expect(Object.values(a.cloudTone)).toEqual(identities);
       expect(b.cloudTone.strength.value).toBe(a.cloudTone.strength.value);
       expect(b.alive.cloudAmount.value).toBe(1);
@@ -565,45 +585,19 @@ describe('lush2 runtime policy', () => {
     expect(LUSH2_SCHEMA.find((f) => f.key === 'detail')).toMatchObject({ min: 0.4, max: 1.2 });
     expect(LUSH2_SCHEMA.find((f) => f.key === 'cover')).toMatchObject({ min: 0, max: 1 });
   });
-  it('terrain and object foot graphs share analytic coverage uniforms', () => {
+  it('shares one cache texture and world bounds between terrain and object feet', () => {
     const nodes = new AtmosphereNodes();
     try {
-      const { alive } = lush2Mapping(lush2Defaults('temperate'), 'temperate');
-      nodes.alive.set(alive);
-      nodes.alive.update(17, 0.6, 0, 0, false);
       const sample = vi.spyOn(nodes.alive, 'coverageAt');
       const object = objectCloudTone(nodes);
       expect(sample).toHaveBeenCalledTimes(1);
-      const collect = (node: typeof object.coverage) => {
-        const children = new Set();
-        node.traverse((child: unknown) => children.add(child));
-        return children;
-      };
-      const terrainGraph = collect(nodes.alive.coverage),
-        objectGraph = collect(object.coverage);
-      for (const uniform of [
-        nodes.alive.clock,
-        nodes.alive.windDirection,
-        nodes.alive.cloudLattice,
-        nodes.alive.cloudForm,
-        nodes.alive.coverageEnabled,
-      ]) {
-        expect(terrainGraph.has(uniform)).toBe(true);
-        expect(objectGraph.has(uniform)).toBe(true);
+      const terrainShader = fragmentShader(vec4(vec3(nodes.alive.coverage), 1));
+      const objectShader = fragmentShader(vec4(vec3(object.coverage), 1));
+      for (const code of [terrainShader, objectShader]) {
+        expect(code.match(/textureSample\(/g)).toHaveLength(1);
+        expect(code).not.toContain('aliveCloudShadow');
+        expect(code).toContain('aliveCoverageEnabled');
       }
-      for (const graph of [terrainGraph, objectGraph])
-        expect([...graph].some((n) => (n as { isTextureNode?: boolean }).isTextureNode)).toBe(false);
-      const points = Array.from({ length: 64 }, (_, i) => [(i % 8) * 3, Math.floor(i / 8) * 3]);
-      const before = points.map(([x, z]) => cloudCoverage(x!, z!, 17, 0.6, alive.speed, alive.shape));
-      nodes.alive.update(32, 0.6, 0, 0, false);
-      expect(nodes.alive.clock.value).toBeCloseTo(32 * alive.speed, 12);
-      expect(points.map(([x, z]) => cloudCoverage(x!, z!, 32, 0.6, alive.speed, alive.shape))).not.toEqual(before);
-      const p = recommended(),
-        rgb = decode([200, 200, 190]);
-      const factor = (cover: number) => 1 - cover * nodes.alive.cloudStrength.value;
-      const clear = luma(cloudToneRgb(rgb, 0, p, 0, rgb, true)) * factor(0);
-      const shadow = luma(cloudToneRgb(rgb, 1, p, 0, rgb, true)) * factor(1);
-      expect(shadow / clear).toBeCloseTo(1 - alive.shape!.darkening, 12);
     } finally {
       nodes.dispose();
     }
@@ -809,28 +803,40 @@ it('gives neighbouring sand and surf identical pre-chroma gains, independent of 
     }
   }
 });
-it('builds analytic receiver coverage without a cached texture or render pass', () => {
+it('builds cached receiver coverage with one bilinear fetch and no analytic noise', () => {
   const nodes = new AtmosphereNodes();
   try {
     const receiver = fragmentShader(vec4(vec3(nodes.alive.coverage), 1));
-    expect(receiver).toContain('aliveCloudShadow');
-    expect(receiver).not.toContain('textureSample');
+    expect(receiver).not.toContain('aliveCloudShadow');
+    expect(receiver.match(/textureSample\(/g)).toHaveLength(1);
   } finally {
     nodes.dispose();
   }
 });
 
-it('makes context dirt rich and warm without changing its lawn depth', () => {
+it('gives context dirt only the bare-light OKLab lightness change, preserving hue', () => {
   const dirt = decode([190, 140, 90]),
     grass = decode([150, 160, 60]),
     p = recommended();
   const out = cloudToneRgb(dirt, 0, p, 0, dirt, false, 0, 0, grass),
     display = encode(out);
-  expect(luma(out) / luma(dirt)).toBeCloseTo(p.depth, 12);
+  expect(luma(out) / luma(dirt)).toBeCloseTo(p.bareLight ** 3, 12);
   expect(hue(display)).toBeGreaterThan(20);
   expect(hue(display)).toBeLessThan(40);
-  expect(
-    saturation(display) /
-      saturation(encode(cloudToneRgb(dirt, 0, { ...p, contextChroma: 1 }, 0, dirt, false, 0, 0, grass))),
-  ).toBeGreaterThan(1.15);
+  expect(saturation(display)).toBeCloseTo(saturation(encode(dirt)), 2);
+});
+
+it('shares one linear conversion between object art and its physical lighting finish', () => {
+  const nodes = new AtmosphereNodes();
+  try {
+    const cloud = objectCloudTone(nodes);
+    const code = fragmentShader(
+      vec4(cloud.shade(vec3(0.2)).add(shadeCloudColour(vec3(0.4), linearCloudFactor(cloud.shadow))), 1),
+    );
+    expect(code.match(/pow\( [^\n]+2\.2/g)).toHaveLength(1);
+    expect(code).not.toContain('sRGBTransferEOTF');
+    expect(code).not.toContain('sRGBTransferOETF');
+  } finally {
+    nodes.dispose();
+  }
 });

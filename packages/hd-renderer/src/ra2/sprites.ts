@@ -1,4 +1,5 @@
-import { surfaceCloudFactor } from '../objectCloudTone';
+import { linearCloudFactor } from '../livingWorldNodes';
+import { objectCloudFactor } from '../objectCloudTone';
 import { cloudToneNode } from '../cloudTone';
 import type { TerrainDepth } from '../terrainDepth';
 import { NOT_CAPTURED_CODE } from '../objectDepth';
@@ -758,14 +759,16 @@ class SpriteGraph {
     const footCoverage = nodes.alive
       .coverageAt(mix(positionWorld.xz, aAnchor.xz, nodes.cloudTone.strength.greaterThan(0).select(1, 0)))
       .toVar('aliveCloudCoverage');
-    const footShadow = surfaceCloudFactor(nodes, footCoverage).toVar('aliveCloudFactor');
-    const shadeSurface = (colour: ShaderNode) => nodes.alive.shadeAt(colour, footShadow);
+    const footShadow = objectCloudFactor(nodes, footCoverage).toVar('aliveCloudFactor');
+    const linearFootShadow = linearCloudFactor(footShadow).toVar();
+    const shadeSurface = (colour: ShaderNode) => nodes.alive.shadeAt(colour, linearFootShadow);
     // One colour graph per material (the main pass and the enhanced look's ground passes below).
     const colourNode = (): ShaderNode =>
       Fn(() => {
         // Declare once before lit/unlit/relight siblings; a factor first used inside select's lit branch is unsafe.
         footCoverage.toStack();
         footShadow.toStack();
+        linearFootShadow.toStack();
         const texel = vec2(aRect.x.add(u.mul(aRect.z)), aRect.y.add(v.mul(aRect.w))).toVar();
         const atlasUv = texel.div(atlasSize);
         const paletteColour = (i: ShaderNode): ShaderNode =>

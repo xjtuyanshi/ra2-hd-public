@@ -153,7 +153,7 @@ function assertNeutralCloudFunction(shader: string) {
   if (!shader.includes('aliveCloudStrength')) return;
   // A shared inline Fn can initialize inside one branch and leave zero in its sibling (the black-ore regression).
   // A named function keeps the clear coverage assignment in the callee, before its enable-dependent branch.
-  const declaration = shader.match(/(?:fn|float) aliveCloudShadow\s*\([^)]*\)[^{]*\{/);
+  const declaration = shader.match(/(?:fn|float) aliveCachedCoverage\s*\([^)]*\)[^{]*\{/);
   expect(declaration, 'cloud paths must call a scope-local shader function').not.toBeNull();
   const start = declaration!.index! + declaration![0].length;
   let depth = 1,
@@ -167,10 +167,13 @@ function assertNeutralCloudFunction(shader: string) {
   const branch = body.indexOf('if (');
   expect(neutral).toBeGreaterThan(-1);
   expect(branch).toBeGreaterThan(neutral);
-  expect(body).toMatch(/if \( \( strength > 0\.0 \) \)/);
+  expect(body).toMatch(/strength > 0\.0/);
+  expect(body).toContain('cached > 0.0');
+  expect(body.match(/texture(?:Sample|Lod)?\(/g)).toHaveLength(1);
+  expect(shader).not.toContain('aliveCloudShadow');
   expect(body.trimEnd()).toMatch(/return aliveCloudNeutral;$/);
   expect(body.match(/aliveCloudNeutral = /g)).toHaveLength(2);
-  const calls = shader.match(/aliveCloudShadow\( [^\n]+aliveCoverageEnabled, [^\n]*aliveCloudForm \)/g) ?? [];
+  const calls = shader.match(/aliveCachedCoverage\( [^\n]+aliveCoverageEnabled, [^\n]* \)/g) ?? [];
   expect(calls, 'each material must evaluate the field once, shared by every optical term').toHaveLength(1);
   const colour = shader.match(/(?:fn|vec3) aliveCloudColour\s*\([^)]*\)[^{]*\{([^}]+)\}/)?.[1];
   if (colour) {
@@ -271,8 +274,7 @@ describe('r186 vertex and uniform binding budget', () => {
                 assertNeutralCloudFunction(shader);
                 // One explicit base-stack VarNode serves every branch; a real function still owns identity.
                 // Sharing must not move initialization into a sibling branch (the black-ore regression).
-                const calls =
-                  shader.match(/aliveCloudShadow\( [^\n]+aliveCoverageEnabled, [^\n]*aliveCloudForm \)/g) ?? [];
+                const calls = shader.match(/aliveCachedCoverage\( [^\n]+aliveCoverageEnabled, [^\n]* \)/g) ?? [];
                 expect(calls).toHaveLength(1);
                 const main = shader.slice(shader.search(/(?:fn|void) main\(/));
                 const assignment = main.indexOf('aliveCloudFactor = ');
@@ -280,6 +282,11 @@ describe('r186 vertex and uniform binding budget', () => {
                 // The initializer must be at main's top level, even when the first shaded path is skipped.
                 const prefix = main.slice(0, assignment);
                 expect((prefix.match(/\{/g)?.length ?? 0) - (prefix.match(/\}/g)?.length ?? 0)).toBe(1);
+                const linearAssignment = main.indexOf('aliveCloudLinearFactor = ');
+                expect(linearAssignment).toBeGreaterThan(assignment);
+                const linearPrefix = main.slice(0, linearAssignment);
+                expect((linearPrefix.match(/\{/g)?.length ?? 0) - (linearPrefix.match(/\}/g)?.length ?? 0)).toBe(1);
+                expect(shader.match(/pow\( [^\n]+2\.2/g)).toHaveLength(1);
                 expect(shader).not.toContain('aliveCloudMultiplier =');
                 expect(shader).not.toMatch(/\b(?:NaN|undefined)\b/);
               }
@@ -378,7 +385,7 @@ describe('r186 vertex and uniform binding budget', () => {
     }
   });
 
-  it('switches raw cloud debug in the same display shader without any sampled textures', () => {
+  it('switches raw cloud debug in the same display shader with the shared coverage cache', () => {
     const nodes = new AtmosphereNodes();
     const material = new MeshBasicNodeMaterial();
     material.colorNode = nodes.alive.debugView(vec4(0.2, 0.4, 0.6, 1), vec2(85, 135), float(1));
@@ -387,7 +394,7 @@ describe('r186 vertex and uniform binding budget', () => {
       const off = assertLimits(mesh);
       expect(off.fragmentShader).toContain('aliveDebugCloud');
       expect(off.fragmentShader).toContain('aliveCloudStrength');
-      expect(off.fragmentSampledTextures).toHaveLength(0);
+      expect(off.fragmentSampledTextures).toHaveLength(1);
       nodes.alive.set({ clouds: true, debugCloud: true });
       nodes.alive.update(8, 0.6, 0, 0, false);
       expect(assertLimits(mesh).fragmentShader).toBe(off.fragmentShader);
@@ -1228,7 +1235,8 @@ describe('r186 vertex and uniform binding budget', () => {
     // A physical material constructed without a living-world binding must still multiply by one, never undefined.
     const geometry = new PlaneGeometry();
     const neutralShader = assertLimits(new Mesh(geometry, plain)).fragmentShader;
-    expect(neutralShader).toMatch(/aliveCloudShade\( [^\n]+, vec3<f32>\( 1\.0(?:, 1\.0, 1\.0)? \) \)/);
+    expect(neutralShader).toMatch(/aliveCloudLinearFactor = vec3<f32>\( 1\.0(?:, 1\.0, 1\.0)? \)/);
+    expect(neutralShader).toContain('aliveCloudShade(');
     expect(neutralShader).not.toContain('aliveCloudStrength');
     const bound = plain.clone();
     bound.cloudShadow = source.nodes!.alive.shadow;

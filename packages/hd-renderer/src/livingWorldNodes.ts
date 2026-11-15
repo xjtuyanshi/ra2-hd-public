@@ -1,4 +1,4 @@
-import { Vector2, Vector4 } from 'three/webgpu';
+import { Texture, Vector2, Vector4 } from 'three/webgpu';
 import {
   Fn,
   If,
@@ -12,8 +12,7 @@ import {
   cos,
   smoothstep,
   step,
-  sRGBTransferEOTF,
-  sRGBTransferOETF,
+  texture,
   uniform,
   vec2,
   vec3,
@@ -65,7 +64,7 @@ const noise = Fn(([p]: ShaderNode[]) => {
 // Pass all state explicitly so neither the result nor renderer-local uniforms can leak across branches/renderers.
 // The shape arrives as uniforms (lattice inverses, threshold, fine weight, inverse stretch) so presets switch at run
 // time without a recompile; the soft preset evaluates the same expression as the former constants.
-const cloudShadow = Fn(([xz, clock, direction, strength, lattice, form]: ShaderNode[]) => {
+export const analyticCloudCoverage = Fn(([xz, clock, direction, strength, lattice, form]: ShaderNode[]) => {
   const result = float(0).toVar('aliveCloudNeutral');
   If(strength.greaterThan(0), () => {
     const drift = direction.mul(clock.mul(ALIVE.drift));
@@ -113,11 +112,31 @@ const latticeOf = (shape: Readonly<CloudShape>, target = new Vector4()) =>
   target.set(1 / shape.scale, 1 / shape.largeScale, shape.edgeLow, shape.edgeHigh);
 const formOf = (shape: Readonly<CloudShape>, target = new Vector2()) => target.set(shape.fineWeight, 1 / shape.stretch);
 
-/** Palette-domain attenuation: keeps the displayed shadow depth independent of the linear-light transfer curve. */
+/** Convert once beside the shared cloud factor, then reuse across all lighting terms. */
+const linearCloudFactorNode = Fn(([factor]: ShaderNode[]) => {
+  const result = vec3(1).toVar('aliveCloudLinearFactor');
+  If(factor.x.notEqual(1).or(factor.y.notEqual(1)).or(factor.z.notEqual(1)), () => {
+    result.assign(factor.pow(2.2));
+  });
+  return result;
+});
+
+// A factor can feed both an emissive art term and a physical lighting finish. Share its conversion as well.
+const linearFactors = new WeakMap<ShaderNode, ShaderNode>();
+export function linearCloudFactor(factor: ShaderNode): ShaderNode {
+  let linear = linearFactors.get(factor);
+  if (!linear) {
+    linear = linearCloudFactorNode(factor).toVar();
+    linearFactors.set(factor, linear);
+  }
+  return linear;
+}
+
+/** Power-law palette attenuation. The input factor is already linear, including its exact off identity. */
 export const shadeCloudColour = Fn(([source, factor]: ShaderNode[]) => {
   const result = source.toVar('aliveCloudLit');
   If(factor.x.notEqual(1).or(factor.y.notEqual(1)).or(factor.z.notEqual(1)), () => {
-    result.assign(sRGBTransferEOTF((sRGBTransferOETF(source.max(0)) as ShaderNode).mul(factor)));
+    result.assign(source.mul(factor));
   });
   return result;
 }).setLayout({
@@ -145,12 +164,38 @@ export class LivingWorldNodes {
   /** Preset water shares of the land shadow: body/seabed and sky reflection (glints always take all of it). */
   readonly waterBody = uniform(ALIVE_CLOUD_SHAPES.soft.waterBodyWeight).setName('aliveWaterBody');
   readonly waterSky = uniform(ALIVE_CLOUD_SHAPES.soft.waterSkyWeight).setName('aliveWaterSky');
+  /** A renderer binds its owned world-space target before the first scene draw. */
+  private readonly emptyCoverage = new Texture();
+  readonly coverageTexture = texture(this.emptyCoverage);
+  readonly coverageBounds = uniform(new Vector4(0, 0, 1, 1));
+  readonly coverageCached = uniform(0);
+  readonly analyticCoverageAt = (xz: ShaderNode): ShaderNode =>
+    analyticCloudCoverage(xz, this.clock, this.windDirection, this.coverageEnabled, this.cloudLattice, this.cloudForm);
+  private readonly cachedCoverage = Fn(([xz, strength, bounds, cached]: ShaderNode[]) => {
+    const result = float(0).toVar('aliveCloudNeutral');
+    If(strength.greaterThan(0).and(cached.greaterThan(0)), () => {
+      result.assign(this.coverageTexture.sample(xz.sub(bounds.xy).div(bounds.zw)).r);
+    });
+    return result;
+  }).setLayout({
+    name: 'aliveCachedCoverage',
+    type: 'float',
+    inputs: [
+      { name: 'xz', type: 'vec2' },
+      { name: 'strength', type: 'float' },
+      { name: 'bounds', type: 'vec4' },
+      { name: 'cached', type: 'float' },
+    ],
+  });
   readonly coverageAt = (xz: ShaderNode): ShaderNode =>
-    cloudShadow(xz, this.clock, this.windDirection, this.coverageEnabled, this.cloudLattice, this.cloudForm);
+    this.cachedCoverage(xz, this.coverageEnabled, this.coverageBounds, this.coverageCached);
   /** Raw coverage before darkening/strength; one shared VarNode per material. */
   readonly coverage: ShaderNode = this.coverageAt(positionWorld.xz).toVar('aliveCloudCoverage');
   readonly shadowAt = (xz: ShaderNode): ShaderNode => float(1).sub(this.coverageAt(xz).mul(this.cloudStrength));
   readonly shadow: ShaderNode = this.colourFromCoverage(this.coverage).toVar('aliveCloudFactor');
+
+  readonly linearShadow = linearCloudFactor(this.shadow).toVar('aliveLinearShadow');
+  private readonly weightedLinearShadows = new Map<ShaderNode | number, ShaderNode>();
 
   colourFromCoverage(coverage: ShaderNode): ShaderNode {
     return cloudColour(float(1).sub(coverage.mul(this.cloudStrength)), this.cloudDarkening.max(1e-6));
@@ -206,7 +251,7 @@ export class LivingWorldNodes {
 
   /** The same field and palette attenuation for direct light, painted fill and reflected scene light. */
   shade(colour: ShaderNode): ShaderNode {
-    return shadeCloudColour(colour, this.shadow);
+    return shadeCloudColour(colour, this.linearShadow);
   }
 
   /** Weight both darkening and cool tint; clear/off remains exactly one, including on water. */
@@ -215,7 +260,16 @@ export class LivingWorldNodes {
   }
 
   shadeWith(colour: ShaderNode, weight: ShaderNode | number): ShaderNode {
-    return shadeCloudColour(colour, this.shadowWith(weight));
+    let factor = this.weightedLinearShadows.get(weight);
+    if (!factor) {
+      factor = linearCloudFactor(this.shadowWith(weight)).toVar();
+      this.weightedLinearShadows.set(weight, factor);
+    }
+    return shadeCloudColour(colour, factor);
+  }
+
+  dispose(): void {
+    this.emptyCoverage.dispose();
   }
 
   /** Raw encoded grey in the existing display pass; bypass scene grade/exposure without a new target. */

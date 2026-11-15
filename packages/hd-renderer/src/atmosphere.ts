@@ -109,6 +109,7 @@ export class AtmosphereNodes extends SceneLightingUniforms {
     this.disposed = true;
     for (const resource of this.resources) resource.dispose();
     this.resources.clear();
+    this.alive.dispose();
     this.black.dispose();
     this.noSurface.dispose();
   }

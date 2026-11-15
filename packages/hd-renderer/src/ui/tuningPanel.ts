@@ -15,6 +15,8 @@ export interface TuningOptions<K extends string> {
   names?: readonly [string, string];
   /** Host-provided native text-entry state, when observable. */
   textEntryActive?(): boolean;
+  /** Return keyboard ownership to the host after a completed control action. */
+  returnFocus?(): void;
 }
 /** Storage is optional, including environments where merely accessing localStorage throws. */
 export function tuningModel<K extends string>(
@@ -68,9 +70,9 @@ export function mountTuningPanel<K extends string>(host: HTMLElement, options: T
   Object.assign(root.style, {
     position: 'absolute',
     top: '12px',
-    right: '12px',
+    left: '12px',
     zIndex: '10000',
-    width: '300px',
+    width: '260px',
     maxHeight: 'calc(100vh - 24px)',
     overflowY: 'auto',
     boxSizing: 'border-box',
@@ -90,9 +92,14 @@ export function mountTuningPanel<K extends string>(host: HTMLElement, options: T
   const state = document.createElement('strong');
   state.style.cssText = 'display:block;font-size:25px;margin-bottom:8px';
   const body = document.createElement('div');
+  body.hidden = true;
+  const release = (control: HTMLElement) => {
+    control.blur();
+    options.returnFocus?.();
+  };
   const inputs = new Map<K, { input: HTMLInputElement; output: HTMLOutputElement }>();
   const refresh = () => {
-    state.textContent = (options.names ?? ['润v2', '当前'])[model.isNew() ? 0 : 1];
+    state.textContent = (options.names ?? ['润r3', '当前'])[model.isNew() ? 0 : 1];
     const values = model.get();
     for (const [key, { input, output }] of inputs) {
       input.value = String(values[key]);
@@ -107,6 +114,7 @@ export function mountTuningPanel<K extends string>(host: HTMLElement, options: T
     listen(b, 'click', () => {
       action();
       refresh();
+      release(b);
     });
     return b;
   };
@@ -135,6 +143,8 @@ export function mountTuningPanel<K extends string>(host: HTMLElement, options: T
       model.set({ [field.key]: Number(input.value) } as Partial<Record<K, number>>);
       refresh();
     });
+    listen(input, 'change', () => release(input));
+    listen(input, 'pointerup', () => release(input));
     inputs.set(field.key, { input, output });
     row.append(output, input);
     body.append(row);

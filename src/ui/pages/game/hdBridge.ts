@@ -1460,6 +1460,7 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
             view.hd,
             view.theater,
             parseAliveParams(params, 'hd-alive'),
+            () => host.screen.focus({ preventScroll: true }),
           );
           // Input was installed before this async view. Reserve by physical code at its forwarding entry,
           // rather than relying on registration order among window capture listeners.

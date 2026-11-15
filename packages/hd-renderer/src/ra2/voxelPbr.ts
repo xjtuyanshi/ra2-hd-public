@@ -461,6 +461,7 @@ function createGraph(
   material.colorNode = Fn(() => {
     cloud.coverage.toStack();
     cloud.shadow.toStack();
+    cloud.linearShadow.toStack();
     return mix(moonlit(lit, nodes), lit, house);
   })();
   // Ground light fades with the model's height above the ground (vpl.ts meshLocalLight).

@@ -100,7 +100,9 @@ function fragmentBindings(geometry: Mesh['geometry'], material: Material): { tex
   };
 }
 
+const isGradeMap = (texture: Texture) => texture.name.startsWith('CloudToneMap.');
 const isMirror = (texture: Texture) =>
+  !isGradeMap(texture) &&
   !!(
     (texture as { isRenderTargetTexture?: boolean }).isRenderTargetTexture ||
     (texture as { isDepthTexture?: boolean }).isDepthTexture
@@ -272,7 +274,7 @@ describe('terrain material texture budget', () => {
       return `${textures.length}/${samplers}`;
     });
     expect(new Set(counts).size).toBe(1);
-    // The original-water tile atlas uses the final available slot on fully dressed bed maps.
+    // The original-water tile atlas and grade targets use the final available slots on fully dressed bed maps.
     // Keep the hardware limit unchanged; any additional sampled layer now needs an extraction or fallback.
     expect(Number(counts[0]!.split('/')[0])).toBeLessThanOrEqual(MAX_SAMPLED_TEXTURES);
   });
@@ -329,7 +331,9 @@ describe('terrain material texture budget', () => {
     expect(second[0]).toEqual({ from: noMirrors, to: plain });
     const plainTextures = fragmentBindings(build.mesh.geometry, plain).textures;
     expect(plainTextures).toContain((build.mesh.userData.fixture as { art: Texture }).art);
-    expect(plainTextures.length).toBeLessThanOrEqual(3);
+    // The original three art/light inputs plus the shared grade atlas and cloud cache.
+    expect(plainTextures.filter(isGradeMap)).toHaveLength(1);
+    expect(plainTextures.length).toBeLessThanOrEqual(5);
 
     // Nothing lighter exists: a third refusal changes nothing (and does not throw or loop).
     expect(

@@ -30,6 +30,9 @@ vi.mock('../../packages/hd-renderer/src/HdRenderer', () => ({
   applyLookPreset: hdRenderer.applyLookPreset,
 }));
 
+const lushTuning = vi.hoisted(() => ({ mount: vi.fn() }));
+vi.mock('../../packages/hd-renderer/src/ra2/lush2Tuning', () => ({ mountLush2Tuning: lushTuning.mount }));
+
 const hdUi = vi.hoisted(() => ({ start: vi.fn() }));
 vi.mock('../../src/ui/pages/game/hdUi', () => ({ startHdUi: hdUi.start }));
 // The stall recorder listens to the document and posts to the development server: a stub records its wiring.
@@ -207,6 +210,7 @@ function setup(
   vi.spyOn(performance, 'now').mockImplementation(() => clock);
   vi.spyOn(console, 'info').mockImplementation(() => undefined);
   const screen = {
+    focus: vi.fn(),
     style: { position: 'static', zIndex: '' },
     parentElement: { insertBefore: vi.fn() },
     clientWidth: 800,
@@ -1040,6 +1044,20 @@ describe('HD bridge look parameters', () => {
     expect(view.hd.applySettings.mock.invocationCallOrder[0]).toBeLessThan(view.push.mock.invocationCallOrder[0]!);
     expect(view.hd.applySettings.mock.invocationCallOrder[0]).toBeLessThan(view.render.mock.invocationCallOrder[0]!);
     harness.stop();
+  });
+
+  it('returns tuning focus to the game input canvas and releases the panel with the view', async () => {
+    const dispose = vi.fn();
+    lushTuning.mount.mockReturnValueOnce({ dispose });
+    const harness = setup('?hd=1&hd-tune=1');
+    const view = fakeLookView();
+    await goLive(harness, view);
+    expect(lushTuning.mount).toHaveBeenCalledTimes(1);
+    const returnFocus = lushTuning.mount.mock.calls[0]![4] as () => void;
+    returnFocus();
+    expect(harness.screen.focus).toHaveBeenCalledExactlyOnceWith({ preventScroll: true });
+    harness.stop();
+    expect(dispose).toHaveBeenCalledTimes(1);
   });
 
   it('applies hd-tone=lush through the lazy tone path before the first snapshot', async () => {

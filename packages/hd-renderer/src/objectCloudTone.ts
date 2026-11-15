@@ -1,4 +1,5 @@
 import { mix, positionWorld, vec3, float } from 'three/tsl';
+import { linearCloudFactor } from './livingWorldNodes';
 import { cloudToneNode } from './cloudTone';
 import { objectGroundAnchor } from './objectGroundAnchor';
 import type { AtmosphereNodes } from './atmosphere';
@@ -11,16 +12,26 @@ export function surfaceCloudFactor(nodes: AtmosphereNodes, coverage: ShaderNode)
   return nodes.cloudTone.strength.greaterThan(0).select(mix(neutral, colour, nodes.cloudTone.cloudTintShare), colour);
 }
 
+/** Objects retain paint brightness and borrow only their configured share of ground cloud attenuation. */
+export function objectCloudFactor(nodes: AtmosphereNodes, coverage: ShaderNode): ShaderNode {
+  const ground = surfaceCloudFactor(nodes, coverage);
+  return nodes.cloudTone.strength
+    .greaterThan(0)
+    .select(mix(vec3(1), ground, nodes.cloudTone.objectShare).max(nodes.cloudTone.objectFloor), ground);
+}
+
 /** Reuses one foot coverage and factor across all lighting terms of a material. Legacy sampling stays unchanged. */
 export function objectCloudTone(nodes: AtmosphereNodes) {
   const coverage = nodes.alive
     .coverageAt(mix(positionWorld.xz, objectGroundAnchor.xz, nodes.cloudTone.strength.greaterThan(0).select(1, 0)))
     .toVar('aliveCloudCoverage');
-  const shadow = surfaceCloudFactor(nodes, coverage).toVar('aliveCloudFactor');
+  const shadow = objectCloudFactor(nodes, coverage).toVar('aliveCloudFactor');
+  const linearShadow = linearCloudFactor(shadow).toVar();
   return {
     coverage,
     shadow,
-    shade: (colour: ShaderNode) => nodes.alive.shadeAt(colour, shadow),
+    linearShadow,
+    shade: (colour: ShaderNode) => nodes.alive.shadeAt(colour, linearShadow),
     grade: (colour: ShaderNode) =>
       cloudToneNode(
         colour,

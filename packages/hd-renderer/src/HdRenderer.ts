@@ -1,3 +1,4 @@
+import { CloudCoverageMap } from './cloudCoverageMap';
 import type { CloudToneParams } from './cloudTone';
 import type { GroundToneParams } from './groundTone';
 import {
@@ -909,6 +910,7 @@ export class HdRenderer {
   /** Present when drawing an original map; null for the procedural sandbox. */
   private world: HdWorld | null = null;
   private waterY = 0;
+  private cloudCoverageMap?: CloudCoverageMap;
   private bounds = { width: 0, height: 0 };
   private readonly seenEvents = new Set<number>();
   private state: RenderState;
@@ -1055,6 +1057,12 @@ export class HdRenderer {
       waterY = map.waterLevel * LEVEL_HEIGHT;
       this.scene.add(this.objects.root);
       this.view.target.set(map.width / 2, 0, map.height / 2);
+    }
+    this.cloudCoverageMap = new CloudCoverageMap(this.bounds.width, this.bounds.height, this.nodes.alive);
+    if (this.layerNodes !== this.nodes) {
+      this.layerNodes.alive.coverageTexture.value = this.cloudCoverageMap.target.texture;
+      this.layerNodes.alive.coverageBounds.value.copy(this.nodes.alive.coverageBounds.value);
+      this.layerNodes.alive.coverageCached.value = 1;
     }
     this.waterY = waterY ?? -1000;
     // Voxel units stand on (and tilt with) the ground or the water surface under them, and their flattened shadows
@@ -2108,6 +2116,8 @@ export class HdRenderer {
   }
 
   private renderPipeline(): void {
+    this.cloudCoverageMap?.update(this.renderer);
+    this.terrain.updateGradeMap?.(this.renderer);
     this.terrainDepth.setReference(this.view.camera, this.view.target);
     this.beforeDepthCapture?.();
     this.terrainDepth.render(this.renderer, this.scene, this.view.camera);
@@ -2390,6 +2400,7 @@ export class HdRenderer {
     this.beforeDepthCapture = undefined;
     this.terrainDepth.dispose();
     this.terrain?.disposeWaterLooks?.();
+    this.cloudCoverageMap?.dispose();
     if (this.nodes !== DEFAULT_ATMOSPHERE_NODES) this.nodes.dispose();
     if (this.layerNodes !== this.nodes && this.layerNodes !== DEFAULT_ATMOSPHERE_NODES) this.layerNodes.dispose();
     this.renderer.dispose();

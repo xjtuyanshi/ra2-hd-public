@@ -590,6 +590,7 @@ function createGraph(
     // Hoist before emissive/palette siblings and the physical lighting finish; all share this one foot sample.
     cloud.coverage.toStack();
     cloud.shadow.toStack();
+    cloud.linearShadow.toStack();
     return raw.mul(voxelSunDiffuse).mul(ao).mul(live).mul(uncovered);
   })();
   material.roughnessNode = matp.x;

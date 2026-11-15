@@ -1,7 +1,9 @@
+import { uvPositionTexture } from '../uvPositions';
 import { LUSH2_SHORE, LUSH2_MEAN } from './lush2Tone';
 import { surfaceCloudFactor } from '../objectCloudTone';
-import { cloudToneNode, cloudToneMeanNode } from '../cloudTone';
-import { groundToneNode, groundToneShareNode } from '../groundTone';
+import { cloudToneNode } from '../cloudTone';
+import { CloudToneMap } from '../cloudToneMap';
+import { groundToneNode, groundToneShareNode, worldValueNoiseNode } from '../groundTone';
 import {
   createWaterTuning,
   writeWaterTuning,
@@ -410,6 +412,36 @@ export function buildRa2Terrain(cache: Ra2Cache): Ra2TerrainBuild {
   heightTexture.magFilter = LinearFilter;
   heightTexture.needsUpdate = true;
 
+  // The composite is unlit art. Snow gains must see the same mission light as the surface they will multiply.
+  // Rasterize the existing projection once instead of guessing a world position from a height-shifted image UV.
+  const meanCoordinates =
+    cache.terrainMap && cache.manifest.theater === 'snow'
+      ? uvPositionTexture(
+          geometry,
+          'atlasUv',
+          Math.ceil(cache.terrainMap.ref.width / (LUSH2_MEAN.blockWidth * cache.terrainMap.ref.scale)),
+          Math.ceil(cache.terrainMap.ref.height / (LUSH2_MEAN.blockWidth * cache.terrainMap.ref.scale)),
+          [0, 1, 0],
+        )
+      : null;
+  const toneMap = cache.terrainMap
+    ? new CloudToneMap({
+        texture: cache.terrainMap.texture,
+        width: cache.terrainMap.ref.width,
+        height: cache.terrainMap.ref.height,
+        blockWidth: LUSH2_MEAN.blockWidth * cache.terrainMap.ref.scale,
+        contextWidth: LUSH2_MEAN.contextWidth * cache.terrainMap.ref.scale,
+        uniforms: (cache.nodes ?? DEFAULT_ATMOSPHERE_NODES).cloudTone,
+        night: (cache.nodes ?? DEFAULT_ATMOSPHERE_NODES).night,
+        transformMean: meanCoordinates
+          ? (mean, at) => {
+              const world = texture(meanCoordinates, at).xz;
+              return srgbScale(mean, terrainGradeAt(cache.mapLight, world));
+            }
+          : undefined,
+        sourceVersion: meanCoordinates ? () => cache.mapLight?.texture.version ?? 0 : undefined,
+      })
+    : null;
   const wetness = uniform(0);
   const water = createWaterUniforms();
   const tuning = createWaterTuning(waterPreset.style);
@@ -420,7 +452,9 @@ export function buildRa2Terrain(cache: Ra2Cache): Ra2TerrainBuild {
       const previous = waterPreset.style;
       waterPreset.style = style;
       try {
-        return withWaterTuning(tuning, () => createMaterials(cache, wetness, water, waterLevels, { mirrors, tuning }));
+        return withWaterTuning(tuning, () =>
+          createMaterials(cache, wetness, water, waterLevels, { mirrors, tuning, toneMap }),
+        );
       } finally {
         waterPreset.style = previous;
       }
@@ -430,12 +464,21 @@ export function buildRa2Terrain(cache: Ra2Cache): Ra2TerrainBuild {
     setMaterialFallback(family.ground, () => {
       const simpler = construct(false);
       simpler.wall.dispose();
-      setMaterialFallback(simpler.ground, () => createPlainGround(cache));
+      setMaterialFallback(simpler.ground, () => createPlainGround(cache, toneMap));
       return simpler.ground;
     });
     return family;
   };
-  let materials = makeMaterials(waterPreset.style);
+  let materials: ReturnType<typeof makeMaterials>;
+  try {
+    materials = makeMaterials(waterPreset.style);
+  } catch (error) {
+    toneMap?.dispose();
+    meanCoordinates?.dispose();
+    geometry.dispose();
+    heightTexture.dispose();
+    throw error;
+  }
   let activeStyle = waterPreset.style;
   (cache.nodes ?? DEFAULT_ATMOSPHERE_NODES).clearWater.value = activeStyle === 'clear' ? 1 : 0;
   const familyKey = (style: WaterStyle) => (style === 'classic' || style === 'clear' ? style : 'enhanced');
@@ -489,7 +532,12 @@ export function buildRa2Terrain(cache: Ra2Cache): Ra2TerrainBuild {
     get mirrorAtlas() {
       return materials.mirrorAtlas;
     },
+    updateGradeMap(renderer) {
+      toneMap?.update(renderer);
+    },
     disposeWaterLooks() {
+      toneMap?.dispose();
+      meanCoordinates?.dispose();
       const seen = new Set<ShaderNode>();
       const mirrors = new Set<ReflectorNode>();
       const visit = (node: ShaderNode) => {
@@ -909,13 +957,59 @@ function terrainArtSampler(cache: Ra2Cache) {
   return { colourMap, halfTexel, sample };
 }
 
+/** All mapped art, including snow patterns, shares the same smooth gain field. */
+function mappedArtGrade(
+  source: ShaderNode,
+  map: CloudToneMap,
+  uv: ShaderNode,
+  nodes: AtmosphereNodes,
+  wet: ShaderNode = float(0),
+): ShaderNode {
+  return Fn(() => {
+    const result = source.toVar(),
+      shade = nodes.alive.gradeCoverage(nodes.alive.coverage);
+    If(nodes.cloudTone.strength.greaterThan(0), () => {
+      result.assign(map.grade(source, uv, shade, nodes.night, wet));
+    });
+    return result;
+  })();
+}
+
+/** Only near-shore land pays for irregular wet-strip noise; water optics keep their original distance. */
+function lushShoreMask(distance: ShaderNode, nodes: AtmosphereNodes): ShaderNode {
+  return Fn(() => {
+    const result = float(0).toVar();
+    If(
+      nodes.cloudTone.strength
+        .greaterThan(0)
+        .and(nodes.cloudTone.wet.greaterThan(0))
+        .and(nodes.cloudTone.snow.lessThanEqual(0))
+        .and(distance.abs().lessThan(LUSH2_SHORE.width + LUSH2_SHORE.noiseAmplitude)),
+      () => {
+        const offset = worldValueNoiseNode(positionWorld.xz.div(LUSH2_SHORE.noiseScale))
+          .mul(2)
+          .sub(1)
+          .mul(LUSH2_SHORE.noiseAmplitude);
+        result.assign(smoothstep(-LUSH2_SHORE.width, 0, distance.add(offset)));
+      },
+    );
+    return result;
+  })();
+}
+
 /**
  * Painted art under the scene's light and nothing else: dry, matt, with the local lights (map light sources, lamps,
  * fires, explosions) from the light field as diffuse irradiance. Cliff walls, and the ground's last stand-in.
  */
-function plainArtMaterial(colour: ShaderNode, nodes: AtmosphereNodes): ArtMaterial {
+function plainArtMaterial(
+  colour: ShaderNode,
+  nodes: AtmosphereNodes,
+  grade?: (colour: ShaderNode) => ShaderNode,
+): ArtMaterial {
   colour = groundToneNode(colour, positionWorld.xz, nodes.groundTone, nodes.night);
-  colour = cloudToneNode(colour, colour, nodes.alive.gradeCoverage(nodes.alive.coverage), nodes.cloudTone, nodes.night);
+  colour = grade
+    ? grade(colour)
+    : cloudToneNode(colour, colour, nodes.alive.gradeCoverage(nodes.alive.coverage), nodes.cloudTone, nodes.night);
   const material = new ArtMaterial();
   material.sceneMultiplier = nodes.sceneTerrainMul;
   material.cloudShadow = surfaceCloudFactor(nodes, nodes.alive.coverage);
@@ -951,15 +1045,16 @@ function grassArt(colour: ShaderNode, raw: ShaderNode, nodes: AtmosphereNodes): 
 
 /**
  * The ground as the map paints it, without wetness, water shading or reflections: what is drawn when the GPU refuses
- * even the ground without mirrors (see materialFallback.ts). Three sampled textures at most.
+ * even the ground without mirrors (see materialFallback.ts). Three art/light inputs plus the grade atlas and cloud cache when a composite exists.
  */
-function createPlainGround(cache: Ra2Cache): MeshStandardNodeMaterial {
+function createPlainGround(cache: Ra2Cache, toneMap: CloudToneMap | null): MeshStandardNodeMaterial {
   const { sample } = terrainArtSampler(cache);
-  const raw = sample('atlasUv', 'atlasRect').colour;
+  const { colour: raw, uv } = sample('atlasUv', 'atlasRect');
   const nodes = cache.nodes ?? DEFAULT_ATMOSPHERE_NODES;
   return plainArtMaterial(
     grassArt(srgbScale(raw.rgb, terrainGradeAt(cache.mapLight, positionWorld.xz)), raw.rgb, nodes),
     nodes,
+    toneMap ? (colour) => mappedArtGrade(colour, toneMap, uv, nodes) : undefined,
   );
 }
 
@@ -974,7 +1069,11 @@ function createMaterials(
   waterLevels: readonly WaterLevel[],
   // mirrors: false builds the same ground without mirrored reflections (the water reflects sky only): the first
   // stand-in when the GPU refuses the full material, two sampled textures lighter.
-  { mirrors = true, tuning = createWaterTuning(waterPreset.style) }: { mirrors?: boolean; tuning?: WaterTuning } = {},
+  {
+    mirrors = true,
+    tuning = createWaterTuning(waterPreset.style),
+    toneMap = null,
+  }: { mirrors?: boolean; tuning?: WaterTuning; toneMap?: CloudToneMap | null } = {},
 ): {
   ground: MeshStandardNodeMaterial;
   wall: MeshStandardNodeMaterial;
@@ -986,8 +1085,10 @@ function createMaterials(
 
   // Cliff walls take the upper tile's art, else the lower tile's, else neutral rock where neither raster covers the face.
   // Ground rain never paints a water film on vertical art, even when the adjoining cell is paved.
-  const upper = sample('atlasUv', 'atlasRect').colour;
-  const lower = sample('atlasUv2', 'atlasRect2').colour;
+  const upperArt = sample('atlasUv', 'atlasRect'),
+    lowerArt = sample('atlasUv2', 'atlasRect2');
+  const upper = upperArt.colour,
+    lower = lowerArt.colour;
   const upperCover = smoothstep(0.2, 0.6, upper.a);
   const lowerCover = smoothstep(0.2, 0.6, lower.a);
   const wall = plainArtMaterial(
@@ -996,12 +1097,35 @@ function createMaterials(
       terrainGradeAt(cache.mapLight, positionWorld.xz),
     ),
     nodes,
+    toneMap
+      ? (colour) =>
+          Fn(() => {
+            const result = colour.toVar();
+            If(nodes.cloudTone.strength.greaterThan(0), () => {
+              // Match the upper/lower art coverage exactly, blending gains rather than unrelated UV locations.
+              const lowerGrade = toneMap.grade(
+                colour,
+                lowerArt.uv,
+                nodes.alive.gradeCoverage(nodes.alive.coverage),
+                nodes.night,
+              );
+              const upperGrade = toneMap.grade(
+                colour,
+                upperArt.uv,
+                nodes.alive.gradeCoverage(nodes.alive.coverage),
+                nodes.night,
+              );
+              result.assign(mix(mix(colour, lowerGrade, lowerCover), upperGrade, upperCover));
+            });
+            return result;
+          })()
+      : undefined,
   );
 
   const ground = new ArtMaterial();
   ground.sceneMultiplier = nodes.sceneTerrainMul;
   ground.cloudShadow = nodes.alive.shadow;
-  const { uv, rect, colour: raw, tap } = sample('atlasUv', 'atlasRect');
+  const { uv, colour: raw, tap } = sample('atlasUv', 'atlasRect');
   // Tile art under the map's own light (see mapLighting.ts), as the engine draws it.
   const grade: ShaderNode = terrainGradeAt(cache.mapLight, positionWorld.xz);
   const art: ShaderNode = vec4(grassArt(srgbScale(raw.rgb, grade), raw.rgb, nodes), raw.a);
@@ -1145,7 +1269,7 @@ function createMaterials(
           max(tuning.artToneForce, smoothstep(0.1, 0.8, attribute('hardShore', 'vec2').y).mul(tuning.newShore)),
         );
     // The signed distance exists for both water implementations; only the original land receives this dressing.
-    shoreWetMask = smoothstep(-LUSH2_SHORE.width, 0, painted).mul(float(1).sub(tone));
+    shoreWetMask = lushShoreMask(painted, nodes).mul(float(1).sub(tone));
     if (waterline) shoreWetMask = shoreWetMask.mul(waterline.beach);
     if (lakeBed) {
       // No inland band replacement: the mask includes the old shallows and the composite already paints real sand.
@@ -1280,7 +1404,7 @@ function createMaterials(
       const ownShore: ShaderNode = waterline ? float(1).sub(tone).mul(waterline.beach) : float(1).sub(tone);
       const band = smoothstep(-0.55, -0.12, shore).mul(ownShore);
       const sand = wetShore(shore).mul(ownShore);
-      shoreWetMask = smoothstep(-LUSH2_SHORE.width, 0, shore).mul(ownShore);
+      shoreWetMask = lushShoreMask(shore, nodes).mul(ownShore);
       landMask = landMask.mul(float(1).sub(max(band, sand)));
       // Clear: the ground stepped to inland is often brighter sand behind a darker grass or rock bank, and at its full
       // brightness it drew a pale rim along the waterline; the band is wet, so darker than the dry ground it copies.
@@ -1330,10 +1454,10 @@ function createMaterials(
     roughness = mix(roughness, float(0.25), waterness);
   }
   const waterCloud = ground.cloudShadow;
+  const toneLand = smoothstep(0.3, 0.7, weatherLand);
   ground.cloudShadow = nodes.cloudTone.strength
     .greaterThan(0)
-    .and(weatherLand.greaterThanEqual(0.5))
-    .select(surfaceCloudFactor(nodes, nodes.alive.coverage), waterCloud);
+    .select(mix(waterCloud, surfaceCloudFactor(nodes, nodes.alive.coverage), toneLand), waterCloud);
   // Keep the water inputs, refracted bed and wet shore on their original art. Only the final land share
   // receives softened art and dressing; soften itself is independent of the mask and fades at night like the dressing.
   const undressed = albedo;
@@ -1358,40 +1482,23 @@ function createMaterials(
   const legacyAlbedo = albedo;
   albedo = Fn(() => {
     const result = legacyAlbedo.toVar();
-    If(nodes.cloudTone.strength.greaterThan(0).and(weatherLand.greaterThanEqual(0.5)), () => {
-      let mean: ShaderNode, context: ShaderNode;
-      if (cache.terrainMap) {
-        mean = cloudToneMeanNode(
-          colourMap,
-          uv,
-          halfTexel.mul(2),
-          LUSH2_MEAN.blockWidth * cache.terrainMap.ref.scale,
-          rect,
-        );
-        context = cloudToneMeanNode(
-          colourMap,
-          uv,
-          halfTexel.mul(2),
-          LUSH2_MEAN.contextWidth * cache.terrainMap.ref.scale,
-          rect,
-        );
-      } else {
-        mean = vec3(0);
+    If(nodes.cloudTone.strength.greaterThan(0).and(toneLand.greaterThan(0)), () => {
+      let dressed: ShaderNode;
+      if (toneMap) dressed = mappedArtGrade(legacyAlbedo, toneMap, uv, nodes, shoreWetMask);
+      else {
+        let mean: ShaderNode = vec3(0);
         for (const x of [-12, 12]) for (const y of [-6, 6]) mean = mean.add(tap(vec2(x, y)).mul(0.25));
-        context = mean;
+        dressed = cloudToneNode(
+          legacyAlbedo,
+          mean,
+          nodes.alive.gradeCoverage(nodes.alive.coverage),
+          nodes.cloudTone,
+          nodes.night,
+          false,
+          shoreWetMask,
+        );
       }
-      const dressed = cloudToneNode(
-        legacyAlbedo,
-        mean,
-        nodes.alive.gradeCoverage(nodes.alive.coverage),
-        nodes.cloudTone,
-        nodes.night,
-        false,
-        shoreWetMask,
-        float(0),
-        context,
-      );
-      result.assign(dressed);
+      result.assign(mix(legacyAlbedo, dressed, toneLand));
     });
     return result;
   })();
