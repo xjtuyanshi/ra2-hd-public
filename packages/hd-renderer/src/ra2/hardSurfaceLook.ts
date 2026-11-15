@@ -1,9 +1,9 @@
-import { DEFAULT_PAINTED_STEEL_MATERIALS, type HardSurfaceLookParameters } from '../hardSurfaceLook';
+import { DEFAULT_PAINTED_STEEL_MATERIALS, type HardSurfaceLookParameters, type LookVector } from '../hardSurfaceLook';
 
 /** Vehicle look policy for offline reconstruction; geometry and fitted specs remain external. */
 export const RA2_HARD_SURFACE_LOOK: HardSurfaceLookParameters = {
   cream: [0.64, 0.615, 0.565],
-  houseTone: [0.72, 0.21, 0.17],
+  houseTone: [0.6, 0.6, 0.6],
   hatchColour: [0.36, 0.38, 0.43],
   barrelSteel: [0.6, 0.6, 0.74],
   wear: 0.3,
@@ -14,3 +14,9 @@ export const RA2_HARD_SURFACE_LOOK: HardSurfaceLookParameters = {
   paintCodes: { auto: 0, house: 1, steel: 2, flat: 3, wheel: 4, drum: 5, hatch: 6 },
   materials: DEFAULT_PAINTED_STEEL_MATERIALS,
 };
+
+/** A player colour is an explicit input, never inferred from the unit's faction or original remap RGB. */
+export function ra2HardSurfaceLook(houseTone: LookVector): HardSurfaceLookParameters {
+  if (!houseTone.every((v) => Number.isFinite(v) && v >= 0 && v <= 1)) throw new Error('Invalid house colour');
+  return { ...structuredClone(RA2_HARD_SURFACE_LOOK), houseTone: [...houseTone] };
+}

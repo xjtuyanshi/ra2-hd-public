@@ -12,7 +12,7 @@ import {
   DEFAULT_PAINTED_STEEL_MATERIALS,
   type SeamSegment,
 } from '../src/hardSurfaceLook';
-import { RA2_HARD_SURFACE_LOOK } from '../src/ra2/hardSurfaceLook';
+import { RA2_HARD_SURFACE_LOOK, ra2HardSurfaceLook } from '../src/ra2/hardSurfaceLook';
 
 const seam = (start: SeamSegment['start'], end: SeamSegment['end'], strength = 0): SeamSegment => ({
   start,
@@ -127,7 +127,7 @@ describe('hard surface look', () => {
     });
     expect(RA2_HARD_SURFACE_LOOK).toEqual({
       cream: [0.64, 0.615, 0.565],
-      houseTone: [0.72, 0.21, 0.17],
+      houseTone: [0.6, 0.6, 0.6],
       hatchColour: [0.36, 0.38, 0.43],
       barrelSteel: [0.6, 0.6, 0.74],
       wear: 0.3,
@@ -138,5 +138,13 @@ describe('hard surface look', () => {
       paintCodes: { auto: 0, house: 1, steel: 2, flat: 3, wheel: 4, drum: 5, hatch: 6 },
       materials: DEFAULT_PAINTED_STEEL_MATERIALS,
     });
+  });
+  it('takes house colour explicitly and keeps the neutral policy isolated between players', () => {
+    const blue = ra2HardSurfaceLook([0.1, 0.3, 0.8]);
+    expect(blue.houseTone).toEqual([0.1, 0.3, 0.8]);
+    blue.paintCodes.house = 9;
+    expect(RA2_HARD_SURFACE_LOOK.paintCodes.house).toBe(1);
+    expect(RA2_HARD_SURFACE_LOOK.houseTone).toEqual([0.6, 0.6, 0.6]);
+    expect(() => ra2HardSurfaceLook([NaN, 0, 0])).toThrow('house colour');
   });
 });

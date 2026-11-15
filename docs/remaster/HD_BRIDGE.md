@@ -844,6 +844,14 @@ CLI's IPC socket, use `pnpm exec node --import tsx` in place of `pnpm exec tsx`.
 `pnpm exec vitest run packages/hd-renderer/tests/hardSurface`; game-derived caches, seeds and output specs stay
 outside Git. This pipeline does not change live rendering or establish visual acceptance of reconstructed art.
 
+For automatic local-cache discovery, section/HVA/reference-mesh export, geometric region proposals,
+acceptance-driven refinement and hashed board delivery, see the
+[offline CAD tooling guide](../../scripts/remaster/cad/README.md). The generic proposer, silhouette rasterizer
+and refinement loop remain in `packages/hd-renderer/src`; game-role budgets, remap policy and cache discovery
+are composed in `scripts/remaster/cad`. House colour is an explicit parameter with a neutral research default,
+and remap membership remains the source palette mask. Numerical, author visual and live-runtime gates are
+reported separately; a budget-exhausted fit is not accepted automatically.
+
 ## Running it
 
 Start a development server whose game root holds a skirmish setup (a scratch copy of the installation with an edited
