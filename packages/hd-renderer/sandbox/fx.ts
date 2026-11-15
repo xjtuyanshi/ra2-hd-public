@@ -1,6 +1,6 @@
 import { applyBlendTone, parseBlendPreset } from '../src/ra2/blendTone';
 import { needsSurfaceClasses } from '../src/ra2/lookFlags';
-import { applyLush2 } from '../src/ra2/lush2Tone';
+import { lush2Mapping, lush2Defaults, applyLush2 } from '../src/ra2/lush2Tone';
 import { mountLush2Tuning } from '../src/ra2/lush2Tuning';
 import { mountBlendTuning } from '../src/ra2/blendTuning';
 import { parseAliveParams } from '../src/livingWorld';
@@ -148,10 +148,16 @@ const live = await LiveView.create(canvas, {
       ]),
     ),
   ),
-  modernClouds: params.has('tone') || params.get('blend') === '1' || params.get('hd-blend') === '1',
+  modernClouds:
+    params.has('tone') ||
+    ((params.get('blend') === '1' || params.get('hd-blend') === '1') &&
+      parseBlendPreset(params.get('hd-blend-preset')) !== 'contact'),
   spriteIntegration: params.get('sprite') === '1',
   cleanBuildings: params.get('hd-bld') === '1',
-  groundDenoise: params.get('blend') === '1' || params.get('hd-blend') === '1',
+  groundDenoise:
+    (params.get('blend') === '1' || params.get('hd-blend') === '1') &&
+    parseBlendPreset(params.get('hd-blend-preset')) !== 'contact',
+  buildingPolish: params.get('hd-bld-polish') === '1',
   sharedContacts: params.get('blend') === '1' || params.get('hd-blend') === '1',
   ...parseWeatherParams(params),
   mapBase: `/${encodeURIComponent(mapName)}`,
@@ -253,7 +259,17 @@ if (params.has('tone')) {
   live.hd.applySettings();
 }
 if (params.get('blend') === '1' || params.get('hd-blend') === '1') {
-  live.hd.setAlive(applyBlendTone(live.hd.settings, live.theater, parseBlendPreset(params.get('hd-blend-preset'))));
+  live.hd.setAlive(
+    applyBlendTone(
+      live.hd.settings,
+      live.theater,
+      parseBlendPreset(params.get('hd-blend-preset')),
+      undefined,
+      params.get('tone') === 'lush2'
+        ? lush2Mapping(lush2Defaults(live.theater), live.theater).alive
+        : parseAliveParams(params),
+    ),
+  );
   live.hd.applySettings();
 }
 if (params.has('ground')) {

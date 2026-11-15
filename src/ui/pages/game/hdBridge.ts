@@ -1,3 +1,4 @@
+import { applyLush2, lush2Defaults, lush2Mapping } from '../../../../packages/hd-renderer/src/ra2/lush2Tone';
 import { applyBlendTone, parseBlendPreset } from '../../../../packages/hd-renderer/src/ra2/blendTone';
 import { needsSurfaceClasses } from '../../../../packages/hd-renderer/src/ra2/lookFlags';
 import { setSessionShortcutCode, trackGameChatEntry } from './gameInput';
@@ -1462,11 +1463,15 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
             : {}),
           spriteIntegration: params.get('hd-sprite') === '1',
           cleanBuildings: params.get('hd-bld') === '1',
-          groundDenoise: params.get('hd-blend') === '1',
+          groundDenoise:
+            params.get('hd-blend') === '1' && parseBlendPreset(params.get('hd-blend-preset')) !== 'contact',
+          buildingPolish: params.get('hd-bld-polish') === '1',
           sharedContacts: params.get('hd-blend') === '1',
           surfaceClasses: needsSurfaceClasses(params),
           trackTimestamp: import.meta.env.DEV && params.get('hd-gpu') === '1',
-          modernClouds: params.has('hd-tone') || params.get('hd-blend') === '1',
+          modernClouds:
+            params.has('hd-tone') ||
+            (params.get('hd-blend') === '1' && parseBlendPreset(params.get('hd-blend-preset')) !== 'contact'),
           ...(params.get('hd-vlook') === 'remaster' || (import.meta.env.DEV && params.get('hd-veh') === '1')
             ? { voxelLook: 'remaster' }
             : {}),
@@ -1479,9 +1484,20 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
           renderer.applyLookPreset(view.hd.settings, preset);
         }
         if (tone) tone.applyMoistTone(view.hd.settings, view.theater, tone.parseToneStyle(params.get('hd-tone')));
+        if (params.get('hd-tone') === 'lush2') {
+          view.hd.setAlive(applyLush2(view.hd.settings, view.theater));
+        }
         if (params.get('hd-blend') === '1')
           view.hd.setAlive(
-            applyBlendTone(view.hd.settings, view.theater, parseBlendPreset(params.get('hd-blend-preset'))),
+            applyBlendTone(
+              view.hd.settings,
+              view.theater,
+              parseBlendPreset(params.get('hd-blend-preset')),
+              undefined,
+              params.get('hd-tone') === 'lush2'
+                ? lush2Mapping(lush2Defaults(view.theater), view.theater).alive
+                : parseAliveParams(params, 'hd-alive'),
+            ),
           );
         if (preset || tone || params.get('hd-blend') === '1') view.hd.applySettings();
         if (topEffects) view.hd.enableTopEffects();

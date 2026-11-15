@@ -21,8 +21,7 @@ export function softFootprint(nodes: AtmosphereNodes): Mesh {
     material.colorNode = nodes.cloudTone.shadeTint.mul(0.025);
     material.opacityNode = float(1)
       .sub(smoothstep(0.7, 1, max(at.x, at.y)))
-      .mul(nodes.cloudTone.contact)
-      .mul(nodes.cloudTone.strength)
+      .mul(nodes.sharedContactStrength)
       .mul(0.6)
       .min(0.75);
     material.alphaTest = 0.001;

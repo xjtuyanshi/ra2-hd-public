@@ -1020,7 +1020,7 @@ function softContactResources(nodes: AtmosphereNodes) {
     const material = nodes.own(new MeshBasicNodeMaterial({ color: 0, transparent: true, depthWrite: false }));
     material.name = 'voxel-soft-contact';
     if (nodes.sharedContacts) {
-      material.colorNode = nodes.cloudTone.shadeTint.mul(0.025);
+      material.colorNode = nodes.cloudTone.shadeTint.mul(0.025).mul(nodes.sharedContactStrength);
       material.blending = MultiplyBlending;
       material.premultipliedAlpha = true;
     }

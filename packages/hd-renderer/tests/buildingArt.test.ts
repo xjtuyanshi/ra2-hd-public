@@ -57,7 +57,7 @@ describe('opt-in colour-only building atlas', () => {
     expect(settings.cloudTone!.objectFloor).toBe(0.9);
     expect(settings.tone).toBeNull();
     const snow = {} as HdSettings;
-    applyBlendTone(snow, 'snow');
+    applyBlendTone(snow, 'snow', 'ground');
     expect(snow.cloudTone!.snowLift).toBe(lush2Defaults('snow').snowLift);
     expect(snow.cloudTone!.gold).toBe(0);
   });

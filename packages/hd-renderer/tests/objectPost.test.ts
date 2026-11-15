@@ -247,6 +247,7 @@ it.each([
   'hd-veh=1',
   'hd-blend=1',
   'hd-bld=1',
+  'hd-bld-polish=1',
   'hd-sprite=1&hd-tone=lush2&hd-veh=1&hd-blend=1&hd-bld=1',
 ])('protects ore and gems with %s', (query) => {
   expect(needsSurfaceClasses(new URLSearchParams(query))).toBe(true);

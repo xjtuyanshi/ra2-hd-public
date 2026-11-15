@@ -1,11 +1,14 @@
+import { parseAliveParams, type AliveOptions } from '../livingWorld';
 import type { HdSettings } from '../HdRenderer';
 import { applyLush2, lush2Defaults, type Lush2Values } from './lush2Tone';
 
-export type BlendPreset = 'dramatic' | 'tuned';
-export const parseBlendPreset = (value: string | null): BlendPreset => (value === 'tuned' ? 'tuned' : 'dramatic');
+export type BlendPreset = 'contact' | 'ground' | 'tuned';
+/** Keep existing dramatic URLs as an explicit alias for the C2 ground recipe. */
+export const parseBlendPreset = (value: string | null): BlendPreset =>
+  value === 'ground' || value === 'dramatic' ? 'ground' : value === 'tuned' ? 'tuned' : 'contact';
 
-/** The softer C recipe remains available; only the explicit blend entry selects the dramatic reference. */
-export function blendDefaults(theater: string | undefined, preset: BlendPreset = 'dramatic'): Lush2Values {
+/** The softer C recipe remains available; the C2 ground recipe is an explicit opt-in. */
+export function blendDefaults(theater: string | undefined, preset: BlendPreset = 'contact'): Lush2Values {
   const values = { ...lush2Defaults(theater), objectShare: 0.35, objectFloor: 0.9, detail: 1 };
   if (theater === 'temperate' || theater === 'urban' || theater === 'newurban') {
     Object.assign(values, {
@@ -16,7 +19,7 @@ export function blendDefaults(theater: string | undefined, preset: BlendPreset =
       gold: 0.18,
       shadeDepth: 0.14,
     });
-    if (preset === 'dramatic')
+    if (preset === 'ground')
       Object.assign(values, {
         grassLight: 0.84,
         grassHue: 0,
@@ -37,9 +40,22 @@ export function blendDefaults(theater: string | undefined, preset: BlendPreset =
 export function applyBlendTone(
   settings: HdSettings,
   theater: string | undefined,
-  preset: BlendPreset = 'dramatic',
+  preset: BlendPreset = 'contact',
   values = blendDefaults(theater, preset),
+  currentAlive: AliveOptions = parseAliveParams(new URLSearchParams()),
 ) {
+  // Contact never installs a terrain recipe. Reuse the selected tone's exact ground and cloud state.
+  // A standalone contact entry stays AO-only; object warmth is available when a tone already owns lighting.
+  if (preset === 'contact') {
+    if (settings.cloudTone)
+      settings.cloudTone = {
+        ...settings.cloudTone,
+        // Preserve object readability instead of inheriting the ground recipe's multiplicative dimming.
+        objectFloor: 1,
+        objectSunTint: [1 + 0.08 * values.gold, 1, 1 - 0.08 * values.gold],
+      };
+    return currentAlive;
+  }
   const alive = applyLush2(settings, theater, values);
   const share =
     theater === 'temperate' || theater === 'urban' || theater === 'newurban'

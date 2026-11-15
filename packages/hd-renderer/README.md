@@ -2168,22 +2168,30 @@ Both the complete interior and a source-defined flat mask with a 3-texel seam gu
 measurement must not be described as whole-building detail preservation. Eroded alpha, paint boundaries and structural gradients lock edges. Coverage and remap files
 are never changed. Reports use source-defined interior masks, luminance variance and before/after source hashes.
 Do not point this tool at a shared/base farm. Derived pages and reports stay outside Git.
-With `hd-bld=1`, a final 5x5 display-space bilateral gather also removes residual speckle after lighting and sharpening.
+With the independent `hd-bld-polish=1` opt-in, a final 5x5 display-space bilateral gather also removes residual speckle after lighting and sharpening.
 The generic filter receives the building category from LiveView. It gathers only the exact same object code,
 protects high-contrast seams by luminance distance, and excludes vehicles, terrain and resource categories.
 Its scratch target belongs to the post-pipeline owner. Without the flag, neither the gather nor its target exists.
 
-`hd-blend=1` defaults to `dramatic`; `hd-blend-preset=tuned` restores the softer C ground recipe. The development
-overlay selects both presets, restores dramatic recommendations, adjusts the shared sliders and toggles grading
-with Backquote. Its A/B controls grade/light only: building pages and the compile-time grass filter remain selected
-by their launch flags. Full flag comparisons require separate views of the same real snapshot.
-The dramatic green-theatre recipe darkens and enriches grass, adds golden sun, coloured shade and the same warm
-light to objects. Snow, desert and lunar retain their existing softer theatre values. Building foundations receive
-soft rectangular contact darkening; hull contacts borrow the same shade tint. Footprint meshes follow visual
-lifetimes and share renderer-owned geometry/materials. Existing cloud drift and water remain enabled. It adds a small edge-aware four-neighbour colour filter to grass albedo, preserving the existing water and
-cliff material paths. It does not enable blanket sprite softening or replace vehicle materials. The disabled filter
-adds no shader nodes. The FX bench accepts `hd-bld=1` and `hd-blend=1` (also `blend=1`) for iteration. Sandbox clocks
-and snapshots remain synthetic: live same-frame captures, logic FPS and GPU timing require separate acceptance.
-The blend panel also exposes `buildingPolish` (0–1, default 1) when `hd-bld=1`; this adjusts only the screen gather,
-not the offline pages. Recommended values reset it to 1. Saved grade sliders are scoped to theatre and recipe.
-Contacts use premultiplied multiplicative blending so a shade tint cannot become an emitted light on dark terrain.
+`hd-blend=1` defaults to `contact`: multiplicative building contact AO and mild, luminance-preserving
+warmth on lit objects when a cloud tone already owns lighting. The object-only brightness floor is 1 to
+avoid carrying the terrain recipe's object dimming into the contact candidate. It does not enable `hd-bld`, the screen bilateral,
+or a second terrain grade. Combine it with `hd-tone=lush2` to retain that tone's exact ground and cloud parameters.
+Standalone contact adds footprints without installing a tone. `hd-blend-preset=ground` explicitly selects the
+C2 dramatic ground grade instead; old `dramatic` URLs remain aliases. `hd-blend-preset=tuned` retains the softer
+C recipe. Ground presets replace the selected tone rather than stacking grades. Snow, desert and lunar keep
+the softer theatre values. Optional ground presets retain their edge-aware grass filter at view creation;
+changing the panel preset does not recompile that filter.
+
+The development panel restores contact recommendations. Backquote restores the selected launch tone (including
+lush2), its clouds and the contact control, rather than clearing the ground grade. Contact exposes only object
+warmth and contact opacity; ground presets expose the full grade controls. Building pages stay selected by
+`hd-bld`; screen filtering is separately compiled only with `hd-bld-polish=1`. Full flag comparisons require
+separate views of the same real snapshot. The panel exposes `buildingPolish` (0–1, default 1) only with that
+explicit screen-filter flag; restoring recommendations resets it to 1. Saved sliders are scoped to theatre
+and recipe under a new storage namespace so C2 settings cannot silently reactivate a ground grade.
+
+Footprint meshes follow visual lifetimes and share renderer-owned geometry/materials. Existing cloud drift,
+water and vehicle materials remain enabled. Contacts use premultiplied multiplicative blending. The FX bench
+accepts the same building/blend flags (also `blend=1`) for iteration. Sandbox snapshots and clocks remain synthetic;
+live same-frame captures, logic FPS and GPU timing require separate acceptance.

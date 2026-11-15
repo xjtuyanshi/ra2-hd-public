@@ -38,6 +38,8 @@ export class AtmosphereNodes extends SceneLightingUniforms {
   surfaceClasses = false;
   groundDenoise = false;
   sharedContacts = false;
+  /** Uniform A/B control for optional footprints; independent of terrain grading. */
+  readonly sharedContactStrength = uniform(1);
   /** Resource art follows the Build 13 cloud field independently of experimental scene controls. */
   readonly resourceClouds = new LegacyLivingWorldNodes();
   private disposed = false;

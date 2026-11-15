@@ -296,6 +296,8 @@ export interface LiveViewOptions extends VoxelUnitsOptions {
   groundDenoise?: boolean;
   sharedContacts?: boolean;
   cleanBuildings?: boolean;
+  /** Explicit screen-space smoothing, independent of the colour-only building sidecar. */
+  buildingPolish?: boolean;
   /** URL of the map's HD cache directory (manifest.json inside). */
   mapBase: string;
   /** URL of the type library root (holding <theater>/library.json and common/effects/), for players' art. */
@@ -1473,7 +1475,7 @@ export class LiveView {
     };
     const hd = new HdRenderer(canvas, state, {
       nodes: world.nodes,
-      ...(options.cleanBuildings ? { surfacePolish: { category: 1, sigma: 2, range: 0.08 } } : {}),
+      ...(options.buildingPolish ? { surfacePolish: { category: 1, sigma: 2, range: 0.08 } } : {}),
       forceWebGL: options.forceWebGL ?? false,
       trackTimestamp: options.trackTimestamp ?? false,
       requiredLimits,
