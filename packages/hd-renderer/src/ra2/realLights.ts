@@ -34,6 +34,7 @@ export const LIGHT_COLOURS = {
 /** Saturation cap of light taken from a beam's or bolt's own colour. */
 export const BEAM_LIGHT_SATURATION = 0.3;
 export interface LightPolicy {
+  lookClass?: PhysicalLight['lookClass'];
   height: number;
   reach?: number;
   /** Point/tube radius; for a Gaussian profile the falloff width (cells). */
@@ -82,6 +83,7 @@ export const REAL_LIGHT_POLICIES = {
     profile: 'gaussian',
   },
   burning: {
+    lookClass: 'wreck',
     reach: 1.2,
     height: 0.3,
     radius: 0.45,
@@ -107,8 +109,10 @@ export const REAL_LIGHT_POLICIES = {
   },
   // Chrono warps and the Chrono Legionnaire's erasure pulse repeatedly on one spot: a 6-cell pool lit a 5-cell
   // patch of night grass for 20 s around one erased tank (live SOV07TMD, frames 450-1050). At 2 cells and 0.5 it still
-  // read as a flat white pool round the tank where the original shows none (round-6 review). Now a faint cool glow.
+  // read as a flat white pool round the tank where the original shows none (round-6 review). The 1697702 faint
+  // 0.18 pool remains the cur preset; chronoPool=0 suppresses it at presentation time by default (round 7).
   chrono: {
+    lookClass: 'chrono',
     reach: 1.4,
     height: 0.5,
     radius: 0.5,
@@ -141,7 +145,7 @@ export const REAL_LIGHT_POLICIES = {
   tesla: beam(0.12, LIGHT_COLOURS.tesla, 0.15),
   psychic: beam(0.12, LIGHT_COLOURS.psychic, 0.15),
   prism: beam(0.12, LIGHT_COLOURS.hot, 0.15),
-  temporal: beam(0.1, LIGHT_COLOURS.chrono, 0.1),
+  temporal: { ...beam(0.1, LIGHT_COLOURS.chrono, 0.1), lookClass: 'chrono' },
   rad: beam(0.1, [0.75, 1, 0.72], 0.1),
   eruption: beam(0.12, LIGHT_COLOURS.fire, 0.1),
   sonic: beam(0.1, [0.75, 0.92, 1], 0.1),
@@ -186,6 +190,15 @@ export function capLightColour(colour: Rgb, saturation: number): [number, number
   const k = lightLuminance(colour) / Math.max(lightLuminance(capped), 1e-8);
   return capped.map((c) => c * k) as [number, number, number];
 }
+/** Warm flash, HSV saturation 0.32. Achromatic sources inherit the explosion's warm-white hue. */
+export function warmFlashColour(source: Rgb): [number, number, number] {
+  const hi = Math.max(...source),
+    lo = Math.min(...source);
+  const colour = hi - lo < 0.01 ? LIGHT_COLOURS.explosion : source;
+  const peak = Math.max(...colour, 1e-8),
+    range = peak - Math.min(...colour);
+  return colour.map((c) => 1 - ((peak - c) / Math.max(range, 1e-8)) * 0.32) as [number, number, number];
+}
 const xyz = (p: { x: number; y: number; z: number }): Point => [p.x, p.y, p.z];
 export const animWorld = (anim: Pick<LiveAnim, 'x' | 'y' | 'z'>): Point => xyz(engineAnchor(anim.x, anim.y, anim.z));
 const energyCache = new Map<string, number>();
@@ -194,6 +207,7 @@ export function policyLight(policy: LightPolicy, position: Point, end?: Point): 
   const light: PhysicalLight = {
     position,
     end,
+    lookClass: policy.lookClass,
     radius: policy.radius,
     intensity: policy.colour,
     dayFactor: policy.day,
@@ -277,6 +291,7 @@ export function animLightPolicy(
       // At ambient 0.1 noon, the logarithmic knee gives 0.416: (1 + 0.416/0.1)^(1/2.2) = 2.10
       // displayed night luminance. Compensate elevation rather than widening/overdriving the Gaussian.
       ground: 0.9,
+      lookClass: 'flash',
       groundPeak: true,
       reach,
       colour: LIGHT_COLOURS.explosion,
@@ -313,6 +328,9 @@ export function animPhysicalLight(anim: LiveAnim, policy: LightPolicy): Physical
     const gain = lightLuminance(light.intensity) / lightLuminance(LIGHT_COLOURS.hot);
     light.initialIntensity = LIGHT_COLOURS.hot.map((c) => c * gain) as [number, number, number];
     light.hotSeconds = 0.12;
+    const colour = warmFlashColour(row.light ? [row.light[0], row.light[1], row.light[2]] : LIGHT_COLOURS.explosion);
+    const warmGain = lightLuminance(light.intensity) / Math.max(lightLuminance(colour), 1e-8);
+    light.warmIntensity = colour.map((c) => c * warmGain) as [number, number, number];
   }
   light.seed = anim.uid / 65536;
   return light;

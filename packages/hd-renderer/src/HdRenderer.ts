@@ -952,7 +952,7 @@ export class HdRenderer {
     this.emitters = new EmitterLayer(this.layerNodes);
     this.emissiveOverlay = new EmissiveOverlay(PIXELS_PER_CELL_EDGE);
     if (this.nodes.realLight) {
-      this.realEmissive = new RealEmissiveLayer();
+      this.realEmissive = new RealEmissiveLayer(16384, this.nodes.smokeLook);
       this.emissiveOverlay.root.add(this.realEmissive.root);
       this.effects.realEmissive = this.realEmissive;
     }

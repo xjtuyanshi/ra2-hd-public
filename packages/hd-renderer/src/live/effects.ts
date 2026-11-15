@@ -681,7 +681,10 @@ export class LiveEffectsDriver {
         colour: new Vector3(Math.pow(srgb[0] / 255, 2.2), Math.pow(srgb[1] / 255, 2.2), Math.pow(srgb[2] / 255, 2.2)),
         bolt,
         outerColour: beam.outerColor ? new Vector3(...beam.outerColor.map((c) => Math.pow(c / 255, 2.2))) : undefined,
-        seed: (Math.floor(this.logicFrame / 2) * 7919 + Math.round(beam.target.x + beam.target.y * 3)) >>> 0,
+        // Bolts retain their captured path seed. A laser's intensity seed stays stable for its source/target pair.
+        seed: bolt
+          ? (Math.floor(this.logicFrame / 2) * 7919 + Math.round(beam.target.x + beam.target.y * 3)) >>> 0
+          : Math.round(beam.source.x * 7 + beam.source.y * 11 + beam.target.x * 17 + beam.target.y * 23) >>> 0,
       };
     });
     return this.decorativeBeams.length ? [...native, ...this.decorativeBeams] : native;
@@ -708,6 +711,7 @@ export class LiveEffectsDriver {
    * in enhanced style. Smoke systems are drawn as native particles (smokeCards).
    */
   frame(now: number, wind: Vector3): void {
+    this.effects.nodes?.smokeWind.value.set(wind.x, wind.z);
     this.framePhysicalLights(now);
     const enhancedBeams = this.garnishEnabled && this.style === 'enhanced';
     if (this.effects.enhancedBeams !== enhancedBeams) {

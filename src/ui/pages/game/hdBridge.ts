@@ -1,3 +1,4 @@
+import type { LightLookArgument } from '../../../../packages/hd-renderer/src/lightLook';
 import { parseWaterStyle, WATER_STYLES, type WaterStyle } from '../../../../packages/hd-renderer/src/ra2/waterStyles';
 import type { VmShell } from '../../../adapter/vmShell';
 import type { VmFrame } from '../../../vm86/win32';
@@ -2054,6 +2055,9 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
     light: {
       ...(import.meta.env.DEV
         ? {
+            look(arg?: LightLookArgument) {
+              return live?.lightLook(arg) ?? null;
+            },
             hold(on: boolean) {
               return live?.holdLight(on) ?? false;
             },

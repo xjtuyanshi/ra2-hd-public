@@ -1,3 +1,4 @@
+import { lightLook, type LightLookArgument } from '../lightLook';
 import { spriteContactFootprint } from '../ra2/nightObjects';
 import type { AmbientContact } from '../ambientContact';
 import { type EmissivePrimitive } from '../realEmissive';
@@ -1468,6 +1469,11 @@ export class LiveView {
       this.push(pending.snapshot, pending.at);
     }
     return true;
+  }
+
+  /** No snapshot rebuild, event replay or clock advancement: existing timed lights evaluate these on render. */
+  lightLook(arg?: LightLookArgument) {
+    return lightLook(this.hd.nodes.smokeLook, arg);
   }
 
   /** Available only in a view created with realLight; keeps the presentation clock and geometry unchanged. */

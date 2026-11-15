@@ -47,6 +47,7 @@ import {
   vec3,
   vec4,
 } from 'three/tsl';
+import { createLightLook, wreckFlicker, type LightLook } from './lightLook';
 import { AmbientContactField, type AmbientContact } from './ambientContact';
 import { LightCost } from './lightCost';
 import { NIGHT_ART_DEFAULTS } from './nightArt';
@@ -67,6 +68,9 @@ export interface PhysicalLight {
   intensity: Rgb;
   /** Optional short hot-to-warm phase in linear radiance, independent of geometry. */
   initialIntensity?: Rgb;
+  /** Source-class response, evaluated at presentation time so held snapshots can be compared. */
+  lookClass?: 'chrono' | 'flash' | 'wreck';
+  warmIntensity?: Rgb;
   hotSeconds?: number;
   groundOnly?: number;
   occlude?: boolean;
@@ -330,7 +334,7 @@ export class RealLightNodes {
   readonly groundDirection = texture(this.black);
   readonly upper = texture(this.black);
   readonly upperDirection = texture(this.black);
-  constructor() {
+  constructor(readonly look: LightLook = createLightLook()) {
     this.black.needsUpdate = true;
     this.flat.needsUpdate = true;
   }
@@ -412,13 +416,16 @@ export function sampleRealLight(
     const cosine = max(dot(normal, d).div(max(magnitude, 1e-8)), 0);
     const reconstructed = s.mul(dominant.mul(cosine).add(lum.sub(dominant).max(0).mul(0.5)).div(max(lum, 1e-8)));
     e = mix(s, reconstructed, nodes.directional);
-    // Preserve the alpha contract: upright receivers take only the reduced ground-only share.
-    const groundShare = mix(g.a, texture(nodes.upper, uv).a, t)
-      .mul(nodes.scale)
-      .mul(inView)
-      .div(max(lum, 1e-8))
-      .clamp(0, 1);
-    e = e.mul(float(1).sub(groundShare.mul(max(normal.y.negate().add(1), 0).min(1)).mul(0.7)));
+    // The actual-source tile/upper layer retain the groundOnly alpha contract for upright art.
+    // Flat receivers use the footprint tile: its otherwise unused alpha carries flash response weight.
+    if (capScale === OBJECT_KNEE) {
+      const groundShare = mix(g.a, texture(nodes.upper, uv).a, t)
+        .mul(nodes.scale)
+        .mul(inView)
+        .div(max(lum, 1e-8))
+        .clamp(0, 1);
+      e = e.mul(float(1).sub(groundShare.mul(max(normal.y.negate().add(1), 0).min(1)).mul(0.7)));
+    }
   }
   const cap =
     capScale === OBJECT_KNEE
@@ -426,6 +433,19 @@ export function sampleRealLight(
       : mix(float(1.2), ambientLum.mul(3), nodes.nightWeight);
   const attenuated = e.mul(exp(max(height.sub(REAL_LIGHT_UPPER), 0).mul(-0.45)));
   return capScale === OBJECT_KNEE ? kneeNode(attenuated, cap) : softKneeNode(attenuated, cap);
+}
+
+/** Fraction of ground irradiance from warm flashes only; beams retain exactly their existing receiver albedo. */
+export function flashNeutralWeight(nodes: RealLightNodes, xz: ShaderNode): ShaderNode {
+  const uv = clamp(xz.div(nodes.size), nodes.groundHalfTexel, vec2(1).sub(nodes.groundHalfTexel))
+    .mul(vec2(0.5, 1))
+    .add(vec2(0.5, 0));
+  const g = texture(nodes.ground, uv);
+  const flash = g.a;
+  return flash
+    .div(dot(g.rgb, vec3(...LUMA)).max(1e-8))
+    .clamp(0, 1)
+    .mul(nodes.enabled);
 }
 
 interface TimedLight {
@@ -666,7 +686,12 @@ export class RealLightField {
     const s = c.rgb.mul(scalar),
       lum = dot(s, vec3(...LUMA));
     const direction = projected.select(vec3(0, 1, 0), delta.div(max(distance, 1e-8)));
-    const output = vec4(directional ? s : s.mul(max(direction.y, 0)), lum.mul(extra.x));
+    // Only the existing ground-footprint tile uses flash alpha. Object/upper tiles keep groundOnly unchanged.
+    // Positive alpha works on half-float and UNORM scalar fallbacks; no extra attachment or signed packing.
+    const output = vec4(
+      directional ? s : s.mul(max(direction.y, 0)),
+      lum.mul(footprint ? c.w.mul(directional ? 1 : max(direction.y, 0)) : extra.x),
+    );
     m.colorNode = output;
     if (directional) m.mrtNode = mrt({ output, direction: vec4(direction.mul(lum), 0) });
     const mesh = new InstancedMesh(new PlaneGeometry(), m, capacity);
@@ -802,10 +827,19 @@ export class RealLightField {
 
           continue;
         }
+        const look = this.nodes.look;
         const gain =
           (envelope / this.nodes.scale.value) *
           (l.dayFactor + (1 - l.dayFactor) * night) *
-          flicker(l.seed ?? 0, now, l.flicker);
+          (l.lookClass === 'wreck'
+            ? (1 - look.wreckGlow.value) * flicker(l.seed ?? 0, now, l.flicker) +
+              look.wreckGlow.value * wreckFlicker(l.seed ?? 0, now)
+            : flicker(l.seed ?? 0, now, l.flicker)) *
+          (l.lookClass === 'chrono'
+            ? look.chronoPool.value
+            : l.lookClass === 'wreck'
+              ? 1 + 3 * look.wreckGlow.value
+              : 1);
         if (!(gain > 0)) continue;
         const isStatic = pool === 'static';
         const reach = lightReach(l),
@@ -837,7 +871,15 @@ export class RealLightField {
           attrs[0]!.setXYZW(index, ...l.position, l.radius);
           attrs[1]!.setXYZW(index, ...(l.end ?? l.position), lightReach(l));
           const intensity = l.initialIntensity && now - born < (l.hotSeconds ?? 0) ? l.initialIntensity : l.intensity;
-          attrs[2]!.setXYZW(index, intensity[0] * gain, intensity[1] * gain, intensity[2] * gain, 0);
+          const warm = l.lookClass === 'flash' ? look.flashWarm.value : 0;
+          const target = l.warmIntensity ?? l.intensity;
+          attrs[2]!.setXYZW(
+            index,
+            (intensity[0] + (target[0] - intensity[0]) * warm) * gain,
+            (intensity[1] + (target[1] - intensity[1]) * warm) * gain,
+            (intensity[2] + (target[2] - intensity[2]) * warm) * gain,
+            warm * look.flashNeutral.value,
+          );
           attrs[3]!.setXYZW(
             index,
             l.groundOnly ?? 0,

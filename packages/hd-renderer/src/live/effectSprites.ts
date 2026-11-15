@@ -19,6 +19,7 @@ import {
   float,
   floor,
   Fn,
+  If,
   length,
   max,
   min,
@@ -40,6 +41,9 @@ import {
 } from 'three/tsl';
 import type { EffectHdFrame } from '../../../ra2-assets/src/effects';
 import type { SpriteFrame } from '../../../ra2-assets/src/manifest';
+import type { LightLookValues } from '../lightLook';
+import type { AtmosphereNodes } from '../atmosphere';
+import { waterTextures } from '../proceduralTextures';
 import { DirtyAttribute } from '../dirtyAttribute';
 import { InstancedQuad, instancedQuadGeometry } from '../instancedQuad';
 import { bindSlotsBeforeRender, samplingClass, slotMaterial, textureSlot } from '../materialSlots';
@@ -291,6 +295,10 @@ interface PageGroup {
  *   - colour lit by the scene light like other original art, fire-coloured pixels self-lit and FX_GLOW brighter.
  */
 export class EffectSpriteLayer {
+  /** Absent on legacy contexts: no noise samplers or new shader expressions in the hd-light-off graph. */
+  get smokeNodes(): AtmosphereNodes | undefined {
+    return this.cache.nodes?.realLight ? this.cache.nodes : undefined;
+  }
   readonly root = new Group();
   /** Native Top art composites after the visibility mask, in the renderer's transparent top pass. */
   readonly topRoot = new Group();
@@ -581,6 +589,65 @@ export function effectPageLoaded(state: EffectPage | 'loading' | null): state is
 /** Seconds a page mesh may stay empty before it is disposed (and its page released when nothing else uses it). */
 export const MESH_IDLE_SECONDS = 90;
 
+/** Two shared-noise taps for a card (also shared across HD frame interpolation). No new textures.
+ * World/card coordinates follow one renderer wind and rise in presentation time; no frame/index randomness.
+ * Only non-emissive neutral texels enter this branch. Colour always stays at the original sample's grey. */
+function cardSmokeNoise(layer: EffectSpriteLayer, p: ShaderNode, anchor: ShaderNode, age: ShaderNode) {
+  const nodes = layer.smokeNodes!;
+  const look = nodes.smokeLook;
+  const wind3 = vec3(nodes.smokeWind.x, 0, nodes.smokeWind.y);
+  const wind = vec2(wind3.dot(layer.cameraRight), wind3.dot(layer.cameraUp));
+  const q = vec2(p.x, p.y.negate())
+    .mul(look.smokeDetail)
+    .mul(0.025)
+    .add(anchor.xz.mul(0.13))
+    .sub(wind.mul(layer.now.mul(0.12)))
+    .sub(vec2(0, layer.now.mul(0.08)));
+  const n = texture(waterTextures().noise, q).toVar();
+  const detail = texture(waterTextures().noise, q.mul(2.1).add(n.rg.sub(0.5).mul(0.2))).toVar();
+  const offset = n.rg
+    .add(detail.gb)
+    .sub(1)
+    .mul(look.smokeWarp)
+    .mul(1.2)
+    .add(vec2(0, p.y.mul(age).mul(look.smokeStretch).mul(-0.035)));
+  return { offset, density: n.r.mul(0.65).add(detail.b.mul(0.35)) };
+}
+/** CPU twin of the bounded card-density response; straight grey RGB is unchanged. */
+export function smokeCardAlpha(
+  alpha: number,
+  warped: number,
+  density: number,
+  age: number,
+  look: LightLookValues,
+  enabled = true,
+): number {
+  if (!enabled) return alpha;
+  const eroded = warped * (1 - look.smokeWisp * (1 - density) * (age * 0.08 + 0.06));
+  const varied = eroded * (1.02 + (density - 0.5) * 0.035);
+  const next = Math.min(1, Math.max(alpha * 0.96, Math.min(alpha * 1.04, varied)));
+  return alpha + (next - alpha) * look.smokeVolume;
+}
+/** Keep each grey texel's coverage within 4% of the original: hence whole-puff mean alpha stays within 4%.
+ * The warp is confined to the frame; fine edge erosion is bounded instead of altering the engine silhouette size. */
+function cardSmokeAlpha(
+  alpha: ShaderNode,
+  warped: ShaderNode,
+  density: ShaderNode,
+  nodes: AtmosphereNodes,
+  age: ShaderNode,
+): ShaderNode {
+  const eroded = warped.mul(
+    float(1).sub(nodes.smokeLook.smokeWisp.mul(float(1).sub(density)).mul(age.mul(0.08).add(0.06))),
+  );
+  const varied = eroded.mul(density.sub(0.5).mul(0.035).add(1.02));
+  return mix(
+    alpha,
+    varied.clamp(alpha.mul(0.96), alpha.mul(1.04)).min(1),
+    nodes.smokeLook.smokeVolume.mul(nodes.realLight!.enabled),
+  );
+}
+
 class PageMesh {
   readonly mesh: InstancedQuad;
   /** Whether the current instances include translucent cards (the mesh then uses the display-space mix). */
@@ -724,41 +791,47 @@ class PageMesh {
       // Continuous atlas texel coordinate of this fragment, then the four texel centres around it.
       const tx = aRect.x.sub(margin).add(u.mul(aRect.z.add(margin.mul(2))));
       const ty = aRect.y.sub(margin).add(v.mul(aRect.w.add(margin.mul(2))));
-      const p = vec2(tx, ty).sub(0.5);
-      const i0 = floor(p);
-      const f = p.sub(i0);
-      const tap = (dx: number, dy: number) => {
-        const at = i0.add(vec2(dx, dy));
-        const index: ShaderNode = floor(texture(atlas.texture, at.add(0.5).div(atlasSize)).r.mul(255).add(0.5));
-        // Taps outside the frame (padding, neighbouring frames) never count.
-        const inside = at.x
-          .greaterThanEqual(aRect.x)
-          .and(at.y.greaterThanEqual(aRect.y))
-          .and(at.x.lessThan(aRect.x.add(aRect.z)))
-          .and(at.y.lessThan(aRect.y.add(aRect.w)));
-        const opaque: ShaderNode = inside.and(index.greaterThan(0.5)).select(float(1), float(0));
-        const colour: ShaderNode = texture(
-          cache.paletteAtlas,
-          vec2(index.add(0.5).div(256), aParams.z.add(0.5).div(paletteRows)),
-        ).rgb;
-        return { opaque, colour };
+      const sample = (atSample: ShaderNode) => {
+        const p = atSample.sub(0.5);
+        const i0 = floor(p);
+        const f = p.sub(i0);
+        const tap = (dx: number, dy: number) => {
+          const at = i0.add(vec2(dx, dy));
+          const index: ShaderNode = floor(texture(atlas.texture, at.add(0.5).div(atlasSize)).r.mul(255).add(0.5));
+          // Taps outside the frame (padding, neighbouring frames) never count.
+          const inside = at.x
+            .greaterThanEqual(aRect.x)
+            .and(at.y.greaterThanEqual(aRect.y))
+            .and(at.x.lessThan(aRect.x.add(aRect.z)))
+            .and(at.y.lessThan(aRect.y.add(aRect.w)));
+          const opaque: ShaderNode = inside.and(index.greaterThan(0.5)).select(float(1), float(0));
+          const colour: ShaderNode = texture(
+            cache.paletteAtlas,
+            vec2(index.add(0.5).div(256), aParams.z.add(0.5).div(paletteRows)),
+          ).rgb;
+          return { opaque, colour };
+        };
+        const t00 = tap(0, 0);
+        const t10 = tap(1, 0);
+        const t01 = tap(0, 1);
+        const t11 = tap(1, 1);
+        const w00 = float(1).sub(f.x).mul(float(1).sub(f.y)).mul(t00.opaque);
+        const w10 = f.x.mul(float(1).sub(f.y)).mul(t10.opaque);
+        const w01 = float(1).sub(f.x).mul(f.y).mul(t01.opaque);
+        const w11 = f.x.mul(f.y).mul(t11.opaque);
+        const coverage: ShaderNode = w00.add(w10).add(w01).add(w11);
+        const mask: ShaderNode = smoothstep(0.35, 0.65, coverage);
+        const art: ShaderNode = t00.colour
+          .mul(w00)
+          .add(t10.colour.mul(w10))
+          .add(t01.colour.mul(w01))
+          .add(t11.colour.mul(w11))
+          .div(max(coverage, 1e-4));
+        return { mask, art };
       };
-      const t00 = tap(0, 0);
-      const t10 = tap(1, 0);
-      const t01 = tap(0, 1);
-      const t11 = tap(1, 1);
-      const w00 = float(1).sub(f.x).mul(float(1).sub(f.y)).mul(t00.opaque);
-      const w10 = f.x.mul(float(1).sub(f.y)).mul(t10.opaque);
-      const w01 = float(1).sub(f.x).mul(f.y).mul(t01.opaque);
-      const w11 = f.x.mul(f.y).mul(t11.opaque);
-      const coverage: ShaderNode = w00.add(w10).add(w01).add(w11);
-      const mask: ShaderNode = smoothstep(0.35, 0.65, coverage);
-      const art: ShaderNode = t00.colour
-        .mul(w00)
-        .add(t10.colour.mul(w10))
-        .add(t01.colour.mul(w01))
-        .add(t11.colour.mul(w11))
-        .div(max(coverage, 1e-4));
+      const original = sample(vec2(tx, ty));
+      let mask = original.mask;
+      const art = original.art;
       // Fire: warm hue (15..65 degrees) and bright, judged on the display-referred palette colour.
       const s: ShaderNode = pow(art.max(0), vec3(1 / 2.2));
       const hi: ShaderNode = max(s.r, max(s.g, s.b));
@@ -769,6 +842,30 @@ class PageMesh {
         .and(hi.greaterThan(0.7))
         .and(hi.sub(lo).greaterThan(hi.mul(0.2)));
       const fire: ShaderNode = warm.and(aStyle.z.greaterThan(0.5)).select(float(1), float(0));
+      if (layer.smokeNodes) {
+        const nodes = layer.smokeNodes;
+        const baseMask = mask;
+        mask = Fn(() => {
+          const a = baseMask.toVar();
+          If(
+            hi
+              .sub(lo)
+              .lessThan(0.07)
+              .and(hi.lessThan(0.86))
+              .and(fire.lessThan(0.01))
+              .and(draw.equal(0))
+              .and(baseMask.greaterThan(0.001)),
+            () => {
+              const age = float(1).sub(aStyle.x);
+              const n = cardSmokeNoise(layer, vec2(px, py), aAnchor, age);
+              const at = clamp(vec2(tx, ty).add(n.offset), aRect.xy.add(0.5), aRect.xy.add(aRect.zw).sub(0.5));
+              const warped = sample(at);
+              a.assign(cardSmokeAlpha(baseMask, warped.mask, n.density, nodes, age));
+            },
+          );
+          return a;
+        })().toVar();
+      }
       // Native Top cloud art remains bright over black shroud; it does not inherit the event's scene illumination.
       const lit: ShaderNode = art.mul(
         pass === 'top' ? vec3(layer.displayScale) : mix(layer.light, vec3(FX_GLOW), fire),
@@ -959,14 +1056,16 @@ class HdPageMesh {
       return draw.greaterThan(0.5).select(decal, card);
     })();
     material.colorNode = Fn(() => {
-      const sample = (rect: ShaderNode, offset: ShaderNode): ShaderNode => {
+      const sample = (rect: ShaderNode, offset: ShaderNode, warp: ShaderNode = vec2(0)): ShaderNode => {
         const local: ShaderNode = vec2(px, py).sub(offset).mul(scale);
         const inside = local.x
           .greaterThanEqual(0)
           .and(local.y.greaterThanEqual(0))
           .and(local.x.lessThan(rect.z))
           .and(local.y.lessThan(rect.w));
-        const at = rect.xy.add(clamp(local, vec2(0.5), rect.zw.sub(0.5))).div(atlasSize);
+        const at = rect.xy
+          .add(clamp(layer.smokeNodes ? local.add(warp.mul(scale)) : local, vec2(0.5), rect.zw.sub(0.5)))
+          .div(atlasSize);
         // Clamp to texel centres and use the base level: automatically generated atlas mipmaps can already contain
         // neighbouring frames, even when their sampling UV is clamped. The PNGs need no special mip-safe gutters.
         // The pages hold PREMULTIPLIED colour (sRGB-encoded) and coverage: light a redrawn frame adds over the grey it
@@ -995,6 +1094,23 @@ class HdPageMesh {
       // them; scene-lit they turned grey by day and moonlit blue at night. Lit smoke tops stay below this threshold.
       const whiteHot = smoothstep(0.86, 0.96, min(s0.r, min(s0.g, s0.b)));
       const e = max(max(fire, glow), whiteHot);
+      const smokeFactor = layer.smokeNodes
+        ? Fn(() => {
+            const factor = float(1).toVar();
+            If(e.lessThan(0.01).and(chroma.lessThan(0.07)).and(draw.equal(0)).and(rgba.a.greaterThan(0.001)), () => {
+              const age = float(1).sub(aAnchor.w);
+              const n = cardSmokeNoise(layer, vec2(px, py), aAnchor, age);
+              const warped: ShaderNode = mix(
+                sample(aRect, aOffsets.xy, n.offset),
+                sample(aNextRect, aOffsets.zw, n.offset),
+                blend,
+              );
+              // Premultiplied RGB scales with coverage; straight grey is never regraded or resampled into fire.
+              factor.assign(cardSmokeAlpha(rgba.a, warped.a, n.density, layer.smokeNodes!, age).div(rgba.a.max(1e-5)));
+            });
+            return factor;
+          })()
+        : undefined;
       // Flame grade: the redrawn fireballs (like the original's) spend their first frames as a pale yellow-white blob.
       // Re-map flame pixels through a temperature ramp with a gamma on their heat, so only the hottest texels stay
       // white-yellow and the rest spread over yellow, orange and red while keeping the drawn texture. Pixels with
@@ -1023,7 +1139,9 @@ class HdPageMesh {
       // frames already thin out, so smoke keeps more body (sqrt of the fade) and flame most of it (fourth root): a
       // half-transparent fireball over grass mixes to an olive murk, and half-transparent smoke reads as a grey veil.
       const fade: ShaderNode = pow(aAnchor.w, mix(layer.hdSmokeFade, layer.hdFlameFade, e));
-      return vec4(lit.mul(fade), rgba.a.mul(fade));
+      return smokeFactor
+        ? vec4(lit.mul(fade).mul(smokeFactor), rgba.a.mul(fade).mul(smokeFactor))
+        : vec4(lit.mul(fade), rgba.a.mul(fade));
     })();
     return material;
   }

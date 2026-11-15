@@ -10,6 +10,7 @@ import {
 } from 'three/webgpu';
 import {
   dot,
+  exp,
   float,
   instancedBufferAttribute,
   length,
@@ -26,6 +27,7 @@ import {
   vec3,
   vec4,
 } from 'three/tsl';
+import { createLightLook, type LightLook } from './lightLook';
 import { DirtyAttribute } from './dirtyAttribute';
 import { InstancedQuad } from './instancedQuad';
 import type { ShaderNode } from './tsl';
@@ -39,6 +41,8 @@ export interface EmissivePrimitive {
   coreWidth?: number;
   /** Preserve source RGB ratios in a faithful laser sheath. */
   preserveHue?: boolean;
+  /** Native straight laser only; auxiliary emitters never opt into this profile. */
+  laserLight?: boolean;
   colour: Rgb;
   hot?: Rgb;
   gain: number;
@@ -100,6 +104,21 @@ export function emissiveProfile(r: number): { core: number; sheath: number; glow
     glow: EMISSIVE_BUDGET.outerAlpha * (1 - smooth(0, EMISSIVE_BUDGET.outerWidth, r)) ** 2,
   };
 }
+/** CPU twin of the native laser's new radial radiance before the unchanged source/frame budgets. */
+export function laserLightProfile(r: number, colour: Rgb, coreWidth = 1.4, coreScale = 0.25, glow = 1): Rgb {
+  const t = Math.max(
+    0,
+    Math.min(1, (Math.abs(r) - coreWidth * coreScale * 0.72) / Math.max(1e-5, coreWidth * coreScale * 0.28)),
+  );
+  const core = 1 - t * t * (3 - 2 * t);
+  const peak = Math.max(...colour, 1e-8);
+  const body = Math.min(0.8, 0.8 * Math.exp(-1.6 * (r / Math.max(glow, 1e-4)) ** 2) * glow);
+  return colour.map((c) => (0.8 + (0.2 * c) / peak) * 0.82 * core + (c / peak) * body * (1 - core)) as [
+    number,
+    number,
+    number,
+  ];
+}
 /** CPU twin of the non-core luminance limit, applied after flicker and source gain. */
 export function emissiveSheathColour(colour: Rgb, gain: number): [number, number, number] {
   const peak = Math.max(...colour);
@@ -122,7 +141,10 @@ export class RealEmissiveLayer {
   totalEnergy = 0;
   sourceCount = 0;
   legacyEnergy = 0;
-  constructor(readonly capacity = 16384) {
+  constructor(
+    readonly capacity = 16384,
+    readonly look: LightLook = createLightLook(),
+  ) {
     this.data = new DirtyAttribute(new Float32Array(capacity * 28), 28);
     const shared = this.data.interleaved();
     const attrs = Array.from(
@@ -192,7 +214,41 @@ export class RealEmissiveLayer {
     const bodyScale = float(EMISSIVE_BUDGET.sheathCeiling)
       .div(max(body.r, max(body.g, body.b)).max(1e-8))
       .min(1);
-    const rgb = hot.rgb.mul(core.mul(EMISSIVE_BUDGET.core)).mul(colour.w).mul(modulation).add(body.mul(bodyScale));
+    const legacy = hot.rgb.mul(core.mul(EMISSIVE_BUDGET.core)).mul(colour.w).mul(modulation).add(body.mul(bodyScale));
+    const laserCore = float(1).sub(
+      smoothstep(coreWidth.mul(this.look.beamCore).mul(0.72), coreWidth.mul(this.look.beamCore).max(1e-5), r),
+    );
+    // No sheath plateau. The 2% Gaussian contour is ~18 px at the measured 2.5 device scale.
+    const laserGlow = exp(r.div(this.look.beamGlow.max(1e-4)).pow(2).mul(-1.6)).mul(this.look.beamGlow);
+    const seed = phase.x.mul(1 / 65536).fract();
+    const tick = this.now.mul(23).add(seed.mul(13));
+    const flicker = mx_noise_float(vec3(tick, seed.mul(71), 0))
+      .mul(2)
+      .clamp(-1, 1)
+      .mul(this.look.beamFlicker)
+      .add(1);
+    const shimmer = along.mul(29).sub(this.now.mul(17)).add(seed).sin().mul(0.025).add(1);
+    const impact = exp(along.sub(span).div(a.w.mul(0.7).max(1e-5)).pow(2).negate().sub(r.pow(2).mul(1.6))).mul(
+      this.look.beamImpact,
+    );
+    const glowRgb = colour.rgb
+      .div(peak.max(1e-8))
+      .mul(laserGlow.add(impact))
+      .mul(0.8)
+      .mul(flicker)
+      .mul(shimmer)
+      .mul(colour.w);
+    const glowScale = float(0.8)
+      .div(max(glowRgb.r, max(glowRgb.g, glowRgb.b)).max(1e-8))
+      .min(1);
+    // A very thin violet-white/red-white core; bound the combined peak so channel clipping cannot turn violet pink.
+    const hotTint = mix(vec3(1), colour.rgb.div(peak.max(1e-8)), 0.2).mul(0.82);
+    const lightRgb = hotTint
+      .mul(laserCore)
+      .mul(flicker)
+      .mul(shimmer)
+      .add(glowRgb.mul(glowScale).mul(float(1).sub(laserCore)));
+    const rgb = mix(legacy, lightRgb, phase.w.greaterThan(1.5).select(this.look.beamLight, float(0)));
     // Budget only these new primitives, preserving legacy static overlays that share the attachment.
     m.colorNode = vec4(0);
     m.mrtNode = mrt({ output: vec4(0), emissive: vec4(rgb.mul(this.frameGain), 0) });
@@ -251,7 +307,7 @@ export class RealEmissiveLayer {
           p.noise?.seed ?? 0,
           p.noise?.distance ?? 0,
           p.coreWidth ?? 0,
-          p.preserveHue ? 1 : 0,
+          p.laserLight ? 2 : p.preserveHue ? 1 : 0,
         ];
         for (let i = 0; i < 28; i++) this.data.setComponent(n, i, values[i]!);
         n++;

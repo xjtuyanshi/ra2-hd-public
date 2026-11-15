@@ -1,3 +1,4 @@
+import type { LightLook } from './lightLook';
 import { EMISSIVE_BUDGET, emissiveCoreTint, type RealEmissiveLayer, type EmissivePrimitive } from './realEmissive';
 import {
   AdditiveBlending,
@@ -613,6 +614,57 @@ function smokeLobes(
   return { density, normal, shadow };
 }
 
+/** Three texture reads: two domain-warped density octaves and one soft overhead offset for self-shadow.
+ * No sphere surfaces, normals or rim. Stretch changes density within the existing quad, never its bounds/depth.
+ * The layer wind is shared with native smoke cards, not randomized per puff. */
+function smokeVolume(
+  p: ShaderNode,
+  age: ShaderNode,
+  t: ShaderNode,
+  seed: ShaderNode,
+  nodes: typeof DEFAULT_ATMOSPHERE_NODES,
+  cameraRight: ShaderNode,
+  cameraUp: ShaderNode,
+  /** Density response [erosion floor share, full-density level, noise gain, noise bias]: calibrated per pool so the
+   * mean coverage of a puff over its life matches the legacy shading (billows/columns ~0.2, garnish puffs ~0.3). */
+  response: readonly [number, number, number, number] = [0.35, 0.72, 0.85, 0.35],
+): { density: ShaderNode; shade: ShaderNode } {
+  const look = nodes.smokeLook;
+  const noise = waterTextures().noise;
+  const wind3 = vec3(nodes.smokeWind.x, 0, nodes.smokeWind.y);
+  const wind = vec2(dot(wind3, cameraRight), dot(wind3, cameraUp));
+  const q = vec2(p.x, p.y.div(float(1).add(t.mul(look.smokeStretch))))
+    .mul(look.smokeDetail)
+    .mul(0.52)
+    .add(vec2(seed.mul(3.7), seed.mul(1.9)))
+    .sub(wind.mul(age.mul(0.12)))
+    .sub(vec2(0, age.mul(0.09)));
+  const coarse = texture(noise, q).toVar();
+  const warped = q.mul(2.1).add(coarse.rg.sub(0.5).mul(look.smokeWarp).mul(0.28));
+  const fine = texture(noise, warped).r.toVar();
+  const overhead = texture(noise, warped.add(vec2(0, 0.09))).r;
+  const densityNoise = coarse.r.mul(0.65).add(fine.mul(0.35));
+  const boundary = exp(
+    p.x
+      .pow(2)
+      .mul(-2.6)
+      .sub(
+        p.y
+          .div(float(1).add(t.mul(look.smokeStretch)))
+          .pow(2)
+          .mul(2.6),
+      ),
+  ).mul(smoothstep(1, 0.73, p.abs().max(p.abs().yx).x));
+  const erosion = look.smokeWisp.mul(t.mul(0.5).add(0.3));
+  const density = smoothstep(
+    erosion.mul(response[0]),
+    response[1],
+    boundary.mul(densityNoise.mul(response[2]).add(response[3])),
+  ).mul(float(1).sub(t.mul(0.3)));
+  const shade = float(0.68).add(fine.sub(overhead).mul(0.25).clamp(-0.12, 0.12));
+  return { density, shade };
+}
+
 /** Exact ground contact time, including the spawn lift; the shadow must not stop at the lifted origin. */
 function debrisFlightTime(rise: number, height: number): number {
   return (rise + Math.sqrt(rise * rise + 2 * ENHANCED.debris.gravity * Math.max(0, height))) / ENHANCED.debris.gravity;
@@ -996,7 +1048,13 @@ export class EffectsLayer {
       pool.material.colorNode = Fn(() => {
         const p = uv().sub(0.5).mul(2);
         const n = mx_noise_float(vec3(p.mul(1.8), seed.mul(20).add(t.mul(1.5)))).mul(0.3);
-        const mask = smoothstep(1.0, 0.2, length(p).add(n));
+        const oldMask = smoothstep(1.0, 0.2, length(p).add(n));
+        const volume = this.nodes.realLight
+          ? smokeVolume(p, age, t, seed, this.nodes, this.cameraRight, this.cameraUp, [0.25, 0.55, 0.9, 0.4])
+          : undefined;
+        const mask = volume
+          ? mix(oldMask, volume.density, this.nodes.smokeLook.smokeVolume.mul(this.nodes.realLight!.enabled))
+          : oldMask;
         // Unlit smoke follows the scene's light level (1 at clear noon) and glows near fires and explosions, lit from
         // below. Physical smoke takes only a weak, nearly neutral directional fill (smokeLight).
         // Soot glows more from the fire under it (lit from below).
@@ -1296,7 +1354,14 @@ export class EffectsLayer {
       })();
     });
 
-    this.beams = new BeamLayer(this.cameraRight, this.cameraUp, this.now, !!this.nodes.realLight);
+    this.beams = new BeamLayer(
+      this.cameraRight,
+      this.cameraUp,
+      this.now,
+      !!this.nodes.realLight,
+      this.nodes.realLight ? this.nodes.smokeLook : undefined,
+      this.nodes.realLight?.enabled,
+    );
 
     const noise = waterTextures().noise;
     // Enhanced glow halo: a soft Gaussian of fire light around the blast, white-yellow at the centre, orange outside,
@@ -1339,7 +1404,7 @@ export class EffectsLayer {
       })();
     });
 
-    // Enhanced rolling smoke: puffs that rise and spread with drag, turn slowly (rolling), and are shaded as lumpy
+    // Enhanced rolling smoke: puffs rise and spread with drag. The cur preset retains the measured legacy lumpy
     // lobes: lit from the upper left like the original art, a sky-lit rim, the local light field (fires,
     // explosions), and the fire's glow underneath while they are young (params.w = heat). Premultiplied: the glow adds
     // light, the soot covers what is behind.
@@ -1388,12 +1453,24 @@ export class EffectsLayer {
           .add(rim)
           .mul(mix(e.underside, 1, smoothstep(...e.undersideRange, nrm.y)))
           .mul(shadow);
-        const lit = this.nodes.sceneBrightness.mul(shade).add(
+        const volume = this.nodes.realLight
+          ? smokeVolume(p, age, t, seed, this.nodes, this.cameraRight, this.cameraUp)
+          : undefined;
+        const volumeWeight = this.nodes.realLight
+          ? this.nodes.smokeLook.smokeVolume.mul(this.nodes.realLight.enabled)
+          : float(0);
+        const lit = this.nodes.sceneBrightness.mul(volume ? mix(shade, volume.shade, volumeWeight) : shade).add(
           smokeLight(
             positionWorld.xz,
             this.nodes,
             positionWorld.y,
-            this.cameraRight.mul(nrm.x).add(this.cameraUp.mul(nrm.y)).add(this.toCamera.mul(nrm.z)),
+            volume
+              ? mix(
+                  this.cameraRight.mul(nrm.x).add(this.cameraUp.mul(nrm.y)).add(this.toCamera.mul(nrm.z)),
+                  this.toCamera,
+                  volumeWeight,
+                )
+              : this.cameraRight.mul(nrm.x).add(this.cameraUp.mul(nrm.y)).add(this.toCamera.mul(nrm.z)),
           )
             .div(this.nodes.referenceLevel)
             .mul(0.45),
@@ -1411,7 +1488,7 @@ export class EffectsLayer {
         const glow = mix(vec3(1.0, 0.36, 0.08), vec3(1.0, 0.66, 0.3), inner.min(1))
           .mul(heat)
           .mul(under.add(inner));
-        const alpha = density
+        const alpha = (volume ? mix(density, volume.density, volumeWeight) : density)
           .mul(smoothstep(0.0, 0.08, t))
           .mul(smoothstep(1.0, 0.35, t))
           .mul(e.opacity)
@@ -1653,7 +1730,8 @@ export class EffectsLayer {
       })();
     });
 
-    // Enhanced smoke column: a few large puffs rise and spread, lumpy and lit like the rolling
+    // Enhanced smoke column: a few large puffs rise and spread. Cur retains the legacy lobes; new uses soft density
+    // and overhead self-shadow with the same neutral base and young fire glow as the rolling
     // smoke, glowing from the fire below while young (params.w = heat), dispersing to a thin grey.
     this.column = new ParticlePool(COLUMN_PUFFS, quad, premultiplied(), (pool) => {
       const { age, life, size, seed, origin, velocity, ground, alive, extra: heat } = particleInputs(pool, this.now);
@@ -1688,20 +1766,31 @@ export class EffectsLayer {
         const { density, normal: nrm, shadow } = smokeLobes(p, seed, angle, edge, fine, broad, bump, e);
         const sun = dot(nrm, vec3(-0.5, 0.68, 0.53)).max(0);
         const rim = pow(float(1).sub(nrm.z), 3).mul(0.3);
+        const volume = this.nodes.realLight
+          ? smokeVolume(p, age, t, seed, this.nodes, this.cameraRight, this.cameraUp)
+          : undefined;
+        const volumeWeight = this.nodes.realLight
+          ? this.nodes.smokeLook.smokeVolume.mul(this.nodes.realLight.enabled)
+          : float(0);
+        const legacyShade = float(e.ambient)
+          .add(sun.mul(e.sun))
+          .add(rim)
+          .mul(mix(e.underside, 1, smoothstep(...e.undersideRange, nrm.y)))
+          .mul(shadow);
         const lit = this.nodes.sceneBrightness
-          .mul(
-            float(e.ambient)
-              .add(sun.mul(e.sun))
-              .add(rim)
-              .mul(mix(e.underside, 1, smoothstep(...e.undersideRange, nrm.y)))
-              .mul(shadow),
-          )
+          .mul(volume ? mix(legacyShade, volume.shade, volumeWeight) : legacyShade)
           .add(
             smokeLight(
               positionWorld.xz,
               this.nodes,
               positionWorld.y,
-              this.cameraRight.mul(nrm.x).add(this.cameraUp.mul(nrm.y)).add(this.toCamera.mul(nrm.z)),
+              volume
+                ? mix(
+                    this.cameraRight.mul(nrm.x).add(this.cameraUp.mul(nrm.y)).add(this.toCamera.mul(nrm.z)),
+                    this.toCamera,
+                    volumeWeight,
+                  )
+                : this.cameraRight.mul(nrm.x).add(this.cameraUp.mul(nrm.y)).add(this.toCamera.mul(nrm.z)),
             )
               .div(this.nodes.referenceLevel)
               .mul(0.4),
@@ -1712,7 +1801,7 @@ export class EffectsLayer {
           .mul(smoothstep(0.1, -0.8, nrm.y))
           .mul(pow(clamp(float(1).sub(t.mul(5)), 0, 1), 2))
           .mul(1.4);
-        const alpha = density
+        const alpha = (volume ? mix(density, volume.density, volumeWeight) : density)
           .mul(smoothstep(0.0, 0.06, t))
           .mul(smoothstep(1.0, 0.4, t))
           .mul(0.62)
@@ -2502,7 +2591,14 @@ export class BeamLayer {
   };
   private readonly laserWidth = uniform(BEAM_WIDTH);
 
-  constructor(cameraRight: ShaderNode, cameraUp: ShaderNode, now: ShaderNode = uniform(0), physical = false) {
+  constructor(
+    cameraRight: ShaderNode,
+    cameraUp: ShaderNode,
+    now: ShaderNode = uniform(0),
+    physical = false,
+    look?: LightLook,
+    enabled?: ShaderNode,
+  ) {
     const material = additive();
     // The quad's winding depends on the segment's direction on screen (the side vector is a cross product), so half of
     // all segments would face away from the camera: draw both sides.
@@ -2541,7 +2637,12 @@ export class BeamLayer {
         mx_noise_float(position.mul(e.noiseScale).add(vec3(now.mul(e.flickerRate), 0, 0))).mul(e.flicker),
       );
       const electric = vec3(hotCore).add(tint.mul(inner)).add(outer).mul(flicker);
-      return vec4(mix(original, electric, physical ? enhanced.max(0) : enhanced), 1);
+      const result = mix(original, electric, physical ? enhanced.max(0) : enhanced);
+      // The physical emitter now supplies the complete laser profile; retaining this wide old bar flattened it.
+      const cover = look
+        ? float(1).sub(enhanced.lessThan(0).select(look.beamLight.mul(enabled ?? float(1)), float(0)))
+        : float(1);
+      return vec4(look ? result.mul(cover) : result, 1);
     })();
     this.mesh = new InstancedMesh(new PlaneGeometry(1, 1), material, BEAM_SEGMENTS);
     this.mesh.frustumCulled = false;
@@ -2587,6 +2688,7 @@ export class BeamLayer {
               width: beam.bolt ? BEAM_WIDTH : this.laserStyle.emissionWidth,
               coreWidth: beam.bolt ? undefined : this.laserStyle.coreWidth,
               preserveHue: !beam.bolt,
+              laserLight: !beam.bolt,
               colour: beam.colour.toArray() as [number, number, number],
               hot: beam.bolt
                 ? emissiveCoreTint(beam.colour.toArray() as [number, number, number])

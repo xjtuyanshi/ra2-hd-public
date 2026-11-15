@@ -1219,7 +1219,7 @@ class SpriteGraph {
             flat,
             localSurfaceLight(
               vec3(0),
-              groundLightAlbedo(physicalAlbedo, result.rgb, nodes),
+              groundLightAlbedo(physicalAlbedo, result.rgb, nodes, ground),
               nodes,
               ground,
               height.add(aAnchor.y),

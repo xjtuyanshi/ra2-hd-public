@@ -18,18 +18,20 @@ import {
   max,
   mix,
   mx_fractal_noise_float,
+  positionWorld,
   smoothstep,
   texture,
   uniform,
   vec3,
 } from 'three/tsl';
+import { createLightLook } from './lightLook';
 import type { AtmosphereProfile } from './contract';
 import type { EmitterLayer } from './emitters';
 import type { RealLightField } from './realLight';
 import type { LightField } from './lightField';
 import { SceneLightingUniforms } from './lighting';
 import type { ShaderNode } from './tsl';
-import { OBJECT_KNEE, RealLightNodes, sampleRealLight } from './realLight';
+import { OBJECT_KNEE, RealLightNodes, sampleRealLight, flashNeutralWeight } from './realLight';
 export { OBJECT_KNEE };
 
 /** Shader inputs owned by one renderer/world. Legacy exports below remain for standalone material callers. */
@@ -68,11 +70,16 @@ export class AtmosphereNodes extends SceneLightingUniforms {
   /** 1 while the terrain draws the clear water look: shadows on open water are softened and lightened. */
   readonly clearWater = uniform(0);
 
+  /** Shared smoke/laser/light presentation uniforms. Owned by this context; no shader rebuild on edits.
+   * smokeVolume/beamLight gate the new profiles; all changes are gated again by realLight.enabled.
+   * See lightLook.ts for numeric defaults and the exact 1697702 preset. */
+  readonly smokeLook = createLightLook();
+  readonly smokeWind = uniform(new Vector2());
   readonly realLight?: RealLightNodes;
 
   constructor(options: { realLight?: boolean } = {}) {
     super();
-    if (options.realLight) this.realLight = new RealLightNodes();
+    if (options.realLight) this.realLight = new RealLightNodes(this.smokeLook);
     this.black.needsUpdate = true;
     this.noSurface.needsUpdate = true;
   }
@@ -248,10 +255,17 @@ export function physicalSurfaceLight(
  * keeps its hue. With the ungraded albedo, warm light uncovered the grass's daytime yellow-green under the blue night
  * grade and lit areas read as olive or straw (round-1 review, live SOV07TMD night). By day it is the albedo itself.
  */
-export function groundLightAlbedo(albedo: ShaderNode, shown: ShaderNode, nodes: AtmosphereNodes): ShaderNode {
+export function groundLightAlbedo(
+  albedo: ShaderNode,
+  shown: ShaderNode,
+  nodes: AtmosphereNodes,
+  xz: ShaderNode = positionWorld.xz,
+): ShaderNode {
   if (!nodes.realLight) return albedo;
   const kept = shown.max(0).mul(luminance(albedo).div(luminance(shown.max(0)).max(1e-4)));
-  return mix(albedo, kept, nodes.realLight.nightWeight.mul(GROUND_LIGHT_HUE_KEEP));
+  // Neutralize only the added warm-flash share after the complete night grade. Never uncover daytime grass.
+  const neutral = mix(kept, vec3(luminance(kept)), flashNeutralWeight(nodes.realLight, xz));
+  return mix(albedo, neutral, nodes.realLight.nightWeight.mul(GROUND_LIGHT_HUE_KEEP));
 }
 /** Share of the night hue kept by physically lit ground (the rest takes the albedo's own hue). */
 export const GROUND_LIGHT_HUE_KEEP = 1;
@@ -260,14 +274,16 @@ export function groundLightAlbedoRgb(
   albedo: readonly number[],
   shown: readonly number[],
   night: number,
+  flashNeutral = 0,
 ): [number, number, number] {
   const lum = (v: readonly number[]) => v[0]! * 0.2126 + v[1]! * 0.7152 + v[2]! * 0.0722;
   const k = lum(albedo) / Math.max(lum(shown.map((c) => Math.max(0, c))), 1e-4);
-  return albedo.map((c, i) => c + (Math.max(0, shown[i]!) * k - c) * night * GROUND_LIGHT_HUE_KEEP) as [
-    number,
-    number,
-    number,
-  ];
+  const neutral = lum(shown.map((c) => Math.max(0, c))) * k;
+  return albedo.map(
+    (c, i) =>
+      c +
+      (Math.max(0, shown[i]!) * k * (1 - flashNeutral) + neutral * flashNeutral - c) * night * GROUND_LIGHT_HUE_KEEP,
+  ) as [number, number, number];
 }
 
 /** Blend at the final added term so the experimental runtime toggle restores the legacy response. */

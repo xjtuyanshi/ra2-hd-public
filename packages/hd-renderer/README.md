@@ -401,7 +401,31 @@ __hdBridge.light.cost();
 __hdBridge.light.hold(false); // Apply the newest queued snapshot and resume delivery.
 ```
 
-`hold` and `cost` exist on the bridge only in development. Presentation-clock animation continues while held.
+`hold`, `look` and `cost` exist on the bridge only in development. The HD presentation clock freezes while held;
+look edits apply on the next presented frame without advancing that clock or accepting another logic snapshot.
+
+```js
+__hdBridge.light.look(); // Detached numeric snapshot of all parameters.
+__hdBridge.light.look('cur'); // Exact 1697702 smoke, laser and light response.
+__hdBridge.light.look('new'); // New defaults below.
+__hdBridge.light.look({ smokeWisp: 0.5, beamFlicker: 0.1 });
+```
+
+Shared uniforms live on `hd.nodes.smokeLook`: `smokeVolume=1`, `smokeWisp=0.75`, `smokeWarp=0.8`,
+`smokeStretch=0.35`, `smokeDetail=2`; `beamLight=1`, `beamCore=0.35`, `beamGlow=1.9`, `beamFlicker=0.12`,
+`beamImpact=0.18`; `chronoPool=0`, `flashWarm=1`, `flashNeutral=0.9`, `wreckGlow=1`. Master switches
+`smokeVolume=0` and `beamLight=0` restore their old profiles. `chronoPool=1`, `flashWarm=0` and `wreckGlow=0`
+restore old source policies. Detail/glow accept 0..4; other controls accept 0..1. These controls have no visual
+effect without the opted-in, enabled physical path.
+
+Smoke density uses the existing noise texture (three additional taps per procedural puff, two per eligible card
+texel); card coverage and premultiplied grey luminance are bounded within 4% per texel. Frame rectangles, grey
+colour, emission timing, depth and particle budgets are retained. Native straight lasers alone use a thin (about 4 device px)
+tinted-white core, Gaussian house-colour glow, 23 Hz seeded flicker and a small endpoint bloom in the same quad.
+Bolts and auxiliary beams retain their profiles. Chrono emission to ground defaults to zero. Flash luminance in the
+existing ground-footprint alpha selects neutral graded ground albedo only for the flash share; isolated beam ground
+lighting is unchanged. Wrecks retain their 0.45-cell radius with four times the old energy and calm 2–3 Hz flicker.
+CPU/shader tests do not establish private-art appearance, GPU frame cost or live battle acceptance.
 `LiveView.holdLight` also guards its implementation with `import.meta.env.DEV`. `setRealLight` returns false on
 views created without physical graphs. `stats()` reports pool sizes; `top(n)` reports source positions and energy.
 The sandbox can call `window.__fx.live.setRealLight(false|true)` and render its deterministic snapshot directly.
