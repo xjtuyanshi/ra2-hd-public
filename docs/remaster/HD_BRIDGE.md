@@ -865,7 +865,10 @@ sets the HD star twinkle on crystals (0 by default while the glints are drawn);
 `hd-vlook=remaster` selects the remaster voxel look; `hd-vproj=<dir>` selects vehicle redraw projection atlases under
 the HD cache (e.g. `vehicles-hd`); `hd-veh=pages` (pilot) uses the cache's `vehicles-pages` directory instead,
 whose offline-rendered pages (`packages/ra2-assets/python/vehicle_pages.py`, manifest `shading: "baked"`) carry their
-own form light, so the renderer adds no mesh form terms to them; `hd-rect=x,y,w,h`
+own form light, so the renderer adds no mesh form terms to them (their house paint can use
+`vehicle_projection.shaded_paint_channels`: one ramp entry times the page's own luminance ratio, part left to a
+neutral grey of the same luminance, so the remap keeps the baked light and dark and a muted tone for every player
+colour); `hd-rect=x,y,w,h`
 overrides the tactical rectangle (default: the frame minus YR's 168 px sidebar and 32 px command bar).
 `hd-governor=0` switches the frame-rate safeguard off, `hd-pace=<rate>|cap|off` replaces the frame pacer's own
 choice of rate, and `hd-pipelines=sync` switches the asynchronous pipeline compiles off (see "Frame rate" and

@@ -196,6 +196,44 @@ def paint_channels(colour: np.ndarray, coverage: np.ndarray, source_colour: np.n
     return paint
 
 
+def srgb_from_linear(linear: np.ndarray) -> np.ndarray:
+    c = np.clip(np.asarray(linear, np.float64), 0, None)
+    return np.where(c <= 0.0031308, c * 12.92, 1.055 * c ** (1 / 2.4) - 0.055) * 255
+
+
+def shaded_paint_channels(colour: np.ndarray, house: np.ndarray, ramp: np.ndarray, level: float, strength: float,
+                          exposure: float = 1.0, min_area: int = MIN_PAINT_AREA) -> tuple[np.ndarray, np.ndarray]:
+    """House paint that multiplies a fully shaded redraw instead of replacing it (pages with baked form light).
+
+    `colour` is the page colour as stored (sRGB 0..255; the renderer multiplies it by `exposure` before decoding) and
+    `house` the redraw's own house-paint mask. Every painted texel points at one ramp position `level` (0 = remap index
+    16, 1 = index 31); the ratio channel carries the texel's luminance relative to that ramp entry, so the remapped
+    colour keeps the redraw's light and dark (rounded drums, hoops, bevel highlights) for any player colour. The
+    luminance-based ramp_position instead walks the ramp, whose bright entries turn shading into flat saturated paint.
+    `strength` below 1 leaves part of the texel to a neutral grey of the same luminance, which replaces the redraw's own
+    paint hue under the mask: every player colour is desaturated alike (a muted brick red for a bright red house) and no
+    hue of the redraw bleeds into another player's colour. Components smaller than `min_area` texels are dropped (specks
+    at mask borders). Returns the page colour (grey under the paint) and the paint channels."""
+    colour = np.asarray(colour, np.float32)
+    selected = np.asarray(house) > 0.5
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(selected.astype(np.uint8), connectivity=8)
+    small = np.flatnonzero(stats[:, cv2.CC_STAT_AREA] < min_area)
+    selected &= ~np.isin(labels, small[small > 0])
+    paint = np.zeros((*selected.shape, 3), np.float32)
+    out = colour.copy()
+    if not selected.any():
+        return out, paint
+    lum = luminance(np.clip(colour[selected] * exposure, 0, 255))
+    ramp_linear = linear_rgb(ramp)
+    position = float(np.clip(level, 0, 1)) * (len(ramp) - 1)
+    lower = int(min(math.floor(position), len(ramp) - 2))
+    entry = ramp_linear[lower] + (position - lower) * (ramp_linear[lower + 1] - ramp_linear[lower])
+    ratio = np.clip(lum / max(float(entry @ np.array([0.2126, 0.7152, 0.0722])), 1e-6), 0, 2)
+    paint[selected] = np.stack([np.full_like(ratio, strength), np.full_like(ratio, level), ratio / 2], -1)
+    out[selected] = (srgb_from_linear(lum) / exposure)[:, None]
+    return out, paint
+
+
 def dilate_colour(colour: np.ndarray, alpha: np.ndarray) -> np.ndarray:
     """Nearest foreground colour everywhere in a frame's gutter, without changing alpha."""
     valid = alpha > 0.02

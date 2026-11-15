@@ -15,7 +15,7 @@ from PIL import Image
 
 import vehicle_projection as projection
 from vehicle_projection import (BAKE_JACOBIAN, Frame, Registration, affine_point, build, build_index, camo_lock, chroma_lock, compose_sheet,
-                                linear_rgb, pack_frames, paint_channels, ramp_position, redraw_alpha, register,
+                                linear_rgb, pack_frames, paint_channels, ramp_position, redraw_alpha, register, shaded_paint_channels,
                                 sheet_matrix, similarity, steel_grade, warp)
 
 
@@ -125,6 +125,32 @@ class VehicleProjectionTests(unittest.TestCase):
         self.assertEqual(paint[10, 20, 0], 0)
         self.assertEqual(paint[10, 1, 0], 0)
         self.assertFalse(paint_channels(colour, mask, source, mask * 0, ramp).any())
+
+    def test_shaded_paint_keeps_redraw_shading_and_neutralises_its_hue(self):
+        ramp = np.stack([np.linspace(250, 40, 16), np.linspace(30, 4, 16), np.linspace(30, 4, 16)], -1)
+        colour = np.zeros((20, 30, 3), np.float32)
+        colour[:, :, 0] = np.linspace(40, 140, 30)[None]  # a shaded red drum: dark to light across x
+        colour[:, :, 1] = colour[:, :, 0] * 0.4
+        colour[:, :, 2] = colour[:, :, 0] * 0.35
+        house = np.zeros((20, 30), np.float32)
+        house[2:18, 2:28] = 1
+        house[0, 29] = 1  # one-texel speck
+        out, paint = shaded_paint_channels(colour, house, ramp, 0.2, 0.65, exposure=1.5)
+        self.assertEqual(paint[0, 29, 0], 0)
+        np.testing.assert_array_equal(out[0, 29], colour[0, 29])
+        inside = paint[..., 0] > 0
+        np.testing.assert_allclose(paint[inside, 0], 0.65)
+        np.testing.assert_allclose(paint[inside, 1], 0.2)
+        # the ratio carries the shading: monotonic across the drum
+        self.assertTrue(np.all(np.diff(paint[10, 2:28, 2]) > 0))
+        # grey of the same luminance under the paint (after the renderer's exposure)
+        lum = lambda c: linear_rgb(np.clip(c * 1.5, 0, 255)) @ np.array([0.2126, 0.7152, 0.0722])
+        np.testing.assert_allclose(out[inside][:, 0], out[inside][:, 2], atol=1e-3)
+        np.testing.assert_allclose(lum(out[inside]), lum(colour[inside]), rtol=1e-3)
+        # the shader's remapped paint (ramp entry x 2 x ratio) has the redraw's luminance
+        entry = linear_rgb(ramp[3])
+        remapped = entry[None] * (2 * paint[inside, 2])[:, None]
+        np.testing.assert_allclose(remapped @ np.array([0.2126, 0.7152, 0.0722]), lum(colour[inside]), rtol=1e-3)
 
     def test_building_turret_builds_a_turret_only_type(self):
         # A building's voxel turret (library id 'GUN:turret') has no body: its sheet set is the turret part alone, and
