@@ -112,6 +112,8 @@ export function mergeShapeMeshes(meshes: readonly VoxelShapeMesh[]): VoxelShapeM
     material: new Uint8Array(vertices),
     direction: new Uint8Array(vertices),
     stair: new Uint8Array(vertices),
+    // Section-local record indices: callers joining per-cell data do so per section before merging.
+    cell: new Int32Array(vertices),
     indices: new Uint32Array(sum((m) => m.indices.length)),
     stats: mergeStats(meshes.map((m) => m.stats)),
   };
@@ -124,6 +126,7 @@ export function mergeShapeMeshes(meshes: readonly VoxelShapeMesh[]): VoxelShapeM
     out.material.set(m.material, v);
     out.direction.set(m.direction, v);
     out.stair.set(m.stair, v);
+    out.cell.set(m.cell, v);
     for (let i = 0; i < m.indices.length; i++) out.indices[t + i] = m.indices[i]! + v;
     v += m.material.length;
     t += m.indices.length;

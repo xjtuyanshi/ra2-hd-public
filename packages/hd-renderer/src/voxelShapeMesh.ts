@@ -93,6 +93,8 @@ export interface VoxelShapeMesh {
   direction: Uint8Array;
   /** 1 where the quad's plane came from a staircase fit, 1 per vertex. */
   stair: Uint8Array;
+  /** Record index (in `grid.cells`) of the cell owning the quad, 1 per vertex: joins per-cell data such as paint. */
+  cell: Int32Array;
   indices: Uint32Array;
   stats: VoxelShapeStats;
 }
@@ -486,6 +488,7 @@ export function buildVoxelShapeMesh(
   const material = new Uint8Array(vertices);
   const direction = new Uint8Array(vertices);
   const stairOut = new Uint8Array(vertices);
+  const cellOut = new Int32Array(vertices);
   const indices = new Uint32Array(faces * 6);
   const welded = new Set<string>();
   let stairFaces = 0;
@@ -554,6 +557,7 @@ export function buildVoxelShapeMesh(
       material[o] = mat;
       direction[o] = faceDir[f]!;
       stairOut[o] = stair[f] ? 1 : 0;
+      cellOut[o] = id[faceKey[f]!]!;
       welded.add(`${v}:${Math.round(sx * 1e4)},${Math.round(sy * 1e4)},${Math.round(sz * 1e4)}`);
     }
     // Split along the diagonal whose two triangles are closer to coplanar (ties: 0-2).
@@ -574,6 +578,7 @@ export function buildVoxelShapeMesh(
     material,
     direction,
     stair: stairOut,
+    cell: cellOut,
     indices,
     stats: {
       cells: cellCount,
