@@ -1,5 +1,18 @@
 import { describe, expect, it } from 'vitest';
-import { buildPart, carve, expand, insideAny, partPrimitives, type PartSpec } from '../src/hardSurfaceMesh';
+import {
+  add,
+  buildPart,
+  carve,
+  chamferPlanes,
+  dot,
+  expand,
+  insideAny,
+  partPrimitives,
+  polytopeFaces,
+  scale,
+  unit,
+  type PartSpec,
+} from '../src/hardSurfaceMesh';
 import { evaluateHardSurface, revoxelise } from '../src/hardSurfaceMetrics';
 import { grid } from './hardSurfaceFixtures';
 
@@ -10,6 +23,57 @@ const slotted: PartSpec = {
 };
 
 describe('hard surface carve', () => {
+  it('keeps a sloped plate continuous across convex carve pieces while beveling its outer edges', () => {
+    const part: PartSpec = {
+      primitives: [
+        {
+          type: 'poly',
+          name: 'plate',
+          chamfer: 0.2,
+          planes: [
+            [-1, 0, 0, 0],
+            [1, 0, 0, 12],
+            [0, -1, 0, 0],
+            [0, 1, 0, 8],
+            [0, 0, -1, 0],
+            [1, 0, 3, 18],
+          ],
+        },
+      ],
+      carve: [{ min: [3, 2, 1], max: [5, 4, 2] }],
+    };
+    const prims = partPrimitives(part),
+      slope = unit([1, 0, 3]);
+    expect(prims.length).toBeGreaterThan(2);
+    let seams = 0,
+      outer = 0;
+    prims.forEach((p, self) => {
+      const { vertices, faces } = polytopeFaces(p.planes),
+        top = faces.find((f) => dot(p.planes[f.plane], slope) > 1 - 1e-8)!,
+        ch = chamferPlanes(p.planes, 0.2, prims, self),
+        isolated = chamferPlanes(p.planes, 0.2);
+      if (!top) return;
+      for (const f of faces) {
+        if (f === top) continue;
+        const edge = f.vertices.filter((k) => top.vertices.includes(k));
+        if (edge.length !== 2) continue;
+        const mid = scale(add(vertices[edge[0]], vertices[edge[1]]), 0.5),
+          n = unit(add(slope, p.planes[f.plane].slice(0, 3) as [number, number, number])),
+          hasBevel = (planes: typeof ch) => planes.some((q) => dot(q, n) > 1 - 1e-8);
+        if (mid[0] > 0.1 && mid[0] < 11.9 && mid[1] > 0.1 && mid[1] < 7.9 && mid[2] > 2.1) {
+          // These edges lie above the small carve: only the decomposition splits this continuous slope.
+          expect(hasBevel(isolated)).toBe(true);
+          expect(hasBevel(ch)).toBe(false);
+          seams++;
+        } else if (mid[0] < 0.1 || mid[0] > 11.9 || mid[1] < 0.1 || mid[1] > 7.9) {
+          expect(hasBevel(ch)).toBe(true);
+          outer++;
+        }
+      }
+    });
+    expect(seams).toBeGreaterThan(0);
+    expect(outer).toBeGreaterThan(0);
+  });
   it('splits a primitive into convex pieces whose union is the difference', () => {
     const prims = partPrimitives(slotted);
     expect(prims.length).toBeGreaterThan(1);

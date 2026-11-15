@@ -10,6 +10,8 @@ import {
   polytopeFaces,
   sub,
   cross,
+  withCylinderEndCaps,
+  type CylinderPrimitive,
   type PartSpec,
   type Primitive,
   type Vec3,
@@ -42,9 +44,43 @@ describe('hard surface mesh', () => {
     const planes = chamferPlanes(left.planes, 0.2, [left, right], 0);
     expect(planes).toHaveLength(8);
     expect(planes.every((n) => n[0] <= 0)).toBe(true);
-    // A matching-width continuation leaves the bisector probes outside both solids; the reference retains it.
+    // The covered-face probes also suppress a matching-width continuation whose bisector probes miss both solids.
     const continuation = expand({ ...box, min: [4, 0, 0], max: [8, 4, 4] });
-    expect(chamferPlanes(left.planes, 0.2, [left, continuation], 0)).toHaveLength(12);
+    expect(chamferPlanes(left.planes, 0.2, [left, continuation], 0)).toHaveLength(8);
+  });
+  it('requires all three covered-face probes while retaining the any-probe flush rule', () => {
+    const left = expand(box),
+      partial = expand({ ...box, min: [4, 0, 0], max: [8, 1.5, 4] }),
+      ch = chamferPlanes(left.planes, 0.2, [left, partial], 0);
+    // Only one covered-face probe on each horizontal seam meets the partial continuation: neither is hidden.
+    expect(ch.some((p) => p[0] > 0 && p[2] > 0)).toBe(true);
+    expect(ch.some((p) => p[0] > 0 && p[2] < 0)).toBe(true);
+    const flushPatch = expand({ ...box, min: [4, 1.5, 3.9], max: [5, 2.5, 5] });
+    expect(chamferPlanes(left.planes, 0.2, [left, flushPatch], 0).some((p) => p[0] > 0 && p[2] > 0)).toBe(false);
+  });
+  it('splits cylinder end caps without mutating the input or losing metadata', () => {
+    const prim: CylinderPrimitive = {
+      type: 'cyl',
+      name: 'vessel',
+      axis: 'y',
+      c: [7, 9],
+      r: 3,
+      range: [-2, 8],
+      chamfer: 0.25,
+      paint: 'coated',
+      mirror: false,
+      centred: true,
+      groove: { depth: 0.1 },
+      cuts: [[1, 0, 0, 10]],
+    };
+    const before = structuredClone(prim),
+      [body, a, b] = withCylinderEndCaps(prim, { depth: 0.3, inset: 0.35, chamfer: 0.14 });
+    expect(body).toEqual({ ...prim, range: [-1.7, 7.7] });
+    expect(a).toEqual({ ...prim, name: 'vessel_capa', r: 2.65, range: [-2, -1.7], chamfer: 0.14 });
+    expect(b).toEqual({ ...prim, name: 'vessel_capb', r: 2.65, range: [7.7, 8], chamfer: 0.14 });
+    expect(prim).toEqual(before);
+    expect(body).not.toBe(prim);
+    expect(new Set([body.range, a.range, b.range, prim.range]).size).toBe(4);
   });
   it('mirrors halfspace offsets, cylinder centres, and part opt-outs without mutating inputs', () => {
     const p = expand({ type: 'box', min: [1, 2, 3], max: [4, 6, 7] }),

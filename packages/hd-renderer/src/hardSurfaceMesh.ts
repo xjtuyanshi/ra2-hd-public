@@ -17,6 +17,24 @@ export type Primitive = PrimitiveOptions &
     | { type: 'poly'; planes: Plane[] }
     | { type: 'cyl'; axis: Axis; c: [number, number]; r: number; range: [number, number]; cuts?: Plane[] }
   );
+export type CylinderPrimitive = Extract<Primitive, { type: 'cyl' }>;
+export interface CylinderEndCapOptions {
+  depth: number;
+  inset: number;
+  chamfer: number;
+}
+/** Split the axial range into a body and two inset end discs, preserving caller metadata. */
+export function withCylinderEndCaps(
+  prim: CylinderPrimitive,
+  { depth, inset, chamfer }: CylinderEndCapOptions,
+): [CylinderPrimitive, CylinderPrimitive, CylinderPrimitive] {
+  const [a0, a1] = prim.range;
+  return [
+    { ...prim, range: [a0 + depth, a1 - depth] },
+    { ...prim, name: `${prim.name ?? ''}_capa`, r: prim.r - inset, range: [a0, a0 + depth], chamfer },
+    { ...prim, name: `${prim.name ?? ''}_capb`, r: prim.r - inset, range: [a1 - depth, a1], chamfer },
+  ];
+}
 /**
  * A convex region subtracted from every primitive of a part (applied after mirroring, in order). Primitives listed in
  * `keep` (by name, mirrored copies included) are left whole.
@@ -173,6 +191,19 @@ export function chamferPlanes(
       if (
         prims &&
         [0.25, 0.5, 0.75].some((t) => insideAny(add(add(e0, scale(sub(e1, e0), t)), scale(n, 0.12)), prims, self, 0.02))
+      )
+        continue;
+      // Probe across each face beneath the other: covered carve faces continue the surface even on slopes.
+      if (
+        prims &&
+        [
+          [ni, nj],
+          [nj, ni],
+        ].some(([na, nb]) =>
+          [0.25, 0.5, 0.75].every((t) =>
+            insideAny(add(add(add(e0, scale(sub(e1, e0), t)), scale(na, 0.1)), scale(nb, -0.1)), prims, self, 0.02),
+          ),
+        )
       )
         continue;
       const t1 = unit(scale(sub(nj, scale(ni, cos)), -1));

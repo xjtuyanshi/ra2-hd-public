@@ -803,13 +803,22 @@ restoration (negative Z is down by default; the down axis is configurable). `har
 with snapped halfspaces or cylinders, including exclusions, colour filters and manual overrides.
 `hardSurfaceMesh.ts` expands box/poly/cylinder specs, mirrors parts and builds deterministic typed-array meshes
 in lattice corner coordinates. Cylinders use area-corrected 48-gon prisms and radial side normals. Edge chamfers
-use the reference 20-degree threshold and outside-edge probes: a covering neighbour suppresses a chamfer;
-matching-width adjacent boxes can retain it because those probes lie outside both solids. A part's optional `carve`
+use the reference 20-degree threshold and outside-edge probes: a covering neighbour suppresses a chamfer.
+A part's optional `carve`
 list subtracts convex regions (boxes with optional cut planes, or halfspace lists) from every primitive after
 mirroring: each touched primitive is replaced by the convex pieces of its difference, which meet flush, so their
 shared faces get no chamfer and are buried in the metrics while the carved walls are bevelled like any other edge.
 `keep` exempts named primitives. Carves model slots, wheel gaps and shoulders that a union of additive primitives
 cannot. Paint strings remain opaque metadata; these modules do not resolve palettes or apply paint volumes.
+
+The round-three covered-face rule also probes three raw edge points across each face and beneath the other:
+when all three are inside neighbouring primitives, no chamfer is added. This removes false seams where carve
+pieces share a sloped plate, including continuations missed by the outside-edge probes. `withCylinderEndCaps`
+splits a cylinder into a shortened body and two inset discs with their own chamfer. `hardSurfaceLook.ts` provides
+pure decisions for parallel-seam combing, staircase rejection, panel grooves and AO halos, paint-region classes,
+levelled paint, edge wear, wall shading, hoops, hatch rings and painted-steel material defaults. Vehicle colours
+and named paint codes live in `ra2/hardSurfaceLook.ts`. The offline research renderer is the reference; fitted
+specs and renders stay outside Git. These helpers do not connect the look to live rendering.
 
 `hardSurfaceMetrics.ts` compares the original halfspace union with the filled solid using 27 samples per cell.
 Surface metrics compare 3-by-3 exposed voxel-face samples with seeded triangle samples on the chamfered mesh,
