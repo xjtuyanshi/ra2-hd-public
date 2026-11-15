@@ -1127,6 +1127,16 @@ describe('HD bridge look parameters', () => {
     harness.stop();
   });
 
+  it('hd-veh=pages loads the vehicles-pages projection library instead of hd-vproj', async () => {
+    const harness = setup('?hd=1&hd-vlook=remaster&hd-vproj=vehicles-hd&hd-veh=pages');
+    await goLive(harness, fakeLookView());
+    expect(liveView.create).toHaveBeenCalledWith(
+      harness.hdCanvas,
+      expect.objectContaining({ voxelProjection: '/hd-cache/vehicles-pages' }),
+    );
+    harness.stop();
+  });
+
   it('lets hd-time override the preset hour', async () => {
     const harness = setup('?hd=1&hd-look=cinematic&hd-time=12');
     const view = fakeLookView();

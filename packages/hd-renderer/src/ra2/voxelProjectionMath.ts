@@ -47,6 +47,13 @@ export interface VoxelProjectionManifest {
    * Absent (every manifest written before this field existed): 1.
    */
   exposure?: number;
+  /**
+   * 'baked': the pages carry their own complete form light (offline renders of the voxel mesh with sun, bevels,
+   * seams and glints, see packages/ra2-assets/python/vehicle_pages.py). The renderer then adds none of its mesh form
+   * terms (formShade, formAO, contrast, spec, house paint shade/glint, relight) on top; the scene's light level,
+   * night, local lights and shadows still apply. Absent: image-model redraws that get those terms.
+   */
+  shading?: 'baked';
   registration: { part: ProjectionPartName; k: number; iou: number; scale: number; dx: number; dy: number }[];
 }
 
@@ -144,6 +151,7 @@ export function parseVoxelProjectionManifest(
   }
   if (m.exposure !== undefined && (!finite(m.exposure) || m.exposure < 1 || m.exposure > 4))
     throw new Error('Invalid projection page exposure');
+  if (m.shading !== undefined && m.shading !== 'baked') throw new Error('Invalid projection page shading');
   return m as unknown as VoxelProjectionManifest;
 }
 

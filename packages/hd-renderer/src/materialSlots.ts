@@ -1,5 +1,7 @@
 import {
   DataTexture,
+  Data3DTexture,
+  Texture3DNode,
   LinearFilter,
   NearestFilter,
   TextureNode,
@@ -91,6 +93,13 @@ export class SlotTextureNode extends TextureNode {
   }
 }
 
+/** 3D slots must retain Texture3DNode's binding/coordinate type through sample clones. */
+export class SlotTexture3DNode extends Texture3DNode {
+  override getUniformHash(): string {
+    return `slot-texture-${(this.getBase() as TextureNode).id}`;
+  }
+}
+
 /**
  * How three reads a texture decides shader text, not only bindings: r186 emits a texel load for a texture whose
  * filters are both nearest and a filtered sample otherwise. Every texture a slot holds must therefore be of one
@@ -118,5 +127,7 @@ export function textureSlot(initial: Texture | 'nearest' | 'filtered' = 'nearest
     }
     initial = texture;
   }
-  return nodeObject(new SlotTextureNode(initial)) as ShaderNode;
+  return nodeObject(
+    initial instanceof Data3DTexture ? new SlotTexture3DNode(initial) : new SlotTextureNode(initial),
+  ) as ShaderNode;
 }

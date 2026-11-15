@@ -1,6 +1,6 @@
 import { DataTexture, LinearFilter, Object3D, RGFormat, UnsignedByteType, Vector3 } from 'three/webgpu';
 import { SURFACE, surfaceFromLandType } from '../../../ra2-assets/src/lights';
-import type { MapObject } from '../../../ra2-assets/src/manifest';
+import type { MapObject, VoxelModel } from '../../../ra2-assets/src/manifest';
 import { AtmosphereNodes, type WorldDressing } from '../atmosphere';
 import type { TerrainBuild } from '../terrain';
 import type { WeatherFoundation } from '../weatherGroundMask';
@@ -32,6 +32,8 @@ import { buildSmoothVoxelGeometry } from './voxelSmoothGeometry';
 import { projectionParts, voxelProjectionLibrary, type VoxelProjectionLibrary } from './voxelProjection';
 import { frameInclusiveBottom, terrainObjectDepth } from './nativeDepth';
 import { TerrainObjectCards } from './terrainObjectCards';
+import { VoxelCadLibrary, cadVoxelGeometry, adoptCadVoxel } from './voxelCad';
+import { VoxelUnit } from './voxels';
 import { isLivingTree } from './livingTrees';
 
 /** A battlefield the HD renderer can draw: terrain, optional water, and everything standing on it. */
@@ -41,6 +43,8 @@ export interface HdWorld {
   voxelLook?: 'engine' | 'remaster';
   smoothVoxel?: Readonly<SmoothVoxelOptions>;
   voxelProjection?: string;
+  voxelCad?: string;
+  cadLook?: 'look' | 'pbr';
   projections?: VoxelProjectionLibrary;
   width: number;
   height: number;
@@ -108,6 +112,8 @@ export async function loadRa2World(
     smoothVoxel?: Partial<SmoothVoxelOptions>;
     /** Optional base URL of view-dependent vehicle redraw atlases; absent/failed types keep their current look. */
     voxelProjection?: string;
+    voxelCad?: string;
+    cadLook?: 'look' | 'pbr';
     /** Keep only map objects passing this test (a live match draws units and buildings from game memory instead). */
     includeObject?: (object: MapObject) => boolean;
     /** Load the optional sprite material atlas (normals.json) for the enhanced look; default true. */
@@ -123,6 +129,7 @@ export async function loadRa2World(
   const voxelLook = options.voxelLook ?? 'engine';
   const smoothVoxel = smoothVoxelOptions(options.smoothVoxel);
   const projections = options.voxelProjection ? voxelProjectionLibrary(options.voxelProjection, nodes) : undefined;
+  const cad = options.voxelCad ? nodes.own(new VoxelCadLibrary(options.voxelCad)) : undefined;
   if (options.voxelShape) setVoxelShapeFor(nodes, options.voxelShape);
   else voxelShapeFor(nodes);
   // The engine's voxel lighting table lives next to the map caches, in the type library's common directory; without
@@ -159,6 +166,8 @@ export async function loadRa2World(
   // Geometry is shared per model/refinement; each owner gets its palette material.
   const voxelMaterial = createVoxelMaterial(nodes);
   const geometries = new Map<string, VoxelGeometry[]>();
+  const cadGeometries = new Map<string, VoxelGeometry[]>();
+  const cadModels = new Map<VoxelModel, VoxelGeometry[]>();
   const sprites: SpriteInstance[] = [];
   const terrainObjectCards = new TerrainObjectCards();
   const weatherFoundations: WeatherFoundation[] = [];
@@ -207,6 +216,34 @@ export async function loadRa2World(
       vehicle.rotation.y = Math.PI / 2 - phi;
       root.add(vehicle);
       updateVoxelNativeDepth(vehicle, vehicle.position, 0, groundUnit);
+      if (cad) {
+        const current = parts;
+        void cad
+          .load(model, cache.paletteRgb.get(model.palette) ?? cache.paletteRgb.get(paletteKey)!)
+          .then((meshes) => {
+            if (!meshes || !cad.active || !vehicle.parent) return;
+            let next = cadGeometries.get(cacheKey);
+            if (!next) {
+              let shared = cadModels.get(model);
+              if (!shared) {
+                shared = cadVoxelGeometry(model, meshes, cache.paletteRgb.get(paletteKey)!, nodes);
+                for (const part of shared) nodes.own(part.geometry);
+                cadModels.set(model, shared);
+              }
+              next = cadVoxelGeometry(
+                model,
+                meshes,
+                cache.paletteRgb.get(paletteKey)!,
+                nodes,
+                options.cadLook ?? 'look',
+                shared.map((p) => p.geometry),
+              );
+              cadGeometries.set(cacheKey, next);
+            }
+            if (vehicle instanceof VoxelUnit) adoptCadVoxel(vehicle, current, next);
+          })
+          .catch((error) => cad.reportFailure(model.id, error));
+      }
       continue;
     }
     if (!object.sprite) continue;
@@ -365,6 +402,8 @@ export async function loadRa2World(
     voxelLook,
     smoothVoxel,
     voxelProjection: options.voxelProjection,
+    voxelCad: options.voxelCad,
+    cadLook: options.cadLook,
     projections,
     width: manifest.grid.width,
     height: manifest.grid.height,

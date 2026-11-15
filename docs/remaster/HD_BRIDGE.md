@@ -798,6 +798,56 @@ installation preserves other library entries under a compose lock. Commands and 
 [the asset tools guide](../../packages/ra2-assets/README.md#ore-and-gem-field-redraw-python-experimental).
 Game art and derived images remain outside Git.
 
+## Offline hard-surface reconstruction
+
+The research pipeline in `packages/hd-renderer/src/` supplies pure reconstruction helpers:
+`hardSurfaceSolid.ts` fills x-major dense grids with two-axis enclosure, exterior flood and one-cell recess
+restoration (negative Z is down by default; the down axis is configurable). `hardSurfaceFit.ts` fits seed regions
+with snapped halfspaces or cylinders, including exclusions, colour filters and manual overrides.
+`hardSurfaceMesh.ts` expands box/poly/cylinder specs, mirrors parts and builds deterministic typed-array meshes
+in lattice corner coordinates. Cylinders use area-corrected 48-gon prisms and radial side normals. Edge chamfers
+use the reference 20-degree threshold and outside-edge probes: a covering neighbour suppresses a chamfer.
+A part's optional `carve`
+list subtracts convex regions (boxes with optional cut planes, or halfspace lists) from every primitive after
+mirroring: each touched primitive is replaced by the convex pieces of its difference, which meet flush, so their
+shared faces get no chamfer and are buried in the metrics while the carved walls are bevelled like any other edge.
+`keep` exempts named primitives. Carves model slots, wheel gaps and shoulders that a union of additive primitives
+cannot. Paint strings remain opaque metadata; these modules do not resolve palettes or apply paint volumes.
+
+The round-three covered-face rule also probes three raw edge points across each face and beneath the other:
+when all three are inside neighbouring primitives, no chamfer is added. This removes false seams where carve
+pieces share a sloped plate, including continuations missed by the outside-edge probes. `withCylinderEndCaps`
+splits a cylinder into a shortened body and two inset discs with their own chamfer. `hardSurfaceLook.ts` provides
+pure decisions for parallel-seam combing, staircase rejection, panel grooves and AO halos, paint-region classes,
+levelled paint, edge wear, wall shading, hoops, hatch rings and painted-steel material defaults. Vehicle colours
+and named paint codes live in `ra2/hardSurfaceLook.ts`. The offline research renderer is the reference; fitted
+specs and renders stay outside Git. The opt-in CAD adapter below connects their geometry to live rendering;
+the offline look renderer remains a separate reference, not a second runtime material.
+
+`hardSurfaceMetrics.ts` compares the original halfspace union with the filled solid using 27 samples per cell.
+Surface metrics compare 3-by-3 exposed voxel-face samples with seeded triangle samples on the chamfered mesh,
+filtering blocked voxel rays and CAD samples buried in other primitives. Nearest neighbours use the reference
+five-bucket search width per axis; an unmatched sample has infinite distance. Even coincident analytic surfaces
+have small nonzero sample distances. Triangle sampling uses Mulberry32 per triangle rather than NumPy's PCG64,
+so sample counts after burial filtering, deviation statistics and sample-weighted area shares can differ slightly
+from Python. `planar` includes chamfers; `chamfer` is also reported separately, as in the research reference.
+
+Run the RA2 cache adapter offline, with the output outside the checkout:
+
+```bash
+pnpm exec tsx packages/hd-renderer/scripts/hardSurfaceSpec.ts <voxel-model.json> <seed.json> <out-spec.json> --metrics
+pnpm exec tsx packages/hd-renderer/scripts/hardSurfaceSpec.ts --evaluate <voxel-model.json> <spec.json>
+```
+
+`--evaluate` prints the per-part metrics of an existing spec (for example a hand-corrected one) and writes nothing.
+
+The adapter reads the first section of each cache part as base64 quintuples, preserves seed paint labels and
+writes the spec to the requested file. It prints a JSON summary plus per-part metrics when `--metrics` is supplied. It performs no downloads
+and rejects output paths within the repository, including resolved symlinks. In sandboxes that prohibit the tsx
+CLI's IPC socket, use `pnpm exec node --import tsx` in place of `pnpm exec tsx`. Synthetic regressions run with
+`pnpm exec vitest run packages/hd-renderer/tests/hardSurface`; game-derived caches, seeds and output specs stay
+outside Git. This pipeline does not change live rendering or establish visual acceptance of reconstructed art.
+
 ## Running it
 
 Start a development server whose game root holds a skirmish setup (a scratch copy of the installation with an edited
@@ -826,7 +876,12 @@ See "Moist final tone" in `packages/hd-renderer/README.md` for controls and unve
 `hd-contact=on` adds a soft contact shade around building foundations, both opt-in (see "House paint material" in
 `packages/hd-renderer/README.md`);
 `hd-vlook=remaster` selects the remaster voxel look; `hd-vproj=<dir>` selects vehicle redraw projection atlases under
-the HD cache (e.g. `vehicles-hd`); `hd-rect=x,y,w,h`
+the HD cache (e.g. `vehicles-hd`); `hd-veh=pages` (pilot) uses the cache's `vehicles-pages` directory instead,
+whose offline-rendered pages (`packages/ra2-assets/python/vehicle_pages.py`, manifest `shading: "baked"`) carry their
+own form light, so the renderer adds no mesh form terms to them (their house paint can use
+`vehicle_projection.shaded_paint_channels`: one ramp entry times the page's own luminance ratio, part left to a
+neutral grey of the same luminance, so the remap keeps the baked light and dark and a muted tone for every player
+colour); `hd-rect=x,y,w,h`
 overrides the tactical rectangle (default: the frame minus YR's 168 px sidebar and 32 px command bar).
 `hd-governor=0` switches the frame-rate safeguard off, `hd-pace=<rate>|cap|off` replaces the frame pacer's own
 choice of rate, and `hd-pipelines=sync` switches the asynchronous pipeline compiles off (see "Frame rate" and
@@ -1397,3 +1452,111 @@ bench uses `bld=pilot` for the same gate. Select the comparison farm independent
 the flag does not install resources or change the default farm. Validate the
 powered animation, damage, house colors and night beside a vehicle at DPR 1,
 zoom 2.5 before selecting a winner. Offline relights do not establish GPU behavior.
+
+## Opt-in CAD vehicles
+
+Live matches: `hd-veh=cad` requests `<libraryBase>/vehicles-cad/<MODEL_ID>.json`, with
+`libraryBase` currently `/hd-cache/_library` (for example `/hd-cache/_library/vehicles-cad/HTNK.json`).
+`hd-vcad=<dir>` overrides the directory beneath `/hd-cache` only when `hd-veh=cad` is present.
+Sandbox: `veh=cad`, optionally `vcad=<dir>` relative to the served HD cache root; the default is
+`_library/vehicles-cad`. Both overrides strip surrounding slashes and reject traversal, backslashes and colons.
+Keep specs in the external HD cache library, outside Git; neither entry fits specs or downloads game resources.
+
+Only models with a complete, valid spec change. While a spec loads and its mesh builds, the current engine,
+smooth or stand-in geometry stays visible. An HTTP 404 silently retains that look. A status-200 response with a
+non-JSON media type or a body beginning with `<` is also missing (development SPA fallbacks). Malformed JSON from
+a JSON response, invalid specs, HTTP failures and build/Worker failures warn once per model and retain it too.
+Failed requests are not retried within
+the library lifetime. Specs and build results are shared across house palettes. CAD uses the first section of
+each part, matching the offline lattice contract, and requires a spec for every model part. Alternate passenger
+turrets retain their current art because their geometry is not described by the base model's spec.
+
+`hardSurfaceLiveMesh.ts` samples directional exposed paint with separable distance transforms and computes cached
+eight-ray local AO over the CAD solid. Primitive AABBs bound solid rasterisation and coverage queries. Coverage
+uses the emitted chamfered convex hulls; the unchamfered AO union must not cull exposed bevels.
+`hardSurfaceAdaptive.ts` samples the same fine square lattice (`maxEdge / sqrt(2)`, default `maxEdge=0.5`), then
+unions equal palette regions per plate and triangulates their contours and holes. Float32 sampling and the
+reference cell diagonal preserve the original fine-triangle material ownership. Uniform plates and axial
+cylinder spans become large triangles; the cylinder's existing angular facets and radial normals remain.
+Shade and AO samples refine those triangles at the largest interpolation residual first: half a palette entry
+and 1/8 occlusion are the respective error thresholds. Flat plate and chamfer normals remain separate. Collinear
+edges are split at neighbouring vertices, including creases between plates/facets; convex ear clipping retains
+those boundary vertices without adding centre fans. This avoids geometric T-junctions across coarse/fine regions.
+The discrete palette/material index is constant per triangle, avoiding interpolation through unrelated ramps;
+shade varies only within that index's 16-entry ramp. The fine-sampling and emitted-mesh budgets each allow at most
+two million triangles, independently of merging.
+Curvature marks chamfers (`chamfer * 2`). Subvoxel paint boundaries remain approximations. A caller-supplied
+paint-code table produces `lookCode`; the generic geometry does not interpret game paint names.
+
+Optional baked detail sits beside the spec: `<MODEL_ID>.detail/<role>.json` (chart table) and `<role>.png`
+(RGBA8 atlas), both in the external HD cache. The table is `{res, size: [w, h], faces: {id: [ox, oy, w, h,
+origin xyz, u xyz, v xyz]}}`: one chart per planar face in its own plane, `res` texels per lattice unit, `v = n x u`.
+Texels hold the detail normal along u/v in R/G (`x * 0.5 + 0.5`), cavity AO in B and signed grime (< 0) / wear
+(> 0) in A. `hardSurfaceDetailAtlas.ts` matches the look mesh's triangles to charts geometrically (same plane
+within 0.06 lattice units and cos 0.995, all three vertices inside the chart rectangle), splits vertices shared
+across charts and emits a `detailUv` attribute in texels; unmatched triangles get (-1, -1) and render neutral, and
+the legacy PBR twin is untouched. The Worker receives only the tables; the presenting thread decodes the PNG with
+`premultiplyAlpha: 'none'` and no colour conversion (the channels are data) and the material samples it with
+mipmaps (1:1 is heavy minification). Missing sidecars are silent; a malformed table or an atlas whose size
+differs from its table warns once and drops that part's detail. Node tooling has no image decoder: coordinates
+are still built, the atlas is not fetched. The CAD material applies the AO to its lighting gain, grime/wear to
+the albedo (wear on paint only) and the relief through a cotangent frame from the texel coordinates, after the
+volume's groove bump. Knobs `detailNormal`, `detailAo`, `detailGrime` and `detailWear` (sandbox `cadk=`, live
+`__hdBridge.vehicleCad.set`) scale each term; 0 disables it.
+
+The RA2 adapter shares the bounds/HVA/model transform with the voxel paths, preserves role order and TurretOffset,
+and exchanges geometry and material in place, retaining the unit root, turret yaw, pose, tint, opacity and native
+depth. CAD defaults to its own painted-steel material with scene sun/sky lighting, even alongside engine-look
+vehicles. It never receives image-based redraw projection. Shadow/foam silhouettes retain the original voxel
+outline through `withSilhouette`; water colour reflections follow the CAD source geometry/material normally.
+Other vehicles keep their existing look and projection behaviour.
+
+The CAD material folds palette glints into levelled cream, separates bare/dark steel from rubber, retains
+player-remapped house hue with limited chroma, and overrides coded barrels with neutral gunmetal. Wheel tyre,
+disc and hub, drum hoops and hatch roof rings come from expanded cylinder metadata. Generic straight-run
+vectorisation consumes exposed line features from `analyseVoxelPaint`; combing and slope rejection prevent
+voxel staircase shading from becoming plate joints. A surface-rasterised RGBA8 lattice volume carries groove
+darkness, its wider AO halo and cylinder sub-material codes. Resolution defaults to four texels per voxel;
+the RA2 adapter selects the highest common integer density up to four that fits a 4,000,000-byte model budget.
+The current Rhino's full padded AABBs would take 8,490,240 bytes at four, so it uses three (3,581,820 bytes).
+This is an intentional density exception to the default, rather than cropping the required one-voxel halo.
+The Worker receives a cloned 768-byte base unit palette (before player remapping) and transfers only newly owned
+mesh/volume buffers.
+Seams remain model-shared across player palettes. `lookIndex` selects a representative of each analysed paint
+region, including the host paint under a seam; the separate unfolded `pbr` mesh retains original `pindex`/`pshade` and topology for the old-PBR comparison.
+Before adaptive meshing, deterministic area-weighted face samples fold small regions and glints into the dominant paint, retaining regions covering at least 12%, house regions covering at least 4%, or features of at least 1.5 square voxels whose luma exceeds the dominant by 0.08; flat/hatch faces use only the dominant paint.
+That additional CAD-only attribute prevents the original dark seam paint from doubling the baked groove.
+One prototype graph per map grade uses palette and 3D-volume **texture slots**, plus part bounds/flags in uniform
+slots: new palettes and models allocate data, not shader graphs. Materials are cached per palette and model part;
+the atmosphere owns GPU textures/materials and the vehicle library owns adopted geometry. Broad tonal variation,
+up-facing chamfer wear, model-local lower-hull grime, wall sky occlusion, source AO, track gaps/ridges and
+derivative groove normals supply the painted-steel finish. Scene multipliers, cloud shading, map light, moonlight,
+object tint, native depth and silhouette twins follow the existing plumbing; water uses an ambient-only simplified
+colour without the volume or groove derivatives.
+
+CAD never uses `litAlbedo` or a bright VPL row. Roughness is bounded below by 0.28; direct and environment specular
+radiance on paint/house are capped at 0.04 and 0.02 respectively before scene grading/exposure; metal keeps
+0.10 and 0.08 to retain its reflection gradient. Defaults are
+`brightness=1.1`, `sunGain=1.6`, `fill=0.6`, `envStrength=0.4`, `specular=0.35`, `wear=0.30`,
+`lineDark=0.92`, `haloDark=0.30`, `linkDark=0.55`, `bump=0.30`, `houseLevel=0.60`, `wallOcclusion=0.45`,
+`wallGrime=0.32`, `aoStrength=1`. The lighting gains follow same-frame live calibration; the clear-noon Lambert energy check uses key intensity 3.2, elevation 55 degrees
+(with the existing azimuth correction), sky RGB (0.62, 0.75, 0.95), ground RGB (0.32, 0.28, 0.22), and the renderer’s
+per-channel `pi / noon irradiance` exposure. Reference cream times the dielectric diffuse share 0.96 gives an
+unoccluded top near sRGB (0.764, 0.726, 0.656), a sun-shadowed upper wall near (0.204, 0.202, 0.194), before the small
+view-dependent specular term. The brightest permitted cream ratio (1.15), maximum tonal variation (+6%) and both paint specular caps stay below one
+under that neutral noon calibration. Authored map grades, weather, display finish and user knob changes are separate
+from this bounded numeric check and still need scene-specific visual review.
+
+With development `hd-veh=cad`, `window.__hdBridge.vehicleCad` provides `mode('look'|'pbr'|'off')` (no argument reads
+it), `set(knob, finiteNumber)` and `get()`. Knobs are nonnegative and bounded to eight. `look` is the default;
+`pbr` uses the retained unfolded CAD geometry with the previous remaster material; `off` restores retained original geometry/material
+objects in place. Units created in any mode follow it, and pending source smooth builds update the retained original
+set. Mode changes never rebuild CAD or replace a unit root. The hook is absent outside the CAD development opt-in.
+Sandbox `veh=cad&cadlook=pbr|look` chooses the initial material. Knobs accept their names as URL parameters, or
+`cadk=brightness:1.1,wear:0.3`; `vk` continues to control only the old PBR material.
+
+Browser builds run in short-lived CAD Workers owned by the library, terminated on completion, failure or disposal;
+late results cannot revive a disposed view. Worker creation failure keeps the current geometry. Non-browser
+CPU tooling without Worker support runs the same builder directly. Geometry budgets reject excessive specs.
+This is experimental opt-in rendering: CPU measurements and synthetic regressions do not establish rendered
+appearance, GPU performance, full-match stability or fidelity to the separate offline visual boards.

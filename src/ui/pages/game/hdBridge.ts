@@ -34,6 +34,9 @@ import { FramePacer } from '../../../graphics/framePacer';
 import { createWebGpuFrameCapture } from '../../../graphics/webGpuFrameCapture';
 import { t } from '../../shared/i18n/translate';
 
+/** Farm directory of the hd-veh=pages vehicle projection library (all of vehicles-hd plus baked-shading pages). */
+export const VEHICLE_PAGES_DIR = 'vehicles-pages';
+
 /**
  * HD remaster bridge (development only, `?hd=1`): draws the running match with the HD renderer on a canvas under the
  * game canvas. The game's frame is made transparent over the tactical view, so the original sidebar, command bar and
@@ -1424,8 +1427,13 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
     const look = params.get('hd-look');
     const preset: LookPreset | undefined =
       look === 'faithful' || look === 'golden' || look === 'cinematic' ? look : undefined;
-    const projectionDir = params
-      .get('hd-vproj')
+    // hd-veh=pages (pilot): the projection library with offline-rendered, shape-locked vehicle pages
+    // (vehicle_pages.py) in the farm's vehicles-pages directory; it replaces hd-vproj's directory.
+    const projectionDir = (params.get('hd-veh') === 'pages' ? VEHICLE_PAGES_DIR : params.get('hd-vproj'))
+      ?.trim()
+      .replace(/^\/+|\/+$/g, '');
+    const cadDir = params
+      .get('hd-vcad')
       ?.trim()
       .replace(/^\/+|\/+$/g, '');
     let tuningModule: typeof import('../../../../packages/hd-renderer/src/ra2/lush2Tuning') | null = null;
@@ -1473,6 +1481,12 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
             ? { crystalSparkle: Number(params.get('hd-sparkle')) }
             : {}),
           ...(params.get('hd-vlook') === 'remaster' ? { voxelLook: 'remaster' } : {}),
+          ...(params.get('hd-veh') === 'cad'
+            ? {
+                voxelCad:
+                  cadDir && !/\.\.|[\\:]/.test(cadDir) ? `/hd-cache/${cadDir}` : '/hd-cache/_library/vehicles-cad',
+              }
+            : {}),
           ...(projectionDir && !/\.\.|[\\:]/.test(projectionDir)
             ? { voxelProjection: `/hd-cache/${projectionDir}` }
             : {}),
@@ -2120,6 +2134,24 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
   // Console handle for A/B checks: __hdBridge.toggle() switches between the HD view and the original picture.
   let activeWaterLook = parseWaterStyle(params.get('hd-water'));
   const handle = {
+    ...(import.meta.env.DEV && params.get('hd-veh') === 'cad'
+      ? {
+          vehicleCad: {
+            mode(m?: 'look' | 'pbr' | 'off'): string {
+              if (stopped || !live) throw new Error('HD view is not ready');
+              return live.vehicleCadMode(m);
+            },
+            set(knob: string, value: number): void {
+              if (stopped || !live) throw new Error('HD view is not ready');
+              live.vehicleCadSet(knob, value);
+            },
+            get(): Record<string, number> {
+              if (stopped || !live) throw new Error('HD view is not ready');
+              return live.vehicleCadGet();
+            },
+          },
+        }
+      : {}),
     ...(import.meta.env.DEV
       ? {
           water: {

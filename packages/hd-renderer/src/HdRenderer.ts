@@ -1773,7 +1773,8 @@ export class HdRenderer {
     this.darkLoss.value.fromArray(scene.darkLoss);
     this.lighting.sun.castShadow = this.settings.shadows && !this.world && scene.sunShadow > 0;
     if (scene.overcast > 0) this.lighting.applySceneOvercast(scene.overcast);
-    if (this.settings.voxelLook === 'remaster') {
+    // CAD parts can use PBR alongside engine-look vehicles; keep their environment in sync too.
+    {
       const pbr = voxelPbrFor(this.nodes);
       pbr.skyZenith.value.copy(light.skyZenith);
       pbr.skyHorizon.value.copy(light.skyHorizon);
