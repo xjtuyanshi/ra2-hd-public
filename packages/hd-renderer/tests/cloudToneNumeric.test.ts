@@ -277,6 +277,63 @@ it('production TSL pixel finish, snow and object recipes agree with the CPU twin
     }
 });
 
+it('lifts warm snow-block rocks without adding blue and neutralises lavender only by its cool cast', () => {
+  const base = lush2Mapping(lush2Defaults('snow'), 'snow').tone;
+  const warm = [0.2, 0.16, 0.12] as const;
+  const lavender = [0.3, 0.26, 0.36] as const;
+  for (const snowLift of [1, 1.25, 2])
+    for (const snowBlue of [0, 0.5, 1]) {
+      const params = { ...base, snowLift, snowBlue };
+      for (const shade of [0, 1]) {
+        const out = cloudToneRgb(warm, shade, params);
+        const tintRatio =
+          (1 + (params.snowShadeTint[2] - 1) * snowBlue * shade) /
+          (1 + (params.snowShadeTint[0] - 1) * snowBlue * shade);
+        expect(out[2] / out[0]).toBeLessThanOrEqual((warm[2] / warm[0]) * tintRatio + 1e-6);
+        if (shade === 0) expect(out[2] / out[0]).toBeCloseTo(warm[2] / warm[0], 12);
+      }
+      const out = cloudToneRgb(lavender, 0, params);
+      expect(out[2] / out[0]).toBeLessThan(lavender[2] / lavender[0]);
+      expect(out[2] / out[0]).toBeGreaterThanOrEqual(1);
+    }
+  // The chromatic gain itself is luma-one, separate from the scalar lift.
+  const gain = cloudToneGain(lavender, lavender, 0, { ...base, snowLift: 1 });
+  expect(gain.reduce((sum, v, i) => sum + v * [0.2126, 0.7152, 0.0722][i]!, 0)).toBeCloseTo(1, 12);
+});
+
+it('keeps CPU and production TSL snow gains/pixels equivalent across cool-cast and lift extremes', () => {
+  const base = lush2Mapping(lush2Defaults('snow'), 'snow').tone;
+  const means = [
+    [0.2, 0.16, 0.12],
+    [0.3, 0.26, 0.36],
+    [0.3, 0.3, 0.31], // Partial display-space cool-cast weight.
+    [0.3, 0.3, 0.3],
+    [0, 0, 0],
+    [1, 1, 1],
+  ] as const;
+  for (const snowLift of [1, 1.25, 2])
+    for (const snowBlue of [0, 1])
+      for (const strength of [0, 0.6, 1, 1.5]) {
+        const params = { ...base, snowLift, snowBlue, strength };
+        const p = new CloudToneUniforms();
+        p.set(params);
+        for (const mean of means)
+          for (const shade of [0, 0.4, 1])
+            for (const night of [0, 0.5, 1]) {
+              const gain = cloudToneGainNode(vector(...mean), vector(...mean), n(shade), p, n(night)) as unknown as N;
+              gain
+                .data()
+                .forEach((v, i) => expect(v).toBeCloseTo(cloudToneGain(mean, mean, shade, params, night)[i]!, 9));
+              for (const rgb of [mean, [0.2, 0.16, 0.12]] as const) {
+                const out = cloudToneNode(vector(...rgb), vector(...mean), n(shade), p, n(night)) as unknown as N;
+                out
+                  .data()
+                  .forEach((v, i) => expect(v).toBeCloseTo(cloudToneRgb(rgb, shade, params, night, mean)[i]!, 9));
+              }
+            }
+      }
+});
+
 it('objects borrow only their configured cloud share per channel, preserve legacy off, and enforce their floor', () => {
   const p = new CloudToneUniforms();
   p.set(lush2Mapping(lush2Defaults('temperate'), 'temperate').tone);

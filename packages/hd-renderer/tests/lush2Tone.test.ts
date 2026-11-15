@@ -385,8 +385,9 @@ describe('lush2 colour reference', () => {
         const out = encode(cinematicGradeRgb(cloudToneRgb(rgb, 0, p), settings));
         expect(saturation(out)).toBeLessThan(0.08);
         expect(Math.max(...out)).toBeGreaterThan(210);
+        // Chromatic correction is gain-luma-one; source-weighted output luma may change on cool means.
         if (luma(rgb) <= p.neutralGradeLuma)
-          expect(luma(cloudToneRgb(rgb, 0, p)) / luma(rgb)).toBeCloseTo(snowGain(luma(rgb), p), 12);
+          expect(luma(cloudToneGain(rgb, rgb, 0, p))).toBeCloseTo(snowGain(luma(rgb), p), 12);
       }
       // Highlight headroom remains monotonic: adjacent painted whites do not collapse to a flat clipped plateau.
       const ramp = [0.7, 0.8, 0.9, 1].map((y) => luma(cloudToneRgb([y, y, y], 0, p)));
@@ -479,9 +480,27 @@ describe('lush2 runtime policy', () => {
     }
     expect(LUSH2_DEFAULTS).toEqual(snapshot);
   });
+  it('keeps the original gold gate by default and extends its reach monotonically', () => {
+    for (const theater of Object.keys(LUSH2_DEFAULTS)) {
+      expect(lush2Defaults(theater).goldReach).toBe(0);
+      expect(recommended(theater).highlightGate).toEqual([0, 0, 1.12, 1.32]);
+      for (const goldReach of [0, 0.25, 0.5, 1]) {
+        const mapped = lush2Mapping({ ...lush2Defaults(theater), goldReach }, theater);
+        expect(mapped.tone.highlightGate).toEqual([0, 0, 1.12 - 0.14 * goldReach, 1.32 - 0.12 * goldReach]);
+        expect(lush2FromMapping(mapped.tone, mapped.alive).goldReach).toBeCloseTo(goldReach, 12);
+      }
+    }
+    const mean = decode([150, 160, 60]);
+    const narrow = recommended();
+    const broad = lush2Mapping({ ...lush2Defaults('temperate'), goldReach: 1 }, 'temperate').tone;
+    const a = cloudToneRgb(mean, 0, narrow),
+      b = cloudToneRgb(mean, 0, broad);
+    expect(b[0] / b[2]).toBeGreaterThan(a[0] / a[2]);
+  });
   it('uses the requested ranges and theatre cloud depths; softer edges widen the same field', () => {
     const field = (key: string) => LUSH2_SCHEMA.find((f) => f.key === key)!;
-    expect([field('snowLift').min, field('snowLift').max]).toEqual([1, 1.3]);
+    expect([field('snowLift').min, field('snowLift').max, field('snowLift').step]).toEqual([1, 2, 0.01]);
+    expect(field('goldReach')).toEqual({ key: 'goldReach', label: '金色范围 [goldReach]', min: 0, max: 1, step: 0.01 });
     expect([field('drift').min, field('drift').max]).toEqual([0, 1]);
     expect([field('grassChroma').min, field('grassChroma').max]).toEqual([0.8, 1.6]);
     expect([field('softness').min, field('softness').max]).toEqual([0.2, 1]);

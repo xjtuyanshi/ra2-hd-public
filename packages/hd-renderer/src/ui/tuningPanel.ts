@@ -13,7 +13,7 @@ export interface TuningOptions<K extends string> {
   set(values: Record<K, number>): void;
   ab(enabled: boolean): void;
   names?: readonly [string, string];
-  /** Host-provided native text-entry state, when observable. */
+  /** Host-provided text-entry state, observed or inferred from forwarded input. */
   textEntryActive?(): boolean;
   /** Return keyboard ownership to the host after a completed control action. */
   returnFocus?(): void;

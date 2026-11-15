@@ -10,6 +10,7 @@ import {
 } from './input';
 import { calculateCanvasFit } from './canvasFit';
 import { installFullscreenKeyboardLock, type KeyboardLockState } from './keyboardLock';
+import type { ChatEntryGuess } from './chatEntryGuess';
 
 let canvasFitObserver: ResizeObserver | null = null;
 let canvasDprQuery: MediaQueryList | null = null;
@@ -25,6 +26,17 @@ const pointerLockHintShown = new WeakSet<HTMLCanvasElement>();
  */
 const UI_SHORTCUT_KEYS = new Set(['`', 'F11', '?', '[', ']']);
 const SESSION_SHORTCUT_CODES = new Set<string>();
+const chatEntryGuesses = new WeakMap<HTMLCanvasElement, ChatEntryGuess>();
+
+/** The presentation owner can attach after input installation and must release its estimate on disposal. */
+export function trackGameChatEntry(canvas: HTMLCanvasElement, guess: ChatEntryGuess): () => void {
+  chatEntryGuesses.get(canvas)?.reset();
+  chatEntryGuesses.set(canvas, guess);
+  return () => {
+    guess.reset();
+    if (chatEntryGuesses.get(canvas) === guess) chatEntryGuesses.delete(canvas);
+  };
+}
 /** Physical shortcuts are layout/Shift independent and must be excluded before any native forwarding. */
 export function setSessionShortcutCode(code: string, reserved: boolean): void {
   if (reserved) SESSION_SHORTCUT_CODES.add(code);
@@ -1227,7 +1239,9 @@ export function installGameInput(
     'keydown',
     (event) => {
       // Page shortcuts (` debug / [ ] speed / F11 fullscreen / ? help / \\ HD view) are not injected into the game.
-      if (UI_SHORTCUT_KEYS.has(event.key) || SESSION_SHORTCUT_CODES.has(event.code)) return;
+      const chat = chatEntryGuesses.get(canvas);
+      const chatBackquote = event.code === 'Backquote' && chat?.isOpen();
+      if (!chatBackquote && (UI_SHORTCUT_KEYS.has(event.key) || SESSION_SHORTCUT_CODES.has(event.code))) return;
       if (document.activeElement !== canvas || event.isComposing) return;
       // A key can follow a physical move before the pending pointer rAF runs.
       // Preserve that position before key state/messages reach either backend.
@@ -1248,6 +1262,7 @@ export function installGameInput(
       vm.postMessage(system ? 0x0104 : 0x0100, vk, lParam); // WM_SYSKEYDOWN / WM_KEYDOWN
       const character = win32CharacterCode(event);
       if (character !== null) vm.postMessage(0x0102, character, lParam); // WM_CHAR
+      chat?.forwardedKeyDown(code, event.repeat || wasDown);
       if (!wasDown && !MODIFIER_CODES.has(event.code)) notify('keydown', code);
       if (metaAsControl && event.metaKey && !MODIFIER_CODES.has(event.code)) {
         // macOS sends no keyup for this key while ⌘ stays down: release it here so it can be pressed again.
@@ -1276,7 +1291,10 @@ export function installGameInput(
     window,
     'keyup',
     (event) => {
-      if (UI_SHORTCUT_KEYS.has(event.key) || SESSION_SHORTCUT_CODES.has(event.code)) return;
+      // Release a forwarded Backquote even if chat closed or the view changed while it was held.
+      const chatBackquote =
+        event.code === 'Backquote' && (chatEntryGuesses.get(canvas)?.isOpen() || heldKeys.has(event.code));
+      if (!chatBackquote && (UI_SHORTCUT_KEYS.has(event.key) || SESSION_SHORTCUT_CODES.has(event.code))) return;
       const code = forwardedCode(event.code);
       if (metaReleased.delete(code)) {
         // Already released by the page while ⌘ was held; the late physical keyup has nothing left to do.
@@ -1389,6 +1407,7 @@ export function installGameInput(
     releasePointerLock,
     cleanup() {
       inputDisposed = true;
+      chatEntryGuesses.get(canvas)?.reset();
       pointerLockRevision++;
       pointerTracked = false;
       releaseInput();

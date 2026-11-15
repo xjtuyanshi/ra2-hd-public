@@ -231,7 +231,10 @@ it('owns the DOM and capture hotkey, ignores inputs, supports hide and releases 
   expect(key('Backquote').defaultPrevented).toBe(false);
   doc.activeElement = null;
   nativeTyping = true;
-  expect(key('Backquote').defaultPrevented).toBe(false);
+  const callsWhileTyping = ab.mock.calls.length;
+  for (const shift of [false, true]) expect(key('Backquote', shift).defaultPrevented).toBe(false);
+  expect(ab).toHaveBeenCalledTimes(callsWhileTyping);
+  expect(root.hidden).toBe(false);
   nativeTyping = false;
   const composing = Object.assign(new Event('keydown', { cancelable: true }), { code: 'Backquote', isComposing: true });
   win.dispatchEvent(composing);
@@ -289,15 +292,28 @@ it('the actual RA2 controller restores URL clouds and no-tone settings, preservi
       nodes.alive.update(20, 0.6, 0, 0, false);
     },
   };
+  let nativeTyping = true;
   const panel = mountLush2Tuning(
     host as unknown as HTMLElement,
     hd as unknown as import('../src/HdRenderer').HdRenderer,
     'temperate',
     url,
+    undefined,
+    () => nativeTyping,
   );
   try {
-    expect(readStorage).toHaveBeenCalledWith('hd-lush2-v3:temperate');
+    expect(readStorage).toHaveBeenCalledWith('hd-lush2-v4:temperate');
     expect(panel.get()).toEqual(lush2Defaults('temperate'));
+    const backquote = () => {
+      const event = Object.assign(new Event('keydown', { cancelable: true }), { code: 'Backquote' });
+      win.dispatchEvent(event);
+      return event;
+    };
+    expect(backquote().defaultPrevented).toBe(false);
+    expect(settings.cloudTone).not.toBeNull();
+    nativeTyping = false;
+    expect(backquote().defaultPrevented).toBe(true);
+    expect(settings.cloudTone).toBeNull();
     for (let i = 0; i < 3; i++) {
       panel.ab(false);
       expect(settings).toEqual({ groundTone: null, tone: null, cloudTone: null });

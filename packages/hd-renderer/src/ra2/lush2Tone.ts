@@ -16,6 +16,7 @@ export interface Lush2Values {
   cover: number;
   shadeHue: number;
   gold: number;
+  goldReach: number;
   patchScale: number;
   softness: number;
   drift: number;
@@ -36,6 +37,7 @@ export const LUSH2_SCHEMA: readonly TuningField<keyof Lush2Values>[] = [
   { key: 'cover', label: '云影覆盖 [cover]', min: 0, max: 1, step: 0.01 },
   { key: 'shadeDepth', label: '阴影深浅 [shadeDepth]', min: 0, max: 0.5, step: 0.005 },
   { key: 'gold', label: '金色量 [gold]', min: 0, max: 1, step: 0.01 },
+  { key: 'goldReach', label: '金色范围 [goldReach]', min: 0, max: 1, step: 0.01 },
   { key: 'patchScale', label: '片区大小 [patchScale]', min: 6, max: 24, step: 0.1 },
   { key: 'softness', label: '片区柔和 [softness]', min: 0.2, max: 1, step: 0.01 },
   { key: 'drift', label: '漂移速度 [drift]', min: 0, max: 1, step: 0.005 },
@@ -44,7 +46,7 @@ export const LUSH2_SCHEMA: readonly TuningField<keyof Lush2Values>[] = [
   { key: 'contact', label: '接触阴影 [contact]', min: 0, max: 1, step: 0.01 },
   { key: 'wet', label: '岸边湿润 [wet]', min: 0, max: 1, step: 0.01 },
   { key: 'snowBlue', label: '雪地蓝 [snowBlue]', min: 0, max: 1, step: 0.01 },
-  { key: 'snowLift', label: '雪地提亮 [snowLift]', min: 1, max: 1.3, step: 0.01 },
+  { key: 'snowLift', label: '雪地提亮 [snowLift]', min: 1, max: 2, step: 0.01 },
 ];
 const temperate: Readonly<Lush2Values> = Object.freeze({
   strength: 1,
@@ -58,6 +60,7 @@ const temperate: Readonly<Lush2Values> = Object.freeze({
   cover: 0.45,
   shadeHue: 10,
   gold: 0.55,
+  goldReach: 0,
   patchScale: 12,
   softness: 0.7,
   drift: 0.6,
@@ -166,7 +169,7 @@ export function lush2Mapping(
       snowShadeTint: [0.93, 0.97, 1.08],
       wetDepth: 0.4,
       wetChroma: 1.3,
-      highlightGate: [0, 0, 1.12, 1.32],
+      highlightGate: [0, 0, 1.12 - 0.14 * values.goldReach, 1.32 - 0.12 * values.goldReach],
     },
     alive: {
       clouds: values.strength > 0,
@@ -201,6 +204,7 @@ export function lush2FromMapping(tone: CloudToneParams, alive: AliveOptions): Lu
     cover: cloudThresholdCover((alive.shape!.edgeLow + alive.shape!.edgeHigh) / 2),
     shadeHue: tone.shadeHue,
     gold: tone.gold,
+    goldReach: (1.12 - tone.highlightGate[2]) / 0.14,
     patchScale: alive.shape!.scale,
     softness: ((alive.shape!.edgeHigh - alive.shape!.edgeLow) * alive.shape!.scale) / penumbraSpan(1),
     drift: alive.speed * ALIVE.drift,

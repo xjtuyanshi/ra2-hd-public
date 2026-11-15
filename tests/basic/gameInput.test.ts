@@ -3,11 +3,14 @@ import {
   installGameInput,
   setSessionShortcutKey,
   setSessionShortcutCode,
+  trackGameChatEntry,
   toggleImmersiveFullscreen,
   type GameInputOptions,
   type InstalledGameInput,
 } from '../../src/ui/pages/game/gameInput';
 import type { VmShell } from '../../src/adapter/runtime';
+import { createChatEntryGuess } from '../../src/ui/pages/game/chatEntryGuess';
+import { RA2_CHAT_ENTRY_POLICY } from '../../src/games/ra2/chatEntryPolicy';
 
 let installed: InstalledGameInput | undefined;
 afterEach(() => {
@@ -300,6 +303,90 @@ describe('桌面鼠标跟手性', () => {
       window.removeEventListener('keydown', overlay, true);
     }
   });
+  it('tracks only forwarded keys, keeps chat across canvas clicks and forwards reserved Backquote only during chat', () => {
+    const { canvas, doc, vm, pointer } = setup();
+    const chat = createChatEntryGuess(RA2_CHAT_ENTRY_POLICY);
+    const stop = trackGameChatEntry(canvas as unknown as HTMLCanvasElement, chat);
+    const send = (type: string, code: string, key = code, repeat = false) => {
+      window.dispatchEvent(
+        Object.assign(new Event(type, { cancelable: true }), {
+          code,
+          key,
+          repeat,
+          isComposing: false,
+          altKey: false,
+          ctrlKey: false,
+          metaKey: false,
+          shiftKey: key === '~',
+        }),
+      );
+    };
+    const press = (code: string, key = code) => {
+      send('keydown', code, key);
+      send('keyup', code, key);
+    };
+    try {
+      setSessionShortcutKey('`', true);
+      setSessionShortcutCode('Backquote', true);
+      press('Backquote', '`');
+      expect(vm.postMessage).not.toHaveBeenCalled();
+      // Focus, composition and reserved-key filters all precede the native forwarding entry.
+      Object.assign(doc, { activeElement: {} });
+      press('Enter');
+      expect(chat.isOpen()).toBe(false);
+      Object.assign(doc, { activeElement: canvas });
+      window.dispatchEvent(Object.assign(new Event('keydown'), { code: 'Enter', key: 'Enter', isComposing: true }));
+      expect(chat.isOpen()).toBe(false);
+      setSessionShortcutCode('Enter', true);
+      press('Enter');
+      expect(chat.isOpen()).toBe(false);
+      setSessionShortcutCode('Enter', false);
+
+      send('keydown', 'Enter');
+      send('keydown', 'Enter', 'Enter', true);
+      send('keydown', 'Enter'); // Duplicate keydown without repeat is also already held.
+      expect(chat.isOpen()).toBe(true);
+      send('keyup', 'Enter');
+      for (const button of [0, 1, 2]) {
+        pointer('pointerdown', { button });
+        pointer('pointerup', { button });
+        expect(chat.isOpen()).toBe(true);
+      }
+      for (const key of ['`', '~', 'ё']) {
+        vm.postMessage.mockClear();
+        press('Backquote', key);
+        expect(vm.postMessage.mock.calls.map(([message, value]) => [message, value])).toEqual([
+          [0x100, 0xc0],
+          [0x102, key.charCodeAt(0)],
+          [0x101, 0xc0],
+        ]);
+      }
+      press('Escape');
+      expect(chat.isOpen()).toBe(false);
+      vm.postMessage.mockClear();
+      press('Backquote', '`');
+      expect(vm.postMessage).not.toHaveBeenCalled();
+      press('Backspace');
+      expect(chat.isOpen()).toBe(true);
+      // A reset while Backquote is down must still release its native key state.
+      send('keydown', 'Backquote', '`');
+      chat.reset();
+      vm.postMessage.mockClear();
+      send('keyup', 'Backquote', '`');
+      expect(vm.postMessage).toHaveBeenCalledWith(0x101, 0xc0, expect.any(Number));
+      press('NumpadEnter', 'Enter');
+      expect(chat.isOpen()).toBe(true);
+      installed!.cleanup();
+      installed = undefined;
+      expect(chat.isOpen()).toBe(false);
+    } finally {
+      stop();
+      setSessionShortcutCode('Enter', false);
+      setSessionShortcutCode('Backquote', false);
+      setSessionShortcutKey('`', false);
+    }
+  });
+
   it('a key reserved for a session shortcut stays with the page and returns to the game when released', () => {
     const { vm } = setup();
     const press = () => {

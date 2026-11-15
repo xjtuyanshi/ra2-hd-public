@@ -337,15 +337,21 @@ function snowEndpointGain(
     smooth(p.snowGate[0], p.snowGate[1], luma(displayRgb(mean)) / Math.max(luma(displayRgb(context)), 0.05)) *
     (1 - smooth(p.snowGate[2], p.snowGate[3], displayHsv(mean).sat));
   const neutral = mean.map((v, i) => blend(v / y, 1, p.snowWhite) * p.neutralGradeTint[i]!);
-  const ny = Math.max(luma(neutral), 1e-6);
+  const chroma = neutral.map((v, i) => v / Math.max(mean[i]!, 1e-6));
+  const cy = Math.max(luma(chroma), 1e-6);
+  const display = displayRgb(mean);
+  // Warm and neutral blocks receive only scalar lift; only a cool cast needs neutralisation.
+  const cool = smooth(0, 0.03, display[2]! - Math.min(display[0]!, display[1]!));
   const lifted = y * p.snowLift;
   const excess = Math.max(0, lifted - p.neutralGradeLuma);
   const shoulder = lifted - excess ** 2 / (1 - p.neutralGradeLuma + excess);
   return mean.map(
-    (v, i) =>
+    (_, i) =>
       blend(
         1,
-        ((((shoulder * neutral[i]!) / ny) * p.bareDepth) / Math.max(v, 1e-6)) *
+        (shoulder / y) *
+          p.bareDepth *
+          blend(1, chroma[i]! / cy, cool) *
           blend(1, p.snowShadeTint[i]!, p.snowBlue * shade),
         gate,
       ) * blend(1, p.moonTint[i]!, night),
@@ -371,15 +377,16 @@ function snowEndpointGainNode(
     .mul(smoothstep(p.snowGate.x, p.snowGate.y, dot(display, vec3(...W)).div(dot(scene, vec3(...W)).max(0.05))))
     .mul(float(1).sub(smoothstep(p.snowGate.z, p.snowGate.w, high.sub(low).div(high.max(1e-6)))));
   const neutral = mix(mean.div(y), vec3(1), p.snowWhite).mul(p.neutralGradeTint).toVar();
+  const chroma = neutral.div(mean.max(1e-6)).toVar();
+  const cool = smoothstep(0, 0.03, display.b.sub(display.r.min(display.g)));
   const lifted = y.mul(p.snowLift),
     excess = lifted.sub(p.neutralGradeLuma).max(0);
   const shoulder = lifted.sub(excess.pow(2).div(float(1).sub(p.neutralGradeLuma).add(excess)));
   return mix(
     vec3(1),
-    neutral
-      .mul(shoulder.div(dot(neutral, vec3(...W)).max(1e-6)))
+    mix(vec3(1), chroma.div(dot(chroma, vec3(...W)).max(1e-6)), cool)
+      .mul(shoulder.div(y))
       .mul(p.bareDepth)
-      .div(mean.max(1e-6))
       .mul(mix(vec3(1), p.snowShadeTint, p.snowBlue.mul(shade))),
     gate,
   ).mul(mix(vec3(1), p.moonTint, night));

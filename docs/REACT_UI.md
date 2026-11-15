@@ -37,6 +37,20 @@ Only browser or frequent-input adapters such as canvas/WebGL, input-lock hints, 
 
 Modals share native `dialog.showModal()`, letting the browser constrain and restore focus. Esc closes web dialogs without synthesizing Esc for the game. Busy imports cannot be dismissed early.
 
+The HD tuning bridge owns a per-canvas chat-entry estimate (`chatEntryGuess.ts`), updated only at
+`gameInput.ts`'s native keydown forwarding entry. The pure state machine receives RA2/YR bindings from
+`src/games/ra2/chatEntryPolicy.ts`; repeated keys and canvas mouse buttons do not change its state.
+While chat is estimated open, Backquote bypasses page/session shortcut reservations and the tuning panel
+receives `textEntryActive` through `mountLush2Tuning`. View replacement, HD toggles, new matches and disposal
+reset the estimate. This is not a native chat signal: remapped `KEYBOARD.INI` bindings may desynchronise it;
+a forwarded, non-repeated Escape closes it.
+
+The lush2 tuning model stores values per theater under `hd-lush2-v4`. `goldReach` defaults to zero,
+preserving the existing highlight gate; increasing it lowers the two highlight thresholds. The `snowLift`
+range extends to 2.0 without changing recommendations. Snow gain separates scalar luminance lift from
+luma-one chromatic gain, applying the latter only to the mean's display-sRGB cool cast; shade tint remains
+shade-only. CPU and TSL recipes share these contracts and have numeric parity regressions.
+
 ## Regression entry points
 
 Start a separate development server and set `RA2_BROWSER_ORIGIN`:

@@ -10,6 +10,7 @@ export function mountLush2Tuning(
   theater: string,
   currentAlive: AliveOptions,
   returnFocus?: () => void,
+  textEntryActive?: () => boolean,
 ) {
   let values = lush2Defaults(theater);
   let enabled = true;
@@ -25,9 +26,10 @@ export function mountLush2Tuning(
   };
   const panel = mountTuningPanel(host, {
     returnFocus,
+    textEntryActive,
     schema: LUSH2_SCHEMA,
     recommended: lush2Defaults(theater),
-    storageKey: `hd-lush2-v3:${theater}`,
+    storageKey: `hd-lush2-v4:${theater}`,
     get: () => ({ ...values }),
     set: (next) => {
       values = { ...next };
