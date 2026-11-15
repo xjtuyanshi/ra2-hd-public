@@ -1214,6 +1214,7 @@ function createMaterials(
           quay,
           cliffNear: sheltered,
           bedAt,
+          grade,
           detail: map.waterDetail ? texture(map.waterDetail, uv) : undefined,
           surface: map.waterSurface ?? undefined,
           cliff: map.cliff ? texture(map.cliff, uv).r : undefined,
@@ -1267,6 +1268,7 @@ function createMaterials(
           cliffNear: sheltered,
           shoreTone: shoreLand ? shoreLand.b : undefined,
           shoreMass: shoreLand ? shoreLand.a : undefined,
+          grade,
         },
         nodes,
       );
