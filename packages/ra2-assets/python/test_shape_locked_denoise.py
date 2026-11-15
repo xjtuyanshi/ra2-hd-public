@@ -30,6 +30,16 @@ class ShapeLockedDenoiseTest(unittest.TestCase):
             source[:, :, :3] = [42, 99, 103]
             np.testing.assert_array_equal(denoise(source, np.zeros((size, size), np.uint8)), source)
 
+    def test_optional_metal_lift_never_reencodes_paint_or_coverage(self):
+        source = np.full((32, 64, 4), 255, np.uint8)
+        source[:, :, :3] = 80
+        remap = np.zeros((32, 64), np.uint8)
+        remap[:, 32:] = 255
+        after = denoise(source, remap, metal_lift=.035)
+        self.assertGreater(after[16, 16, 0], source[16, 16, 0])
+        np.testing.assert_array_equal(after[:, 32:], source[:, 32:])
+        np.testing.assert_array_equal(after[:, :, 3], source[:, :, 3])
+
 
 if __name__ == '__main__':
     unittest.main()

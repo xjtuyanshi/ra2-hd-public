@@ -2162,7 +2162,8 @@ python3 -m unittest discover -s packages/ra2-assets/python -p test_shape_locked_
 
 The tool requires Pillow, NumPy and OpenCV. It filters building bodies and referenced layers, build-up and bib frames,
 leaving other atlas regions untouched. A median/bilateral filter removes fine speckle; a coarse residual retains
-8–32 texel variation. Eroded alpha, paint boundaries and structural gradients lock edges. Coverage and remap files
+8–32 texel variation. A restrained 3.5% lift toward white keeps exposed metal readable after median filtering;
+encoded house-paint grey is excluded. Eroded alpha, paint boundaries and structural gradients lock edges. Coverage and remap files
 are never changed. Reports use source-defined interior masks, luminance variance and before/after source hashes.
 Do not point this tool at a shared/base farm. Derived pages and reports stay outside Git.
 

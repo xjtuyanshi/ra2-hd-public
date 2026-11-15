@@ -4,7 +4,7 @@ import cv2
 import numpy as np
 
 
-def denoise(rgba, remap):
+def denoise(rgba, remap, metal_lift=0):
     """Suppress palette-scale speckle, retaining low-frequency wear and structural edges."""
     if rgba.dtype != np.uint8 or rgba.shape[:2] != remap.shape or rgba.shape[2] != 4:
         raise ValueError("expected uint8 RGBA and matching remap mask")
@@ -20,6 +20,8 @@ def denoise(rgba, remap):
     clean = cv2.bilateralFilter(median, 7, 48, 1.5)
     # Restore broad weathering, rather than mistaking it for removable dirt.
     clean += cv2.GaussianBlur(rgb, (0, 0), 8) - cv2.GaussianBlur(clean, (0, 0), 8)
+    # Encoded house-paint grey is a palette index, not metal albedo: never lift it.
+    clean += (255 - clean) * metal_lift * (1 - paint[:, :, None])
     result = rgba.copy()
     result[:, :, :3] = np.clip(np.rint(rgb + (clean - rgb) * weight[:, :, None] * 0.92), 0, 255).astype(np.uint8)
     return result

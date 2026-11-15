@@ -47,7 +47,7 @@ def run(source, farm, theater, report):
             if refs[page]:
                 pages.setdefault(page, {}).setdefault(tuple(frame["rect"]), []).append(key)
     files = [None] * len(refs)
-    log = {"theater": theater, "algorithm": "median3-bilateral7-sigma48-coarse8-edge-lock-v2", "pages": [], "bodies": []}
+    log = {"theater": theater, "algorithm": "median3-bilateral7-sigma48-coarse8-edge-lock-metal035-v3", "pages": [], "bodies": []}
     cv2.setNumThreads(1)
     with tempfile.TemporaryDirectory(prefix="building-clean-") as scratch:
         scratch = Path(scratch)
@@ -63,7 +63,7 @@ def run(source, farm, theater, report):
                 box = (x, y, x + width, y + height)
                 before = np.array(image.crop(box))
                 remap = np.array(remap_image.crop(box))
-                after = denoise(before, remap)
+                after = denoise(before, remap, metal_lift=0.035)
                 if any(key.startswith("building:") for key in keys):
                     log["bodies"].append({"sprites": keys, "rect": rect, "page": index, **metrics(before, after, remap)})
                 image.paste(Image.fromarray(after), box)
