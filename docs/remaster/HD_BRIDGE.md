@@ -1392,6 +1392,13 @@ See [Water review instructions](../../scripts/remaster/qa/WATER.md) for native s
 mask review, lossless/4 Mb/s encodes, per-gate metrics and the separate 60-second fleet logic-FPS runs. Captures and
 terrain artwork stay outside Git. Asset-free regressions do not establish GPU equivalence or visual acceptance.
 
+The offline curved-reconstruction entry in the [CAD tooling guide](../../scripts/remaster/cad/README.md)
+adds source-supported sweeps, frusta, bends, capsules, caps and edge fillets. Curved tangent patches
+carry validated analytic-normal metadata on ordinary convex halfspace geometry; every convex piece
+still counts toward the existing expanded budget. The opt-in round batch reports the revised assembled
+silhouette hard gate separately from advisory surface deviation, barrel targets and actual author
+visual review. It never installs research specs into the default live library.
+
 ## Opt-in CAD vehicles
 
 Live matches: `hd-veh=cad` requests `<libraryBase>/vehicles-cad/<MODEL_ID>.json`, with

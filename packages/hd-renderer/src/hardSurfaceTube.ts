@@ -144,3 +144,40 @@ export function tubeSegments(cells: readonly Vec3[], axis: Axis, budget: number)
   }
   return ranges.map(([l, h]) => cells.filter((p) => p[a] >= l && p[a] < h));
 }
+
+/** A circular chain may have radius steps/taper, but every segment of a lane shares one 3D line. */
+export function circularTubeGroups(
+  primitives: readonly import('./hardSurfaceMesh').Primitive[],
+): Map<string, number[]> {
+  const groups = new Map<string, number[]>();
+  primitives.forEach((q, i) => {
+    let direction: Vec3, point: Vec3;
+    if (q.type === 'cyl') {
+      const a = 'xyz'.indexOf(q.axis),
+        uv = [0, 1, 2].filter((k) => k !== a);
+      direction = [0, 0, 0];
+      direction[a] = 1;
+      point = [0, 0, 0];
+      point[uv[0]] = q.c[0];
+      point[uv[1]] = q.c[1];
+    } else if (q.round?.type === 'taper') {
+      const shape = q.round,
+        d = shape.end.map((v, k) => v - shape.start[k]) as Vec3,
+        len = Math.hypot(...d);
+      if (!(len > 0)) throw new Error('Degenerate tube axis');
+      direction = d.map((v) => v / len) as Vec3;
+      point = shape.start;
+      if (direction.find((v) => Math.abs(v) > 1e-8)! < 0) direction = direction.map((v) => -v) as Vec3;
+    } else throw new Error('Tube chain contains a noncircular primitive');
+    const moment = [
+      point[1] * direction[2] - point[2] * direction[1],
+      point[2] * direction[0] - point[0] * direction[2],
+      point[0] * direction[1] - point[1] * direction[0],
+    ];
+    const key = [...direction, ...moment].map((v) => Math.round(v * 1e5)).join(',');
+    const group = groups.get(key) ?? [];
+    group.push(i);
+    groups.set(key, group);
+  });
+  return groups;
+}

@@ -293,7 +293,7 @@ export function refineHardSurface(
     if (!candidate && !model.options.tunePlanes)
       for (const { r, i } of ranked) {
         const key = `tune:${r.id}`;
-        if (r.primitive.type !== 'poly' || !reserveParameter(key, r.primitive)) continue;
+        if (r.primitive.type !== 'poly' || r.primitive.round || !reserveParameter(key, r.primitive)) continue;
         const fitted = fitRegion(r.cells, r.id, whole, { ...model.options, tunePlanes: true });
         candidate = structuredClone(part);
         candidate.primitives[i] = fitted.primitive;
@@ -306,7 +306,7 @@ export function refineHardSurface(
       for (const { r, i } of ranked) {
         const q = part.primitives[i];
         if (options.neighborhood === 'strict') break;
-        if (q.type !== 'poly') continue;
+        if (q.type !== 'poly' || q.round) continue;
         for (let plane = 0; plane < q.planes.length; plane++) {
           const p = q.planes[plane];
           if (p.slice(0, 3).filter((v) => v !== 0).length < 2) continue;
@@ -327,6 +327,7 @@ export function refineHardSurface(
       }
     if (!candidate)
       for (const { r, i } of ranked) {
+        if (part.primitives[i].round) continue;
         for (const delta of [-0.15, 0.15, -0.075, 0.075]) {
           const key = `offset:${r.id}:${delta}`;
           if (!reserveParameter(key, part.primitives[i])) continue;

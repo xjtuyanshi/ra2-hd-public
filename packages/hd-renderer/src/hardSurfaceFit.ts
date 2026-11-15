@@ -7,6 +7,7 @@ import {
   type HardSurfaceSpec,
   type PartSpec,
 } from './hardSurfaceMesh';
+import { fitCapsule, fitDome, fitEllipsoidDome, fitFillet, detectRoundFeatures } from './hardSurfaceRoundFit';
 import {
   axisIndex,
   forCells,
@@ -20,7 +21,7 @@ import {
 export type Region = [Vec3, Vec3];
 export type DirectionKind = 'axis' | 'all' | '45' | [number, number][];
 export interface SeedComponent extends PrimitiveOptions {
-  type?: 'raw' | 'cyl' | 'poly';
+  type?: 'raw' | 'cyl' | 'poly' | 'round' | 'pipe';
   prim?: Primitive;
   region?: Region;
   exclude?: Region[];
@@ -238,8 +239,27 @@ export function fitHardSurface(
         options.onEmpty?.(role, comp);
         continue;
       }
+      if (comp.type === 'pipe') {
+        const features = detectRoundFeatures(m),
+          covered = new Set(features.flatMap((f) => f.cells.map((p) => p.join(','))));
+        if (covered.size < C.length * 0.9)
+          throw new Error('Pipe component has insufficient source cross-section support');
+        for (const [i, feature] of features.entries())
+          for (const [j, p] of feature.primitives.entries())
+            primitives.push({ ...p, ...base, name: `${base.name ?? 'pipe'}_${i}_${j}` });
+        continue;
+      }
       let q: Primitive;
-      if (comp.type === 'cyl') {
+      if (comp.type === 'round') {
+        const cells = C.map((p) => p.map((v) => v - 0.5) as Vec3);
+        const round =
+          fitCapsule(cells) ??
+          fitFillet(cells) ??
+          fitDome(cells, comp.axis ?? 'z') ??
+          fitEllipsoidDome(cells, comp.axis ?? 'z');
+        if (!round) throw new Error('Round component has insufficient source curvature support');
+        q = round;
+      } else if (comp.type === 'cyl') {
         if (!comp.axis) throw new Error('Cylinder components require an axis');
         q = fitCylinder(C, comp.axis, comp);
       } else {

@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
+import { taperedCylinder } from '../src/hardSurfaceRound';
 import { grid } from './hardSurfaceFixtures';
 import { occupiedCells, proposeHardSurface } from '../src/hardSurfacePropose';
-import { tubeLanes, tubeSegments } from '../src/hardSurfaceTube';
+import { tubeLanes, tubeSegments, circularTubeGroups } from '../src/hardSurfaceTube';
 
 describe('source cross-section tube chain', () => {
   it('allocates three source-step segments independently to each parallel tube', () => {
@@ -61,5 +62,13 @@ describe('source cross-section tube chain', () => {
       [0, 14],
       [14, 15],
     ]);
+  });
+  it('counts a sloped stepped chain as one line and rejects silently offset segments', () => {
+    const a = taperedCylinder([0, 2, 4], [6, 5, 4], [2, 1]),
+      b = taperedCylinder([6, 5, 4], [12, 8, 4], [1, 1]);
+    expect(circularTubeGroups([a, b]).size).toBe(1);
+    const shifted = taperedCylinder([6, 5.2, 4], [12, 8.2, 4], [1, 1]);
+    expect(circularTubeGroups([a, shifted]).size).toBe(2);
+    expect(() => circularTubeGroups([{ type: 'box', min: [0, 0, 0], max: [1, 1, 1] }])).toThrow('noncircular');
   });
 });

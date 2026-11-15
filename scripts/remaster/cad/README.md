@@ -191,3 +191,74 @@ selection. This does not turn part passes into a vehicle pass, certify the look,
 global optimum. Upstream trial minutes and selection wall time remain separate in HOURS.md.
 The generic `hardSurfaceSelection.ts` owns measurement/ranking; the CLI owns source
 compatibility, research-camera replay and game budgets.
+
+## Source-supported curved reconstruction
+
+The generic `hardSurfaceRound.ts` builds arbitrary-axis circular frusta, polyline cylinder
+sweeps with flush bisector joints, bounded torus chords, capsules, spherical/ellipsoidal caps,
+and clipped edge fillets. These are ordinary explicit convex halfspace patches with analytic
+smooth normals; they use the same `buildPart`, rasterizer and unchanged surface metrics as
+plates. Every sweep/torus chord and every carve piece counts toward the expanded budget.
+There is no compound primitive that hides a per-voxel cover. New `round` shading metadata is
+validated by the existing spec parser and reflected with its geometry. Existing specs without
+that metadata retain their geometry and normals.
+
+`hardSurfaceRoundFit.ts` owns source-only cross-section rays, exposed-arc and radial-residual
+checks, stable axial tracks, bounded centreline simplification, coherent taper regression,
+spherical/ellipsoidal area-profile regression, capsule-end and circular-quadrant hypotheses.
+A torus hypothesis additionally requires occupied source samples along the intervening arc;
+its endpoints alone cannot authorize a bend. Tiny cross sections are explicitly marked
+ambiguous: a one-cell rail cannot prove its subvoxel cross-section is circular. Attached
+continuations require an established track and occupancy support; flat plates alone are not
+positive round evidence. The detector can still miss blended/occluded or rapidly changing
+features, and individual source-supported hypotheses may fail formal or visual acceptance.
+
+Seed components `type: 'round'` fit source-supported caps, capsules or fillets; `type: 'pipe'`
+fits detected sweeps only when they cover at least 90 percent of the selected source cells.
+Insufficient evidence is an error, not an exact-cover fallback. Automatic proposals can opt
+into pipe extraction with `roundPipes: true` or `run.ts --round-pipes`. The default startup,
+library installation and live-cache paths are unchanged. Curved patches are not split or
+independently retuned as planar facets by refinement.
+
+A separate offline round pass preserves an earlier automatic delivery's broad plates and
+tries source-supported curved replacements, source-profile circular barrel chains and
+coplanar boundary adjustments. Opposite inequalities at a shared BSP seam move together;
+round tangent planes are excluded. Source/palette bytes and input manifest hashes are
+checked before use. Every part and assembly is remeasured in the original fixed camera;
+paint, wear and the exported reference geometry are copied without tuning.
+
+```bash
+pnpm exec tsx scripts/remaster/cad/round.ts \
+  --input "$PREVIOUS_AUTOMATIC_DELIVERY" --out "$FRESH_OUTPUT" \
+  --seconds 1800 --cell 256 --font "$CJK_FONT"
+pnpm exec tsx scripts/remaster/cad/roundBatch.ts \
+  --ids "$MODEL_IDS" --input-root "$PREVIOUS_UNITS_DIRECTORY" \
+  --out "$BATCH_OUTPUT" --concurrency 4 --seconds 1800 --cell 256 --font "$CJK_FONT"
+python3 scripts/remaster/cad/overview.py \
+  --input "$BATCH_OUTPUT" --output "$BATCH_OUTPUT/overview_10.png" --font "$CJK_FONT"
+pnpm exec tsx scripts/remaster/cad/roundSummary.ts "$BATCH_OUTPUT"
+```
+
+`roundBatch.ts` retains every actual child exit and serializes status writes. Its output root
+may already contain the task brief and research notes, but the batch status and unit outputs
+must be fresh. `--seconds` is a per-unit soft search limit; the current formal evaluation and
+board delivery finish after it. `timing.json` explicitly records time-budget exhaustion.
+Prior automatic baseline labour is not new reconstruction time. Shared development,
+diagnosis and actual author review must be recorded independently.
+
+This entry uses the revised research gate: assembled IoU at least 0.97 in all eight facings
+is hard; bidirectional p99 at most 1.0 is advisory; barrel per-part IoU at least 0.9 is a
+separately reported target. Expanded budgets remain 130/35/three per detected circular tube,
+and every segment of one barrel lane must share its detected 3D axis. Radius steps come
+from source cross-section changes; no invented muzzle rings, transverse boxes or rectangular
+barrel clipping are introduced to improve the score. A missed target remains visible even
+when the independent revised gate passes. The legacy commands above retain their original
+stricter metric semantics.
+
+`roundSummary.ts` requires complete eight-view measurements, actual mesh counts, successful
+process evidence, and a `visual_review.json` with `pass`, `reason`, `agentDirectedMinutes`,
+`sourceNothingAdded`, `proportionsPreserved`, and `scalesOpened` containing `1x`, `2x`, and
+`turntable_8`. Missing review is UNVERIFIED. Any visibly wrong proportion, added component,
+blocky round feature or stair-stepped plate fails the visual gate even if assembly IoU passes.
+The overview crops native facing-zero tiles without resizing. No offline board establishes
+VM, GPU, runtime, performance, hardware or owner artistic acceptance.

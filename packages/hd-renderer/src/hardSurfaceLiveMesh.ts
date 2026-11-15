@@ -405,6 +405,30 @@ export function parseHardSurfaceSpec(value: unknown): HardSurfaceSpec {
       if (!vector(q.min, 3) || !vector(q.max, 3) || (q.min as number[]).some((v, a) => v >= (q.max as number[])[a]))
         fail();
     } else fail();
+    if (q.round !== undefined) {
+      const r = obj(q.round);
+      if (r.type === 'sphere' || r.type === 'ellipsoid') {
+        if (!vector(r.centre, 3)) fail();
+        if (r.type === 'ellipsoid' && (!vector(r.radii, 3) || (r.radii as number[]).some((v) => v <= 0))) fail();
+      } else if (r.type === 'capsule' || r.type === 'taper') {
+        if (
+          !vector(r.start, 3) ||
+          !vector(r.end, 3) ||
+          (r.start as number[]).every((v, a) => v === (r.end as number[])[a])
+        )
+          fail();
+        if (r.type === 'taper' && (!vector(r.radii, 2) || (r.radii as number[]).some((v) => v <= 0))) fail();
+      } else if (r.type === 'torus') {
+        if (
+          !vector(r.centre, 3) ||
+          !vector(r.axis, 3) ||
+          Math.abs(Math.hypot(...(r.axis as number[])) - 1) > 1e-6 ||
+          !num(r.radius) ||
+          r.radius <= 0
+        )
+          fail();
+      } else fail();
+    }
     if (q.cuts !== undefined && !planes(q.cuts)) fail();
     if (q.chamfer !== undefined && (!num(q.chamfer) || q.chamfer < 0)) fail();
     for (const key of ['mirror', 'centred', 'off']) if (q[key] !== undefined && typeof q[key] !== 'boolean') fail();

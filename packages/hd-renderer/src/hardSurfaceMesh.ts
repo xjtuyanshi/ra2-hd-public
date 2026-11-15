@@ -1,6 +1,13 @@
 import { axisIndex, type Axis, type Vec3 } from './hardSurfaceSolid';
 export type { Axis, Vec3 } from './hardSurfaceSolid';
 export type Plane = [number, number, number, number];
+/** Shading of a convex curved patch; membership remains its explicit supporting halfspaces. */
+export type RoundSurface =
+  | { type: 'sphere'; centre: Vec3 }
+  | { type: 'ellipsoid'; centre: Vec3; radii: Vec3 }
+  | { type: 'capsule'; start: Vec3; end: Vec3 }
+  | { type: 'taper'; start: Vec3; end: Vec3; radii: [number, number] }
+  | { type: 'torus'; centre: Vec3; axis: Vec3; radius: number };
 export interface PrimitiveOptions {
   name?: string;
   centred?: boolean;
@@ -10,6 +17,7 @@ export interface PrimitiveOptions {
   paint?: string;
   groove?: unknown;
   off?: boolean;
+  round?: RoundSurface;
 }
 export type Primitive = PrimitiveOptions &
   (
@@ -300,7 +308,16 @@ export function mirror(prim: ExpandedPrimitive, axis: Axis, at: number): Expande
     centre[a] = 2 * at - centre[a];
     cylinder = { axis: [...cylinder.axis], centre };
   }
-  return { ...prim, name: (prim.name ?? '') + '_m', planes, cylinder };
+  const round = prim.round && structuredClone(prim.round);
+  if (round) {
+    if ('centre' in round) round.centre[a] = 2 * at - round.centre[a];
+    if ('start' in round) {
+      round.start[a] = 2 * at - round.start[a];
+      round.end[a] = 2 * at - round.end[a];
+    }
+    if ('axis' in round) round.axis[a] *= -1;
+  }
+  return { ...prim, name: (prim.name ?? '') + '_m', planes, cylinder, ...(round ? { round } : {}) };
 }
 export function partPrimitives(part: PartSpec): ExpandedPrimitive[] {
   let out: ExpandedPrimitive[] = [];
@@ -379,6 +396,32 @@ export function buildPoly(prim: ExpandedPrimitive, prims?: readonly ExpandedPrim
         const r = sub(p, prim.cylinder.centre),
           rad = sub(r, scale(prim.cylinder.axis, dot(r, prim.cylinder.axis)));
         nv = scale(rad, 1 / (Math.hypot(...rad) + 1e-12));
+      }
+      if (prim.round && !ch) {
+        const shape = prim.round;
+        let rad: Vec3;
+        if (shape.type === 'sphere') rad = sub(p, shape.centre);
+        else if (shape.type === 'ellipsoid') rad = p.map((v, a) => (v - shape.centre[a]) / shape.radii[a] ** 2) as Vec3;
+        else if (shape.type === 'torus') {
+          const q = sub(p, shape.centre),
+            planar = sub(q, scale(shape.axis, dot(q, shape.axis)));
+          rad = sub(q, scale(unit(planar), shape.radius));
+        } else {
+          const axis = sub(shape.end, shape.start),
+            length = Math.hypot(...axis),
+            direction = scale(axis, 1 / length);
+          const t = dot(sub(p, shape.start), direction);
+          const near = add(shape.start, scale(direction, Math.max(0, Math.min(length, t))));
+          rad = sub(p, near);
+          if (shape.type === 'taper') {
+            // Preserve planar end caps and any caller's clipping faces.
+            const slope = (shape.radii[1] - shape.radii[0]) / length;
+            if (Math.abs(dot(n, direction)) > 0.999999) rad = n;
+            else rad = sub(unit(rad), scale(direction, slope));
+          }
+        }
+        // A cap/cutter face is flat; only tangent patches receive analytic normals.
+        if (Math.hypot(...rad) > 1e-9 && dot(unit(rad), n) > 0.9) nv = unit(rad);
       }
       P.push(...p);
       N.push(...nv);

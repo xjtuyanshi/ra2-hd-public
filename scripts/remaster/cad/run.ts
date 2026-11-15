@@ -35,7 +35,7 @@ const args = process.argv.slice(2),
   booleans = new Set<string>();
 for (let i = 0; i < args.length; i++) {
   const k = args[i];
-  if (['--no-render', '--export-only'].includes(k)) {
+  if (['--no-render', '--export-only', '--round-pipes'].includes(k)) {
     booleans.add(k);
     continue;
   }
@@ -63,7 +63,7 @@ for (let i = 0; i < args.length; i++) {
 for (const k of ['--id', '--cache-root', '--out', '--palette', '--house'])
   if (!flags.has(k))
     throw new Error(
-      'Usage: run.ts --id ID --cache-root DIR --palette unit.png --house neutral|R,G,B --out DIR [--evaluations 32 --seconds 300 --python python3 --font FONT --no-render --export-only]',
+      'Usage: run.ts --id ID --cache-root DIR --palette unit.png --house neutral|R,G,B --out DIR [--evaluations 32 --seconds 300 --python python3 --font FONT --no-render --export-only --round-pipes]',
     );
 const numeric = (name: string, fallback: number) => {
   const n = Number(flags.get(name) ?? fallback);
@@ -245,6 +245,7 @@ for (const part of model.parts) {
     const tubes = part.role === 'barrel' ? tubeLanes(occupiedCells(solid)).length : 0;
     const proposed = proposeHardSurface(solid, {
       category: categories[part.role],
+      roundPipes: booleans.has('--round-pipes'),
       budget: tubes ? 3 * tubes : sectionBudget,
       ...(tubes ? { primitivesPerTube: 3 } : {}),
       ...(part.role === 'turret' ? { minSlopeSteps: 2 } : {}),

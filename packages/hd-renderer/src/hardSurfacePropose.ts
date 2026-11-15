@@ -1,7 +1,17 @@
 import { directions, fitPoly, tuneOffsets } from './hardSurfaceFit';
 import { dot, polytopeFaces, type PartSpec, type Plane, type Primitive } from './hardSurfaceMesh';
 import { forCells, gridCell, gridIndex, validateGrid, type Axis, type SolidGrid, type Vec3 } from './hardSurfaceSolid';
+import { patchRoundFeature } from './hardSurfaceRoundPatch';
+import { buildPart } from './hardSurfaceMesh';
 import { tubeLanes, tubeSegments } from './hardSurfaceTube';
+import {
+  fitDome,
+  fitEllipsoidDome,
+  fitTaperedTube,
+  fitCapsule,
+  fitFillet,
+  detectRoundFeatures,
+} from './hardSurfaceRoundFit';
 
 export type RegionKind =
   'hull' | 'track-guard' | 'glacis' | 'rear-deck' | 'turret' | 'mantlet' | 'barrel' | 'wheel' | 'drum';
@@ -26,6 +36,8 @@ export interface ProposalOptions {
   tubeAxis?: Axis;
   primitivesPerTube?: number;
   minSlopeSteps?: number;
+  taperedTubes?: boolean;
+  roundPipes?: boolean;
 }
 export interface SymmetryEvidence {
   axis: Axis;
@@ -79,6 +91,14 @@ export function reflectPrimitive(primitive: Primitive, symmetry: SymmetryEvidenc
       const k = [0, 1, 2].filter((i) => i !== 'xyz'.indexOf(q.axis)).indexOf(a);
       q.c[k] = 2 * symmetry.at - q.c[k];
     }
+  }
+  if (q.round) {
+    if ('centre' in q.round) q.round.centre[a] = 2 * symmetry.at - q.round.centre[a];
+    if ('start' in q.round) {
+      q.round.start[a] = 2 * symmetry.at - q.round.start[a];
+      q.round.end[a] = 2 * symmetry.at - q.round.end[a];
+    }
+    if ('axis' in q.round) q.round.axis[a] *= -1;
   }
   return q;
 }
@@ -244,10 +264,31 @@ export function fitRegion(cells: Vec3[], id: string, whole: [Vec3, Vec3], option
       break;
     }
   }
+  if (options.category !== 'tube') {
+    for (const q of [fitCapsule(cells), fitFillet(cells)]) {
+      if (!q) continue;
+      const qs = classifyError(cells, bounds, q);
+      if (qs.support >= 0.9 && qs.error <= Math.max(score.error * 1.05, cells.length * 0.05)) {
+        primitive = q;
+        score = qs;
+        break;
+      }
+    }
+    for (const axis of ['z', 'x', 'y'] as const) {
+      const dome = fitDome(cells, axis) ?? fitEllipsoidDome(cells, axis);
+      if (!dome) continue;
+      const ds = classifyError(cells, bounds, dome);
+      if (ds.support >= 0.9 && ds.error <= Math.max(score.error * 1.05, cells.length * 0.05)) {
+        primitive = dome;
+        score = ds;
+        break;
+      }
+    }
+  }
   primitive = {
     ...primitive,
     name: `${kind}_${id}`,
-    chamfer: options.chamfer ?? (options.category === 'tube' ? 0.025 : 0.08),
+    chamfer: primitive.round ? 0 : (options.chamfer ?? (options.category === 'tube' ? 0.025 : 0.08)),
     mirror: false,
   };
   return { id, kind, bounds, cells, primitive, ...score };
@@ -268,6 +309,7 @@ export function splitRegionCandidates(
   options: ProposalOptions,
   allowTies = false,
 ): RegionProposal[][] {
+  if (region.primitive.round) return [];
   const [lo, hi] = region.bounds,
     minSpan = options.minSpan ?? 3,
     minCells = options.minCells ?? 6;
@@ -351,6 +393,7 @@ export function proposeHardSurface(grid: SolidGrid, options: ProposalOptions): R
         const region = fitRegion(s, `${i}_${j}`, whole, options);
         if (region.primitive.type === 'cyl') {
           region.primitive.c = [...cylinder.c];
+          if (options.taperedTubes) region.primitive = fitTaperedTube(s, axis, cylinder.c) ?? region.primitive;
           Object.assign(region, classifyError(region.cells, region.bounds, region.primitive));
         }
         return region;
@@ -382,5 +425,29 @@ export function proposeHardSurface(grid: SolidGrid, options: ProposalOptions): R
       regions[j].primitive = reflected;
       Object.assign(regions[j], classifyError(regions[j].cells, regions[j].bounds, reflected));
     }
-  return { regions, symmetry, options, part: { primitives: regions.map((r) => r.primitive) } };
+  let part: PartSpec = { primitives: regions.map((r) => r.primitive) };
+  if (options.roundPipes && options.category !== 'tube') {
+    for (const [i, feature] of detectRoundFeatures(grid).entries()) {
+      const name = `pipe_${i}`,
+        candidate = patchRoundFeature(part, feature, name);
+      if (buildPart(candidate).primitives.length > options.budget) continue;
+      part = candidate;
+      const a = 'xyz'.indexOf(feature.axis);
+      for (const j of feature.primitives.keys()) {
+        const l = feature.points[Math.min(j, feature.points.length - 2)]?.[a] ?? feature.bounds[0][a];
+        const h = feature.points[Math.min(j + 1, feature.points.length - 1)]?.[a] ?? feature.bounds[1][a];
+        const cells = feature.cells.filter((p) => p[a] + 0.5 >= Math.min(l, h) && p[a] + 0.5 <= Math.max(l, h));
+        regions.push({
+          id: name + '_' + j,
+          kind: 'drum',
+          bounds: feature.bounds,
+          cells: cells.length ? cells : feature.cells,
+          primitive: part.primitives[part.primitives.length - feature.primitives.length + j],
+          error: 0,
+          support: feature.evidence.sourceSupport,
+        });
+      }
+    }
+  }
+  return { regions, symmetry, options, part };
 }
