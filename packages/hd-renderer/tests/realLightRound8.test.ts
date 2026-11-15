@@ -48,8 +48,10 @@ describe('round 8: hd-light=beam preset', () => {
       expect(preset.beamKnee).toBe(0);
       expect(preset.beamDepthLift).toBe(0);
       expect(preset.beamFade).toBe(0);
+      expect(preset.beamOver).toBe(0);
     }
     expect(LIGHT_LOOK_BEAM.beamFade).toBe(1);
+    expect(LIGHT_LOOK_BEAM.beamOver).toBe(1);
     const look = createLightLook('beam');
     expect(lightLook(look)).toEqual(LIGHT_LOOK_BEAM);
     expect(lightLook(look, 'new')).toEqual(LIGHT_LOOK_NEW);

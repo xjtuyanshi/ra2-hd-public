@@ -437,7 +437,7 @@ field plus physical light, so the warm, small ground flash stays. Without it a y
 unit at a Prism volley's focus, lost the blast's light and drew as dark, hard-edged shapes over the fire (live
 SOV07TMD, frame 225). The extra render runs only while such lights are alive. `nodes.build13FieldMix` (development
 A/B, default 1) switches smoke and objects back to the shared field.
-Four laser controls (all inert, i.e. `1/0/0/0`, in `cur` and `new`):
+Five laser controls (all inert, i.e. `1/0/0/0/0`, in `cur` and `new`):
 
 - `beamOverbright=1.64`: the glow takes the hue the original shows at the beam centre. The original adds the house
   colour over the scene, so a two-channel colour overbrights: a live SOV07TMD Prism beam with the inner colour
@@ -457,6 +457,10 @@ Four laser controls (all inert, i.e. `1/0/0/0`, in `cur` and `new`):
   fades now reach the HD snapshot (`GameRenderLaser`, `LiveBeam`). Live SOV07TMD originals show a fresh Prism beam
   core of (204, 56, 221) and the same beams a few frames later at (115..132, 42..44, 167..196), thinner and bluer; a
   glow kept at full strength there read paler and pinker than the original's deep violet.
+- `beamOver=1`: native laser light (core, glow, hit bloom) is drawn over the scene (its fragment depth is moved to
+  the near plane), as the original draws its lasers after everything else. With the depth test, and the lift above,
+  the unit at a Prism volley's focus still stood in front of the converging glow and read as a dark, hard-edged
+  shape over the blast (round-8 review, live SOV07TMD frame 225).
 
 Procedural smoke density uses the existing noise texture (four additional taps per puff: a domain-warped coarse
 octave, a ridged fine octave, a finer octave and an overhead tap for self-shadow), in a frame aligned with the puff's

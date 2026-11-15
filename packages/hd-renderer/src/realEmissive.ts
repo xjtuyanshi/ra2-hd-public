@@ -315,7 +315,12 @@ export class RealEmissiveLayer {
       .add(width.mul(0.15))
       .mul(cotangent)
       .mul(phase.w.greaterThan(1.5).select(this.look.beamDepthLift.mul(this.look.beamLight), float(0)));
-    m.depthNode = depth.sub(lift.div(cameraFar.sub(cameraNear)));
+    // beamOver (hd-light=beam): native laser light is drawn over the scene, as the original draws its lasers after
+    // everything else (a live SOV07TMD original shows a Prism beam crossing the smoke of the blast it hits). With the
+    // depth test alone, the unit at a Prism volley's focus stood in front of the converging glow as a dark,
+    // hard-edged shape over the blast (round-8 review, frame 225).
+    const over = phase.w.greaterThan(1.5).select(this.look.beamOver.mul(this.look.beamLight), float(0));
+    m.depthNode = mix(depth.sub(lift.div(cameraFar.sub(cameraNear))), float(0), over);
     // Budget only these new primitives, preserving legacy static overlays that share the attachment.
     m.colorNode = vec4(0);
     m.mrtNode = mrt({ output: vec4(0), emissive: vec4(rgb.mul(this.frameGain), 0) });
