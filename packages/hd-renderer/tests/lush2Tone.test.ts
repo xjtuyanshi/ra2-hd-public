@@ -332,7 +332,7 @@ describe('lush2 colour reference', () => {
   });
   it('grades dim lavender snow and its darker strokes with the same mean-only gain', () => {
     const p = recommended('snow');
-    expect(p.snowLift).toBe(1.12);
+    expect(p.snowLift).toBe(1.25);
     expect(p.snowWhite).toBe(0.75);
     const mean = [0.18, 0.2, 0.27] as const;
     const pixels = [mean, [0.08, 0.09, 0.15], [0.28, 0.3, 0.38]] as const;

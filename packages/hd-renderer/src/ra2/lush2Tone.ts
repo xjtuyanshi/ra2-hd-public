@@ -87,7 +87,7 @@ export const LUSH2_DEFAULTS: Readonly<Record<Theater, Readonly<Lush2Values>>> = 
   }),
   snow: Object.freeze({
     ...temperate,
-    snowLift: 1.12,
+    snowLift: 1.25,
     grassLight: 1,
     grassHue: 0,
     grassChroma: 1,
