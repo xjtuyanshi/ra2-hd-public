@@ -51,6 +51,7 @@ import { faithfulToneMap } from '../src/post';
 import { MapLightGrade } from '../src/ra2/mapLighting';
 import type { Ra2Cache } from '../src/ra2/cache';
 import { syntheticModel, syntheticSection } from './fixtures/syntheticVoxels';
+import { assertCachedCloudReceiver, assertNoTextureLayoutFunctions } from './fixtures/cloudShader';
 
 const MAX_VERTEX_BUFFERS = 8;
 const MAX_UNIFORM_BYTES = 65536;
@@ -109,6 +110,8 @@ function layout(mesh: Mesh, uniformLimit = MAX_UNIFORM_BYTES, capture?: TerrainD
   builder.camera = new OrthographicCamera(-1, 1, 1, -1, 0.1, 400);
   builder.scene = new Scene();
   builder.build();
+  assertNoTextureLayoutFunctions(builder.vertexShader, mesh.name || 'vertex material');
+  assertNoTextureLayoutFunctions(builder.fragmentShader, mesh.name || 'fragment material');
   const attributes = builder.getAttributesArray().map((a) => a.node?.attribute ?? mesh.geometry.getAttribute(a.name));
   expect(attributes.every(Boolean)).toBe(true);
   const buffers = backend.attributeUtils.createShaderVertexBuffers({ getAttributes: () => attributes });
@@ -140,7 +143,7 @@ function layout(mesh: Mesh, uniformLimit = MAX_UNIFORM_BYTES, capture?: TerrainD
 
 function assertLimits(mesh: Mesh, uniformLimit = MAX_UNIFORM_BYTES, capture?: TerrainDepth) {
   const result = layout(mesh, uniformLimit, capture);
-  assertNeutralCloudFunction(result.fragmentShader);
+  assertNeutralCloudFunction(result.fragmentShader, mesh.name || 'material');
   expect(result.buffers.length, mesh.name).toBeGreaterThan(0);
   expect(result.buffers.length, mesh.name).toBeLessThanOrEqual(MAX_VERTEX_BUFFERS);
   expect(result.attributes.length, mesh.name).toBeLessThanOrEqual(16);
@@ -149,32 +152,9 @@ function assertLimits(mesh: Mesh, uniformLimit = MAX_UNIFORM_BYTES, capture?: Te
 }
 
 /** Audit every compiled material using clouds, including physical, sprite, water and reflection variants. */
-function assertNeutralCloudFunction(shader: string) {
-  if (!shader.includes('aliveCloudStrength')) return;
-  // A shared inline Fn can initialize inside one branch and leave zero in its sibling (the black-ore regression).
-  // A named function keeps the clear coverage assignment in the callee, before its enable-dependent branch.
-  const declaration = shader.match(/(?:fn|float) aliveCachedCoverage\s*\([^)]*\)[^{]*\{/);
-  expect(declaration, 'cloud paths must call a scope-local shader function').not.toBeNull();
-  const start = declaration!.index! + declaration![0].length;
-  let depth = 1,
-    end = start;
-  for (; depth && end < shader.length; end++) {
-    if (shader[end] === '{') depth++;
-    if (shader[end] === '}') depth--;
-  }
-  const body = shader.slice(start, end - 1);
-  const neutral = body.indexOf('aliveCloudNeutral = 0.0;');
-  const branch = body.indexOf('if (');
-  expect(neutral).toBeGreaterThan(-1);
-  expect(branch).toBeGreaterThan(neutral);
-  expect(body).toMatch(/strength > 0\.0/);
-  expect(body).toContain('cached > 0.0');
-  expect(body.match(/texture(?:Sample|Lod)?\(/g)).toHaveLength(1);
-  expect(shader).not.toContain('aliveCloudShadow');
-  expect(body.trimEnd()).toMatch(/return aliveCloudNeutral;$/);
-  expect(body.match(/aliveCloudNeutral = /g)).toHaveLength(2);
-  const calls = shader.match(/aliveCachedCoverage\( [^\n]+aliveCoverageEnabled, [^\n]* \)/g) ?? [];
-  expect(calls, 'each material must evaluate the field once, shared by every optical term').toHaveLength(1);
+function assertNeutralCloudFunction(shader: string, label = 'cloud material') {
+  if (!shader.includes('aliveCoverageEnabled')) return;
+  assertCachedCloudReceiver(shader, label, undefined, label.includes('debugView'));
   const colour = shader.match(/(?:fn|vec3) aliveCloudColour\s*\([^)]*\)[^{]*\{([^}]+)\}/)?.[1];
   if (colour) {
     // Raw coverage 0 produces grey=1 -> cover=0 -> mix(1,tint,0)*1, so disabled clouds never tint a surface.
@@ -271,11 +251,13 @@ describe('r186 vertex and uniform binding budget', () => {
                 builder.scene = new Scene();
                 builder.build();
                 const shader = builder.fragmentShader;
-                assertNeutralCloudFunction(shader);
-                // One explicit base-stack VarNode serves every branch; a real function still owns identity.
-                // Sharing must not move initialization into a sibling branch (the black-ore regression).
-                const calls = shader.match(/aliveCachedCoverage\( [^\n]+aliveCoverageEnabled, [^\n]* \)/g) ?? [];
-                expect(calls).toHaveLength(1);
+                const label = `${mesh.name || 'sprite'} (HD=${!!hd}, materials=${!!materials}, WebGL=${forceWebGL})`;
+                assertNoTextureLayoutFunctions(builder.vertexShader, label);
+                assertNoTextureLayoutFunctions(shader, label);
+                assertNeutralCloudFunction(shader, label);
+                // Count the guarded inline fetch, shared by every optical term and sprite branch.
+                const { branch } = assertCachedCloudReceiver(shader, label);
+                expect(branch.match(/\b(?:textureSample\w*|textureLoad|texture)\s*\(/g), label).toHaveLength(1);
                 const main = shader.slice(shader.search(/(?:fn|void) main\(/));
                 const assignment = main.indexOf('aliveCloudFactor = ');
                 expect(assignment).toBeGreaterThan(-1);
@@ -390,6 +372,7 @@ describe('r186 vertex and uniform binding budget', () => {
     const material = new MeshBasicNodeMaterial();
     material.colorNode = nodes.alive.debugView(vec4(0.2, 0.4, 0.6, 1), vec2(85, 135), float(1));
     const mesh = new Mesh(new PlaneGeometry(1, 1), material);
+    mesh.name = 'raw cloud debug display (LivingWorldNodes.debugView)';
     try {
       const off = assertLimits(mesh);
       expect(off.fragmentShader).toContain('aliveDebugCloud');
@@ -511,11 +494,16 @@ describe('r186 vertex and uniform binding budget', () => {
       camera: OrthographicCamera;
       scene: Scene;
       build(): void;
+      vertexShader: string;
+      fragmentShader: string;
       uniforms: Record<'vertex' | 'fragment', { node: { value: unknown } }[]>;
     };
     builder.camera = new OrthographicCamera(-1, 1, 1, -1, 0.1, 400);
     builder.scene = new Scene();
     builder.build();
+    assertNoTextureLayoutFunctions(builder.vertexShader, 'layer texture ownership vertex');
+    assertNoTextureLayoutFunctions(builder.fragmentShader, 'layer texture ownership fragment');
+    assertNeutralCloudFunction(builder.fragmentShader, 'layer texture ownership');
     const values = () => [...builder.uniforms.vertex, ...builder.uniforms.fragment].map((entry) => entry.node.value);
     const sizes = () =>
       values()
@@ -1146,6 +1134,9 @@ describe('r186 vertex and uniform binding budget', () => {
         builder.camera = new OrthographicCamera(-1, 1, 1, -1, 0.1, 400);
         builder.scene = new Scene();
         builder.build();
+        assertNoTextureLayoutFunctions(builder.vertexShader, `voxel reflection vertex (WebGL=${forceWebGL})`);
+        assertNoTextureLayoutFunctions(builder.fragmentShader, `voxel reflection fragment (WebGL=${forceWebGL})`);
+        assertNeutralCloudFunction(builder.fragmentShader, `voxel reflection (WebGL=${forceWebGL})`);
         expect(builder.vertexShader).not.toMatch(/\b(?:NaN|undefined)\b/);
         expect(builder.fragmentShader).not.toMatch(/\b(?:NaN|undefined)\b/);
         expect(builder.fragmentShader).toMatch(/\bsin\(/);

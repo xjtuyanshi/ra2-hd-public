@@ -171,24 +171,18 @@ export class LivingWorldNodes {
   readonly coverageCached = uniform(0);
   readonly analyticCoverageAt = (xz: ShaderNode): ShaderNode =>
     analyticCloudCoverage(xz, this.clock, this.windDirection, this.coverageEnabled, this.cloudLattice, this.cloudForm);
-  private readonly cachedCoverage = Fn(([xz, strength, bounds, cached]: ShaderNode[]) => {
-    const result = float(0).toVar('aliveCloudNeutral');
-    If(strength.greaterThan(0).and(cached.greaterThan(0)), () => {
-      result.assign(this.coverageTexture.sample(xz.sub(bounds.xy).div(bounds.zw)).r);
-    });
-    return result;
-  }).setLayout({
-    name: 'aliveCachedCoverage',
-    type: 'float',
-    inputs: [
-      { name: 'xz', type: 'vec2' },
-      { name: 'strength', type: 'float' },
-      { name: 'bounds', type: 'vec4' },
-      { name: 'cached', type: 'float' },
-    ],
-  });
+  // Inline (layout-free) on purpose and rebuilt per call: a setLayout function cannot reference the coverage texture
+  // binding in WGSL ("unresolved value"), and a fresh inline Fn per receiver owns its own zero initialiser (see the
+  // note above cloudShadow). The If condition is uniform, so the fetch stays in uniform control flow and is skipped
+  // entirely while clouds are off.
   readonly coverageAt = (xz: ShaderNode): ShaderNode =>
-    this.cachedCoverage(xz, this.coverageEnabled, this.coverageBounds, this.coverageCached);
+    Fn(() => {
+      const result = float(0).toVar('aliveCloudNeutral');
+      If(this.coverageEnabled.greaterThan(0).and(this.coverageCached.greaterThan(0)), () => {
+        result.assign(this.coverageTexture.sample(xz.sub(this.coverageBounds.xy).div(this.coverageBounds.zw)).r);
+      });
+      return result;
+    })();
   /** Raw coverage before darkening/strength; one shared VarNode per material. */
   readonly coverage: ShaderNode = this.coverageAt(positionWorld.xz).toVar('aliveCloudCoverage');
   readonly shadowAt = (xz: ShaderNode): ShaderNode => float(1).sub(this.coverageAt(xz).mul(this.cloudStrength));

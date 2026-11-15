@@ -34,7 +34,8 @@ export class CloudCoverageMap {
       depthBuffer: false,
       generateMipmaps: false,
     });
-    this.target.texture.internalFormat = 'R16F';
+    // RedFormat + HalfFloatType: three picks r16float (WebGPU) / R16F (WebGL2); a WebGL internalFormat string
+    // here would be passed verbatim to WebGPU and rejected.
     this.target.texture.name = 'CloudCoverageMap';
     this.material.depthTest = this.material.depthWrite = this.material.toneMapped = false;
     // Render-target TextureNode sampling and QuadMesh UV share the same top-origin convention.
