@@ -114,7 +114,10 @@ GetCoords vtable slots it reproduces), lepton coordinates, and per-kind `invalid
   its house, `inviso` (the original never draws it) and `arcing`.
 - `lasers` (LaserDrawClass) and `electricBolts` (EBolt): end points, colours, duration/progress or lifetime, firer.
 - `particleSystems` (ParticleSystemClass): type, `behavesLike` (smoke, gas, fire, spark, railgun), origin, target,
-  owner object/house, particle count and, with `particles: true`, every particle position.
+  owner object/house, particle count and, with `particles: true` (or a list of behaviours such as `['gas']`), every
+  particle position; particles of smoke and gas systems also carry their ParticleType ID, the SHP frame the engine
+  draws (`ParticleClass::GetShapeNumber` returns StateAI unchanged for those two behaviours) and their current
+  translucency.
 - `fires`: technos whose `TechnoClass::LastFireBulletFrame` is at most `fireWindow` (default 30) logic frames old,
   with their current target and its position; de-duplicate on (`id`, `frame`) to get one event per shot.
 

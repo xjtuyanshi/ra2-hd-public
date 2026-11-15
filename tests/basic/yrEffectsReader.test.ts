@@ -452,6 +452,41 @@ describe('YR 1.001 effects reader', () => {
     expect(readYrEffects(memory).fires).toEqual([]);
   });
 
+  it('reads gas clouds particle by particle: type, StateAI frame and current translucency', () => {
+    const b = battle();
+    // The global gas system: a fresh opaque virus cloud and a dissipating one at 25 %, plus a torn particle type.
+    const gasSys = b.m.type(V.particleSystemType, 'GasCloudSys');
+    b.m.i32(gasSys + O.particleSystemTypeBehavesLike, 1);
+    const gas = b.m.object(V.particleSystem, 52, { x: 5000, y: 5000, z: 0 });
+    b.m.u32(gas + O.particleSystemType, gasSys);
+    b.m.point(gas + O.particleSystemTargetCoords, { x: 5000, y: 5000, z: 0 });
+    b.m.i32(gas + O.particleSystemLifetime, -1);
+    const cloud = b.m.type(V.particleType, 'VirusCloud1');
+    const fading = b.m.type(V.particleType, 'VirusCloudD1');
+    const particle = (type: number, at: { x: number; y: number; z: number }, frame: number, translucency: number) => {
+      const p = b.m.object(V.particle, 0, at);
+      b.m.u32(p + O.particleType, type);
+      b.m.u8(p + O.particleStateAI, frame);
+      b.m.u8(p + O.particleTranslucency, translucency);
+      return p;
+    };
+    b.m.vector(gas + O.particleSystemParticles, [
+      particle(cloud, { x: 5010, y: 5020, z: 0 }, 7, 0),
+      particle(fading, { x: 5100, y: 4990, z: 10 }, 15, 25),
+      particle(0x0dead0, { x: 5200, y: 5000, z: 0 }, 3, 0),
+    ]);
+    b.m.vector(G.particleSystems, [b.system, gas]);
+    const effects = readYrEffects(createByteViewAccessor(b.m.bytes), { particles: ['gas'] });
+    // Only the gas system is read particle by particle; smoke stays a bare system.
+    expect(effects.particleSystems[0]!.particles).toBeUndefined();
+    expect(effects.particleSystems[1]).toMatchObject({ type: 'GasCloudSys', behavesLike: 'gas', particleCount: 3 });
+    expect(effects.particleSystems[1]!.particles).toEqual([
+      { x: 5010, y: 5020, z: 0, type: 'VirusCloud1', frame: 7, translucency: 0 },
+      { x: 5100, y: 4990, z: 10, type: 'VirusCloudD1', frame: 15, translucency: 25 },
+      { x: 5200, y: 5000, z: 0 },
+    ]);
+  });
+
   it('never writes guest memory', () => {
     const { m } = battle();
     const before = m.bytes.slice();

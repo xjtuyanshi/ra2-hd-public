@@ -775,8 +775,23 @@ describe('native YR policy and bulk cell discovery', () => {
       kind: 4,
       source: 0xa80208,
       stride: 0xbc,
-      bytes: 0xa8,
+      bytes: 0x138,
       maxCount: 2048,
+    });
+    // Whole ParticleClass allocations (0x138 at every operator new site) and their types, for gas cloud frames.
+    expect(YR_NATIVE_FOLLOW_RULES).toContainEqual({
+      kind: 2,
+      source: 0xa83dc8,
+      bytes: 0x138,
+      maxCount: 65536,
+      stride: 4,
+    });
+    expect(YR_NATIVE_FOLLOW_RULES).toContainEqual({
+      kind: 5,
+      source: 0xa83dc8,
+      bytes: 0x3c,
+      maxCount: 65536,
+      stride: 0xac,
     });
     for (const offset of [0x53ac, 0x53b0, 0x53b4, 0x53b8, 0x53bc]) {
       expect(YR_NATIVE_FOLLOW_RULES).toContainEqual({

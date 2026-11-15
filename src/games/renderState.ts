@@ -336,6 +336,18 @@ export interface GameRenderParticleSystem extends GameRenderPoint {
   id: number;
   uid: number;
   behavesLike: GameRenderParticleBehaviour | null;
+  /**
+   * The engine's own particles, for systems whose clouds the renderer cannot run from rules (gas: toxin, virus and
+   * psychic clouds). Each carries its ParticleType, the SHP frame the engine draws and its current translucency.
+   */
+  particles?: GameRenderParticle[];
+}
+
+export interface GameRenderParticle extends GameRenderPoint {
+  type: string;
+  frame: number;
+  /** 0, 25, 50 or 75 (percent see-through), as the engine draws it. */
+  translucency: number;
 }
 
 /** A sinusoidal energy ribbon; progress is the engine's current draw cycle, 0..1. */

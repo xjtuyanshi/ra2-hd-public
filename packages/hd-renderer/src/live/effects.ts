@@ -120,8 +120,11 @@ export interface LiveParticleSystem {
   particleCount?: number;
   lifetime?: number;
   target?: { x: number; y: number; z: number };
-  /** Particle positions and types, when the host reads them. */
-  particles?: { x: number; y: number; z: number; type?: string; frame?: number }[];
+  /**
+   * Particle positions and types, when the host reads them (gas systems: the engine's virus, toxin and psychic
+   * clouds), with the SHP frame and the current translucency (0/25/50/75) the engine draws them with.
+   */
+  particles?: { x: number; y: number; z: number; type?: string; frame?: number; translucency?: number }[];
   /** The object the system follows (ParticleSystemClass::Owner), when the host reads it. */
   attachedTo?: { id: number; uid: number; kind: string } | null;
 }

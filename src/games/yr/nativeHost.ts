@@ -159,11 +159,14 @@ export const YR_NATIVE_FOLLOW_RULES: readonly NativeHostFollowRule[] = Object.fr
   memberPointer(YR_EFFECTS_GLOBALS.bullets, YR_EFFECTS_OFFSETS.bulletWarhead, 0x40, 4096),
   memberPointer(YR_EFFECTS_GLOBALS.particleSystems, YR_EFFECTS_OFFSETS.particleSystemType, 0x2b8, 2048),
   memberPointer(YR_EFFECTS_GLOBALS.voxelAnims, YR_EFFECTS_OFFSETS.voxelAnimType, 0x40, 4096),
-  vector(0xa83dc8, 0xa8, 65536), // ParticleClass ctor 0x62B786..0x62B7CF; coordinates are read through +0xA7.
+  // ParticleClass ctor 0x62B786..0x62B7CF; every allocation site (0x62E397 .. 0x62F5FA) asks operator new for 0x138.
+  // Gas particles are read through Translucency +0x12F (type, StateAI frame); the type's ID ends at +0x3C.
+  vector(0xa83dc8, 0x138, 65536),
+  memberPointer(0xa83dc8, YR_EFFECTS_OFFSETS.particleType, 0x3c, 65536),
   vector(YR_EFFECTS_GLOBALS.anims, 0x1b0, 8192),
   vector(YR_EFFECTS_GLOBALS.bullets, 0x160, 4096),
   vector(YR_EFFECTS_GLOBALS.particleSystems, 0x110, 2048),
-  nestedVector(YR_EFFECTS_GLOBALS.particleSystems, YR_EFFECTS_OFFSETS.particleSystemParticles, 0xa8, 2048),
+  nestedVector(YR_EFFECTS_GLOBALS.particleSystems, YR_EFFECTS_OFFSETS.particleSystemParticles, 0x138, 2048),
   vector(YR_EFFECTS_GLOBALS.lasers, 0x60, 1024),
   vector(YR_EFFECTS_GLOBALS.electricBolts, 0x40, 1024),
   vector(YR_EFFECTS_GLOBALS.voxelAnims, 0x150, 4096),

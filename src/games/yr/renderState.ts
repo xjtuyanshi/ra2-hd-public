@@ -28,6 +28,7 @@ import {
   YR_EFFECTS_LIMITS,
   type ReadYrEffectsOptions,
   type YrEffects,
+  type YrParticleBehaviour,
 } from './effectsReader';
 import { createYrOverlayReader, type ReadYrOverlayOptions, type YrOverlays } from './overlayReader';
 import { createYrSidebarReader } from './sidebarReader';
@@ -251,7 +252,8 @@ export function createYrRenderStateReaderFrom(sources: YrRenderStateSources): Ga
         lastShroudPoll = at;
       }
       // fireWindow 0 skips the per-techno fire scan: the renderer does not use fire events.
-      const read = readEffects?.({ fireWindow: 0 });
+      // Gas clouds (virus/toxin/psychic) are read particle by particle; smoke is run by the view from its rules.
+      const read = readEffects?.({ fireWindow: 0, particles: GAS_PARTICLES });
       effects = read ? projectEffects(read) : null;
     } else {
       overlayScratch = overlays = null;
@@ -625,6 +627,7 @@ function projectObject(
 }
 
 const point = ({ x, y, z }: { x: number; y: number; z: number }) => ({ x, y, z });
+const GAS_PARTICLES: readonly YrParticleBehaviour[] = Object.freeze(['gas']);
 
 function projectEffects(effects: YrEffects): GameRenderEffects {
   return {
@@ -708,13 +711,20 @@ function projectEffects(effects: YrEffects): GameRenderEffects {
         target: point(target),
         alternateColor,
       })),
-    particleSystems: effects.particleSystems.map(({ id, uid, behavesLike, x, y, z }) => ({
-      id,
-      uid,
-      behavesLike,
-      x,
-      y,
-      z,
-    })),
+    particleSystems: effects.particleSystems.map(({ id, uid, behavesLike, x, y, z, particles }) => {
+      const shaped = particles?.flatMap((particle) =>
+        particle.type !== undefined && particle.frame !== undefined
+          ? [
+              {
+                ...point(particle),
+                type: particle.type,
+                frame: particle.frame,
+                translucency: particle.translucency ?? 0,
+              },
+            ]
+          : [],
+      );
+      return { id, uid, behavesLike, x, y, z, ...(shaped?.length ? { particles: shaped } : {}) };
+    }),
   };
 }

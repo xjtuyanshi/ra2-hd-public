@@ -194,6 +194,18 @@ export const YR_EFFECTS_OFFSETS = Object.freeze({
   particleSystemHouse: 0xfc,
   /** ParticleSystemTypeClass::BehavesLike (int). */
   particleSystemTypeBehavesLike: 0x2b4,
+  /** ParticleClass::Type (ParticleTypeClass*), stored by the constructor at 0x62B5F4. */
+  particleType: 0xac,
+  /**
+   * ParticleClass::StateAI (signed byte): the gas/smoke AI advances it (0x62CC18..0x62CC28) and GetShapeNumber
+   * (vtable +0x1E8, 0x62D830) returns it unchanged as the SHP frame for BehavesLike 0 (Smoke) and 1 (Gas).
+   */
+  particleStateAI: 0x12e,
+  /**
+   * ParticleClass::Translucency (byte): the constructor copies the type's value (0x62B74B..0x62B754), the gas AI
+   * sets 25 / 50 while a cloud dissipates (0x62CC3B, 0x62CC4E) and the draw at 0x62CFC4 picks TransLucent25/50/75.
+   */
+  particleTranslucency: 0x12f,
 
   /** LaserDrawClass::Progress (StageClass; Value counts up while the beam fades). */
   laserProgress: 0x0,
@@ -259,6 +271,8 @@ export const YR_EFFECTS_VTABLES = Object.freeze({
   particleSystem: 0x7efb9c,
   particleSystemType: 0x7f00a8,
   particle: 0x7ef954,
+  /** ParticleTypeClass (constructor store at 0x644CF4). */
+  particleType: 0x7f0188,
   voxelAnim: 0x7f6318,
   voxelAnimType: 0x7f6548,
   terrain: 0x7f522c,
@@ -488,8 +502,20 @@ export interface YrParticleSystemEffect {
    * ambient map GasCloudSys read -(frame + 1) in a live game), so treat any negative value as unlimited.
    */
   lifetime: number;
-  /** Particle positions (only with `particles: true`; at most YR_EFFECTS_LIMITS.particlesPerSystem). */
-  particles?: YrPoint3[];
+  /**
+   * Particles (only when `particles` selects this system; at most YR_EFFECTS_LIMITS.particlesPerSystem): position,
+   * and for Smoke and Gas systems also the ParticleType, the SHP frame the engine draws and the current translucency.
+   */
+  particles?: YrParticle[];
+}
+
+export interface YrParticle extends YrPoint3 {
+  /** ParticleTypeClass ID, e.g. "VirusCloud1" (Smoke/Gas systems only). */
+  type?: string;
+  /** SHP frame ParticleClass::GetShapeNumber returns (Smoke/Gas systems only). */
+  frame?: number;
+  /** ParticleClass::Translucency, 0/25/50/75 (Smoke/Gas systems only). */
+  translucency?: number;
 }
 
 export interface YrFireEvent {
@@ -544,8 +570,12 @@ export interface ReadYrEffectsOptions {
   includeLimbo?: boolean;
   /** Report technos that fired within this many logic frames (default 30); 0 skips the techno scan. */
   fireWindow?: number;
-  /** Include per-particle positions of particle systems (default false). */
-  particles?: boolean;
+  /**
+   * Include per-particle positions of particle systems (default false). A list reads only the systems that behave
+   * like one of the listed kinds (the HD view asks for 'gas': the engine's gas clouds have no rule-driven emitter it
+   * could run itself, unlike smoke).
+   */
+  particles?: boolean | readonly YrParticleBehaviour[];
 }
 
 const inRdata = (vtable: number) => vtable >= RDATA_START && vtable < RDATA_END && (vtable & 3) === 0;
@@ -950,12 +980,27 @@ export function readYrEffects(memory: GuestMemoryAccessor, options: ReadYrEffect
       particleCount,
       lifetime: memory.i32(pointer + o.particleSystemLifetime),
     };
-    if (options.particles) {
-      const positions: YrPoint3[] = [];
+    if (
+      options.particles === true ||
+      (Array.isArray(options.particles) && system.behavesLike && options.particles.includes(system.behavesLike))
+    ) {
+      // GetShapeNumber returns StateAI unchanged only for Smoke and Gas; Fire/Spark/Railgun frames depend on more.
+      const shaped = system.behavesLike === 'smoke' || system.behavesLike === 'gas';
+      const span = shaped ? o.particleTranslucency + 1 : o.location + 12;
+      const positions: YrParticle[] = [];
       for (const particle of readPointerVector(memory, particleVector, L.particlesPerSystem) ?? []) {
-        if (!isPlausiblePointer(memory, particle, o.location + 12) || memory.u32(particle) !== V.particle) continue;
-        const p = readPoint(memory, particle + o.location);
-        if (withinWorld(p.x, p.y, p.z)) positions.push(p);
+        if (!isPlausiblePointer(memory, particle, span) || memory.u32(particle) !== V.particle) continue;
+        const p: YrParticle = readPoint(memory, particle + o.location);
+        if (!withinWorld(p.x, p.y, p.z)) continue;
+        if (shaped) {
+          const particleType = typeName(memory.u32(particle + o.particleType), V.particleType);
+          if (particleType) {
+            p.type = particleType;
+            p.frame = Math.max(0, (memory.u8(particle + o.particleStateAI) << 24) >> 24);
+            p.translucency = memory.u8(particle + o.particleTranslucency);
+          }
+        }
+        positions.push(p);
       }
       system.particles = positions;
     }
