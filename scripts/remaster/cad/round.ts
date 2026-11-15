@@ -120,6 +120,8 @@ await save('source_snapshot.json', {
   upstreamManifest: manifest,
 });
 await writeFile(join(out, 'export.json'), await readFile(join(input, 'export.json')));
+// Zero records is a valid empty log; a missing file must not masquerade as that completed state.
+await writeFile(join(out, 'evaluations.jsonl'), '');
 const log = (s: string) => {
   const line = new Date().toISOString() + ' ' + s + '\n';
   process.stdout.write(line);
@@ -626,6 +628,7 @@ if (rendered.status !== 0) throw new Error(`Render failed: ${rendered.error ?? r
 phases.render = performance.now() - renderStart;
 const minAssembly = Math.min(...currentAssembly.map((s) => s.iou)),
   barrels = keys.filter((k) => ex.parts[k].role === 'barrel'),
+  barrelApplicable = barrels.length > 0,
   barrelTarget = barrels.every((k) => metrics[k].silhouettes.every((s) => s.iou >= 0.9));
 await save('timing.json', {
   started: date,
@@ -649,10 +652,12 @@ await writeFile(
 );
 await writeFile(
   join(out, 'REPORT.md'),
-  `# ${ex.id} 圆件离线复测\n\n整车硬门槛：**${minAssembly >= 0.97 ? 'PASS' : 'FAIL'}**（最低 ${minAssembly.toFixed(6)}）。炮管0.9目标：${barrelTarget ? '达到或不适用' : 'FAIL'}。最终视觉验收 **UNVERIFIED，需打开1×、2×、八向板**。\n\n| 部件 | 展开原语 | 最低八向IoU | p99 voxel→CAD / CAD→voxel |\n| --- | ---: | ---: | --- |\n${keys.map((k) => `| ${k} | ${metrics[k].metrics.primitives} | ${Math.min(...metrics[k].silhouettes.map((s) => s.iou)).toFixed(6)} | ${metrics[k].metrics.dev_vox_to_cad.p99}/${metrics[k].metrics.dev_cad_to_vox.p99} |`).join('\n')}\n\n[1×](board_当前_新.png)、[2×](board_当前_新_2x.png)、[八向](turntable_8.png)、[检测证据](features.json)、[候选日志](evaluations.jsonl)。涂装不变，未运行VM。原语包括曲面扫掠的全部凸片，没有隐藏细分预算或体素盒覆盖。\n`,
+  `# ${ex.id} 圆件离线复测\n\n整车硬门槛：**${minAssembly >= 0.97 ? 'PASS' : 'FAIL'}**（最低 ${minAssembly.toFixed(6)}）。炮管0.9目标：${!barrelApplicable ? '不适用' : barrelTarget ? '达到' : 'FAIL'}。最终视觉验收 **UNVERIFIED，需打开1×、2×、八向板**。\n\n| 部件 | 展开原语 | 最低八向IoU | p99 voxel→CAD / CAD→voxel |\n| --- | ---: | ---: | --- |\n${keys.map((k) => `| ${k} | ${metrics[k].metrics.primitives} | ${Math.min(...metrics[k].silhouettes.map((s) => s.iou)).toFixed(6)} | ${metrics[k].metrics.dev_vox_to_cad.p99}/${metrics[k].metrics.dev_cad_to_vox.p99} |`).join('\n')}\n\n[1×](board_当前_新.png)、[2×](board_当前_新_2x.png)、[八向](turntable_8.png)、[检测证据](features.json)、[候选日志](evaluations.jsonl)。涂装不变，未运行VM。原语包括曲面扫掠的全部凸片，没有隐藏细分预算或体素盒覆盖。\n`,
 );
 const finalHashes = await hashes();
-log(`Complete: assembled min ${minAssembly.toFixed(6)}; barrel target ${barrelTarget}; review pending`);
+log(
+  `Complete: assembled min ${minAssembly.toFixed(6)}; barrel target ${barrelApplicable ? barrelTarget : 'not applicable'}; review pending`,
+);
 await writeDeliveryManifest(out, {
   kind: 'automatic-round-reconstruction',
   runMode: mode,
@@ -664,6 +669,7 @@ await writeDeliveryManifest(out, {
   baseline: input,
   gate: 'revised-2026-11-15',
   assembledHardPass: minAssembly >= 0.97,
+  barrelApplicable,
   barrelTarget,
   metricPass: minAssembly >= 0.97,
   visualAcceptance: 'UNVERIFIED',

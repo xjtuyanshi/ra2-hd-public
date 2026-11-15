@@ -328,3 +328,8 @@ intermediate fragment of a valid joint replacement. Coverage is a proposal
 heuristic, not proof of visual improvement; native-scale review remains required.
 Larger feature sets retain the bounded bundle/individual strategy and the same
 wall-clock cap, rather than enumerating an unbounded power set.
+
+The round generator always creates `evaluations.jsonl` before candidate search.
+A zero-byte file means that the completed run evaluated no candidates; a missing
+file must not be interpreted as a successful empty log. Reports and manifests
+also distinguish an inapplicable barrel target from a measured target result.
