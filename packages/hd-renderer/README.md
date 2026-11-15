@@ -5,6 +5,42 @@ Base-agnostic HD 2.5D renderer for the RA2 remaster (three.js r186 `WebGPURender
 It consumes a versioned `RenderState` snapshot (`src/contract.ts`) and never reads or writes engine state, so the same
 renderer and assets can sit behind any base: the RA2 VM memory bridge, a reimplementation, or the procedural sandbox.
 
+## Offline clean-voxel refinement
+
+`src/voxelShapeRelax.ts` welds emitted quad vertices by position and runs 12 shape-locked Taubin iterations
+(lambda 0.55, mu -0.58). Caller-supplied `smallVertices` take the 0.62-voxel clamp; concave vertices and their
+one-ring neighbours take 0.35; other vertices take a 0.2 bevel. Non-manifold edges are pinned. Faces falling below
+an original/relaxed normal dot of 0.25 pin their vertices and trigger a restart, up to four attempts. Scratch memory
+is linear. `stats.pinned` counts welded vertices; `stats.flips` counts remaining bad nondegenerate faces.
+`voxelSize` can specify the physical voxel edge; otherwise the reference's median triangle-first-edge estimate
+is used (it may include quad diagonals). `smoothVoxelShapeNormals` provides the reference's 1.8-voxel Gaussian,
+area-weighted shading with an orientation gate to avoid bleeding through thin plates.
+
+`src/voxelCleanPaintRefine.ts` softens small dark fragments and baked highlights, converts metal marks surrounded
+by at least 30 painted face-cells in a 5x5x5 neighbourhood to softened painted decals, and applies a 0.30 sRGB luma
+floor except on rubber and masked vertices. Material ids and thresholds are options; masks, regions and seams
+are preserved. All decisions use the original paint. Face-cell assignment matches the research tool's indexed
+triangle-centre overwrite order and ties-to-even rounding, rather than the owning voxel record.
+
+`buildVoxelCleanModel(model, palette, shapeOptions, { refine: false })` retains the original path; refinement is
+on by default. Masked vertices and barrel parts supply the small-body mask. Zone 0 uses smoothed original-mesh
+normals; zones 1/2 use smoothed relaxed-mesh normals. `originalMesh`/`originalPaint` retain the input buffers;
+`mesh.stats` still describes meshing, while `relaxation.stats` describes the additional movement.
+
+Run `pnpm exec tsx packages/hd-renderer/scripts/voxelCleanExport.ts <voxel-json-dir> <palette.json> <out-dir> ID...`.
+The palette is 256 byte-RGB triples. Keep game-derived exports outside Git. Each `.clean.json` field is a byte
+offset into the associated `.clean.bin`, aligned to four bytes. Legacy `positions`, `normals`, `albedo` and
+`material` remain unrefined, so existing Python loaders can still refine once. Additional `relaxedPositions`,
+`relaxedNormals` (zone-selected shading), `relaxedFaceNormals`, `zone`, `refinedAlbedo`, `refinedMaterial` and
+`relaxationStats` expose the new results. Positions/normals are float32 triples, zone/material are uint8 per
+vertex, and albedo is uint8 RGB. Indices and the other legacy fields are unchanged.
+
+Parity boundaries: arithmetic uses float64 scratch with float32 mesh output and byte albedo output. Byte
+quantisation rounds lifted colours upward to preserve the floor. Coordinate tuples avoid the Python packed-key
+collisions outside its 4096-cell range. Weld/edge traversal order can change floating-point summation. Initially
+degenerate faces are pinned and excluded from flip counts; if the fourth attempt still folds a valid face, the
+input shape is restored conservatively instead of returning a folded mesh.
+
 ## Native HD interface
 
 The development bridge's existing `?hd=1&hd-ui=1` switches enable `src/ui/sidebarView.ts` through the page-owned

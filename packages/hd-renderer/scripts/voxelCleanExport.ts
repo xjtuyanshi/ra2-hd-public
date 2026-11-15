@@ -29,7 +29,16 @@ for (const id of ids) {
     offset += padded.byteLength;
     return at;
   };
-  for (const { role, turretOffset, mesh, paint, analyses } of parts) {
+  for (const {
+    role,
+    turretOffset,
+    originalMesh: mesh,
+    originalPaint: paint,
+    analyses,
+    relaxation,
+    mesh: refinedMesh,
+    paint: refinedPaint,
+  } of parts) {
     header.push({
       role,
       turretOffset,
@@ -46,6 +55,14 @@ for (const id of ids) {
       seam: push(paint.seam),
       seamKind: push(paint.seamKind),
       seamAxis: push(paint.seamAxis),
+      // Legacy keys remain the unrefined input: existing Python loaders may still apply their own refinement.
+      relaxedPositions: push(refinedMesh.positions),
+      relaxedNormals: push(refinedMesh.normals),
+      relaxedFaceNormals: push(relaxation?.normals ?? mesh.normals),
+      zone: push(relaxation?.zone ?? new Uint8Array(mesh.material.length)),
+      refinedAlbedo: push(refinedPaint.albedo),
+      refinedMaterial: push(refinedPaint.material),
+      relaxationStats: relaxation?.stats,
       seams: analyses.reduce((s, a) => s + a.seams.length, 0),
       regions: analyses.reduce((s, a) => s + a.regions.length, 0),
     });
