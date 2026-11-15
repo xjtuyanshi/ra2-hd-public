@@ -25,7 +25,7 @@ def sprite_keys(value, sprites):
             yield from sprite_keys(item, sprites)
 
 
-def run(source, farm, theater, report):
+def run(source, farm, theater, report, preset="tuned"):
     if source.resolve() == farm.resolve() or not farm.is_dir() or farm.is_symlink():
         raise ValueError("use a distinct existing mkfarm overlay")
     base = source / "_library" / theater
@@ -47,7 +47,7 @@ def run(source, farm, theater, report):
             if refs[page]:
                 pages.setdefault(page, {}).setdefault(tuple(frame["rect"]), []).append(key)
     files = [None] * len(refs)
-    log = {"theater": theater, "algorithm": "median3-bilateral7-sigma48-coarse8-edge-lock-metal035-v3", "pages": [], "bodies": []}
+    log = {"theater": theater, "algorithm": "median5-gaussian2.5-coarse8-edge-lock-contrast10-v4" if preset == "dramatic" else "median3-bilateral7-sigma48-coarse8-edge-lock-metal035-v3", "pages": [], "bodies": []}
     cv2.setNumThreads(1)
     with tempfile.TemporaryDirectory(prefix="building-clean-") as scratch:
         scratch = Path(scratch)
@@ -63,7 +63,7 @@ def run(source, farm, theater, report):
                 box = (x, y, x + width, y + height)
                 before = np.array(image.crop(box))
                 remap = np.array(remap_image.crop(box))
-                after = denoise(before, remap, metal_lift=0.035)
+                after = denoise(before, remap, metal_lift=0 if preset == "dramatic" else 0.035, dramatic=preset == "dramatic")
                 if any(key.startswith("building:") for key in keys):
                     log["bodies"].append({"sprites": keys, "rect": rect, "page": index, **metrics(before, after, remap)})
                 image.paste(Image.fromarray(after), box)
@@ -86,9 +86,10 @@ def run(source, farm, theater, report):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--preset", choices=["tuned", "dramatic"], default="tuned")
     parser.add_argument("--source", type=Path, required=True)
     parser.add_argument("--farm", type=Path, required=True)
     parser.add_argument("--theater", required=True)
     parser.add_argument("--report", type=Path, required=True)
     args = parser.parse_args()
-    run(args.source, args.farm, args.theater, args.report)
+    run(args.source, args.farm, args.theater, args.report, args.preset)

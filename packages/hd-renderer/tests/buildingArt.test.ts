@@ -50,7 +50,7 @@ describe('opt-in colour-only building atlas', () => {
   });
   it('keeps moving clouds, source clump contrast and theatre-safe shared object shade', () => {
     const settings = {} as HdSettings;
-    const alive = applyBlendTone(settings, 'temperate');
+    const alive = applyBlendTone(settings, 'temperate', 'tuned');
     expect(alive.clouds).toBe(true);
     expect(alive.speed).toBeGreaterThan(0);
     expect(settings.cloudTone!.detail).toBe(1);

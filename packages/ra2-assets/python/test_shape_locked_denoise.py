@@ -24,6 +24,24 @@ class ShapeLockedDenoiseTest(unittest.TestCase):
         np.testing.assert_array_equal(result, denoise(source, remap))
         np.testing.assert_array_equal(source[:, 79:82], result[:, 79:82])
 
+    def test_dramatic_reduces_flat_speckle_against_tuned_and_keeps_coarse_wear(self):
+        y, x = np.mgrid[:160, :192]
+        source = np.full((160, 192, 4), 255, np.uint8)
+        broad = 125 + 30 * np.sin(x / 18) + 12 * np.sin(y / 27)
+        source[:, :, :3] = np.repeat((broad + 18 * ((x + y) % 2 * 2 - 1))[:, :, None], 3, axis=2)
+        source[:3, :, 3] = 0
+        remap = np.zeros((160, 192), np.uint8)
+        remap[:, 96:] = 255
+        tuned = denoise(source, remap, metal_lift=.035)
+        dramatic = denoise(source, remap, dramatic=True)
+        old, new = metrics(source, tuned, remap), metrics(source, dramatic, remap)
+        self.assertLess(new['after']['safe_flat_hp_rms'], old['after']['safe_flat_hp_rms'] * .25)
+        self.assertTrue(new['alpha_exact'])
+        self.assertTrue(new['boundary_rgb_exact'])
+        for before, after in zip(new['before']['variance'], new['after']['variance']):
+            self.assertGreaterEqual(after / before, .8)
+        np.testing.assert_array_equal(dramatic, denoise(source, remap, dramatic=True))
+
     def test_constant_and_tiny_pages(self):
         for size in [1, 2, 3, 16]:
             source = np.full((size, size, 4), 255, np.uint8)

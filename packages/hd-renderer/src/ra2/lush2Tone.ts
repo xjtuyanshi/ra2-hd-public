@@ -128,6 +128,7 @@ export function lush2Mapping(
   const snow = theater === 'snow';
   return {
     tone: {
+      objectSunTint: [1, 1, 1],
       strength: values.strength,
       grassLight: values.grassLight,
       grassHue: values.grassHue,

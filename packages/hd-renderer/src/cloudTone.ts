@@ -19,6 +19,7 @@ import type { ShaderNode } from './tsl';
 
 /** Mean-only surface grading, with multiplicative source detail. Artistic values belong to the caller. */
 export interface CloudToneParams {
+  objectSunTint: [number, number, number];
   grassLight: number;
   grassHue: number;
   grassChroma: number;
@@ -62,6 +63,7 @@ export interface CloudToneParams {
   highlightGate: [number, number, number, number];
 }
 export class CloudToneUniforms {
+  readonly objectSunTint = uniform(new Vector3(1, 1, 1));
   readonly grassLight = uniform(1);
   readonly grassHue = uniform(0);
   readonly grassChroma = uniform(1);
@@ -202,6 +204,7 @@ export function cloudToneRgb(
     const tinted = rgb.map(
       (v, i) =>
         v *
+        blend(1, p.objectSunTint[i]!, (1 - shade) * (1 - night)) *
         blend(1, p.shadeTint[i]!, shade) *
         blend(1, p.moonTint[i]!, night) *
         blend(1, p.grassSunTint[i]! ** 0.25, p.bounce * (1 - smooth(0, p.bounceHeight, height)) * (1 - night)),
@@ -278,6 +281,7 @@ export function cloudToneNode(
       if (object) {
         const bounce = p.bounce.mul(float(1).sub(smoothstep(0, p.bounceHeight, height))).mul(float(1).sub(night));
         const tinted = source
+          .mul(mix(vec3(1), p.objectSunTint, float(1).sub(shade).mul(float(1).sub(night))))
           .mul(mix(vec3(1), p.shadeTint, shade))
           .mul(mix(vec3(1), p.moonTint, night))
           .mul(mix(vec3(1), p.grassSunTint.pow(0.25), bounce))

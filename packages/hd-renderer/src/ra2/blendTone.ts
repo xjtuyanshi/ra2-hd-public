@@ -1,10 +1,13 @@
 import type { HdSettings } from '../HdRenderer';
-import { applyLush2, lush2Defaults } from './lush2Tone';
+import { applyLush2, lush2Defaults, type Lush2Values } from './lush2Tone';
 
-/** Balanced owner reference: retain moving shade, source clumps and existing water dressing. */
-export function applyBlendTone(settings: HdSettings, theater: string | undefined) {
+export type BlendPreset = 'dramatic' | 'tuned';
+export const parseBlendPreset = (value: string | null): BlendPreset => (value === 'tuned' ? 'tuned' : 'dramatic');
+
+/** The softer C recipe remains available; only the explicit blend entry selects the dramatic reference. */
+export function blendDefaults(theater: string | undefined, preset: BlendPreset = 'dramatic'): Lush2Values {
   const values = { ...lush2Defaults(theater), objectShare: 0.35, objectFloor: 0.9, detail: 1 };
-  if (theater === 'temperate' || theater === 'urban' || theater === 'newurban')
+  if (theater === 'temperate' || theater === 'urban' || theater === 'newurban') {
     Object.assign(values, {
       grassLight: 1.01,
       grassHue: 5,
@@ -13,8 +16,39 @@ export function applyBlendTone(settings: HdSettings, theater: string | undefined
       gold: 0.18,
       shadeDepth: 0.14,
     });
+    if (preset === 'dramatic')
+      Object.assign(values, {
+        grassLight: 0.84,
+        grassHue: 0,
+        grassChroma: 1.32,
+        shadeChroma: 1.2,
+        shadeHue: 8,
+        gold: 0.65,
+        goldReach: 0.4,
+        shadeDepth: 0.36,
+        objectShare: 0.6,
+        objectFloor: 0.76,
+        detail: 0.95,
+      });
+  }
+  return values;
+}
+
+export function applyBlendTone(
+  settings: HdSettings,
+  theater: string | undefined,
+  preset: BlendPreset = 'dramatic',
+  values = blendDefaults(theater, preset),
+) {
   const alive = applyLush2(settings, theater, values);
-  settings.cloudTone!.grassSunTint = [1.01, 1, 0.93];
-  settings.cloudTone!.shadeTint = [0.97, 1, 1.02];
+  const share =
+    theater === 'temperate' || theater === 'urban' || theater === 'newurban'
+      ? Math.max(0, Math.min(1, (1.01 - values.grassLight) / 0.17))
+      : 0;
+  const tint = (soft: [number, number, number], strong: [number, number, number]): [number, number, number] =>
+    soft.map((v, i) => v + (strong[i]! - v) * share) as [number, number, number];
+  settings.cloudTone!.grassSunTint = tint([1.01, 1, 0.93], [1.08, 1, 0.8]);
+  settings.cloudTone!.shadeTint = tint([0.97, 1, 1.02], [0.82, 1, 1.1]);
+  settings.cloudTone!.objectSunTint = tint([1, 1, 1], [1.08, 1, 0.88]);
   return alive;
 }

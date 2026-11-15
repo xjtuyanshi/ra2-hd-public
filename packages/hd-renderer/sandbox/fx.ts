@@ -1,7 +1,8 @@
-import { applyBlendTone } from '../src/ra2/blendTone';
+import { applyBlendTone, parseBlendPreset } from '../src/ra2/blendTone';
 import { needsSurfaceClasses } from '../src/ra2/lookFlags';
 import { applyLush2 } from '../src/ra2/lush2Tone';
 import { mountLush2Tuning } from '../src/ra2/lush2Tuning';
+import { mountBlendTuning } from '../src/ra2/blendTuning';
 import { parseAliveParams } from '../src/livingWorld';
 import { mountSpriteIntegrationTuning, spriteIntegrationAPI } from '../src/ra2/spriteIntegrationTuning';
 import { mountVehicleTuning } from '../src/ra2/vehicleTuning';
@@ -151,6 +152,7 @@ const live = await LiveView.create(canvas, {
   spriteIntegration: params.get('sprite') === '1',
   cleanBuildings: params.get('hd-bld') === '1',
   groundDenoise: params.get('blend') === '1' || params.get('hd-blend') === '1',
+  sharedContacts: params.get('blend') === '1' || params.get('hd-blend') === '1',
   ...parseWeatherParams(params),
   mapBase: `/${encodeURIComponent(mapName)}`,
   libraryBase: '/_library',
@@ -251,7 +253,7 @@ if (params.has('tone')) {
   live.hd.applySettings();
 }
 if (params.get('blend') === '1' || params.get('hd-blend') === '1') {
-  live.hd.setAlive(applyBlendTone(live.hd.settings, live.theater));
+  live.hd.setAlive(applyBlendTone(live.hd.settings, live.theater, parseBlendPreset(params.get('hd-blend-preset'))));
   live.hd.applySettings();
 }
 if (params.has('ground')) {
@@ -259,9 +261,11 @@ if (params.has('ground')) {
   live.hd.applySettings();
 }
 const tune =
-  params.get('tone') === 'lush2' && params.get('tune') === '1'
-    ? mountLush2Tuning(canvas.parentElement!, live.hd, live.theater, parseAliveParams(params))
-    : undefined;
+  (params.get('blend') === '1' || params.get('hd-blend') === '1') && params.get('tune') === '1'
+    ? mountBlendTuning(canvas.parentElement!, live.hd, live.theater, parseAliveParams(params), params)
+    : params.get('tone') === 'lush2' && params.get('tune') === '1'
+      ? mountLush2Tuning(canvas.parentElement!, live.hd, live.theater, parseAliveParams(params))
+      : undefined;
 // The bench owns the panel and releases it before the view/device on explicit disposal or page teardown.
 if (tune) {
   const disposeLive = live.dispose.bind(live);

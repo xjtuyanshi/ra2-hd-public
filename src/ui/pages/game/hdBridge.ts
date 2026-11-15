@@ -1,4 +1,4 @@
-import { applyBlendTone } from '../../../../packages/hd-renderer/src/ra2/blendTone';
+import { applyBlendTone, parseBlendPreset } from '../../../../packages/hd-renderer/src/ra2/blendTone';
 import { needsSurfaceClasses } from '../../../../packages/hd-renderer/src/ra2/lookFlags';
 import { setSessionShortcutCode, trackGameChatEntry } from './gameInput';
 import { createChatEntryGuess } from './chatEntryGuess';
@@ -1463,6 +1463,7 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
           spriteIntegration: params.get('hd-sprite') === '1',
           cleanBuildings: params.get('hd-bld') === '1',
           groundDenoise: params.get('hd-blend') === '1',
+          sharedContacts: params.get('hd-blend') === '1',
           surfaceClasses: needsSurfaceClasses(params),
           trackTimestamp: import.meta.env.DEV && params.get('hd-gpu') === '1',
           modernClouds: params.has('hd-tone') || params.get('hd-blend') === '1',
@@ -1478,7 +1479,10 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
           renderer.applyLookPreset(view.hd.settings, preset);
         }
         if (tone) tone.applyMoistTone(view.hd.settings, view.theater, tone.parseToneStyle(params.get('hd-tone')));
-        if (params.get('hd-blend') === '1') view.hd.setAlive(applyBlendTone(view.hd.settings, view.theater));
+        if (params.get('hd-blend') === '1')
+          view.hd.setAlive(
+            applyBlendTone(view.hd.settings, view.theater, parseBlendPreset(params.get('hd-blend-preset'))),
+          );
         if (preset || tone || params.get('hd-blend') === '1') view.hd.applySettings();
         if (topEffects) view.hd.enableTopEffects();
         // A watched view never waits for a pipeline compiler: what is new appears a few frames later instead of the
@@ -1536,7 +1540,26 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
             },
           };
         }
-        if (tuningModule && params.get('hd-veh') !== '1') {
+        if (import.meta.env.DEV && params.get('hd-blend') === '1' && params.get('hd-veh') !== '1') {
+          const { mountBlendTuning } = await import('../../../../packages/hd-renderer/src/ra2/blendTuning');
+          if (stopped || loading !== mapId) return view.dispose();
+          const panel = mountBlendTuning(
+            canvas.parentElement!,
+            view.hd,
+            view.theater,
+            parseAliveParams(params, 'hd-alive'),
+            params,
+            () => host.screen.focus({ preventScroll: true }),
+            chatEntry.isOpen,
+          );
+          setSessionShortcutCode('Backquote', true);
+          tuningPanel = {
+            dispose() {
+              panel.dispose();
+              setSessionShortcutCode('Backquote', false);
+            },
+          };
+        } else if (tuningModule && params.get('hd-veh') !== '1') {
           const panel = tuningModule.mountLush2Tuning(
             canvas.parentElement!,
             view.hd,

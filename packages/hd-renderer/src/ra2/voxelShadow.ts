@@ -9,6 +9,7 @@ import {
   Matrix4,
   Mesh,
   MeshBasicNodeMaterial,
+  MultiplyBlending,
   PlaneGeometry,
   Quaternion,
   Vector2,
@@ -1018,6 +1019,11 @@ function softContactResources(nodes: AtmosphereNodes) {
     const geometry = nodes.own(new PlaneGeometry(2, 2).rotateX(-Math.PI / 2));
     const material = nodes.own(new MeshBasicNodeMaterial({ color: 0, transparent: true, depthWrite: false }));
     material.name = 'voxel-soft-contact';
+    if (nodes.sharedContacts) {
+      material.colorNode = nodes.cloudTone.shadeTint.mul(0.025);
+      material.blending = MultiplyBlending;
+      material.premultipliedAlpha = true;
+    }
     const radius = uv().sub(0.5).mul(2).length().pow(2);
     const gaussian = exp(radius.mul(-LUSH2_CONTACT.falloff))
       .sub(Math.exp(-LUSH2_CONTACT.falloff))

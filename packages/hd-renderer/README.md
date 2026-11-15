@@ -2141,7 +2141,7 @@ post targets and needs separate GPU timing. Lush2 and sprite integration do not 
 Synthetic coverage and shader tests are asset-free. Exact rendered resource pixels, foreground occlusion and
 neighbouring post-filter footprints still require same-frame GPU comparisons against the default look.
 
-## Building de-dither and balanced ground review (development opt-in)
+## Building de-dither and shared light review (development opt-in)
 
 The owner launcher accepts `--hd-option hd-bld=1 --hd-option hd-blend=1` independently.
 `hd-bld=1` requires `buildings-clean.json` in the selected farm's theatre library. It replaces colour pages only;
@@ -2156,19 +2156,34 @@ Create a new overlay using the existing farm tool, then generate each required t
 ```bash
 BASE="$SOURCE_FARM" bash "$MKFARM_SCRIPT" "$NEW_FARM"
 python3 packages/ra2-assets/python/building_clean_pages.py \
-  --source "$SOURCE_FARM" --farm "$NEW_FARM" --theater temperate --report "$REPORT_PATH"
+  --source "$SOURCE_FARM" --farm "$NEW_FARM" --theater temperate --preset dramatic --report "$REPORT_PATH"
 python3 -m unittest discover -s packages/ra2-assets/python -p test_shape_locked_denoise.py
 ```
 
 The tool requires Pillow, NumPy and OpenCV. It filters building bodies and referenced layers, build-up and bib frames,
-leaving other atlas regions untouched. A median/bilateral filter removes fine speckle; a coarse residual retains
-8–32 texel variation. A restrained 3.5% lift toward white keeps exposed metal readable after median filtering;
-encoded house-paint grey is excluded. Eroded alpha, paint boundaries and structural gradients lock edges. Coverage and remap files
+leaving other atlas regions untouched. The `tuned` offline recipe uses median/bilateral filtering and a 3.5% metal lift. The stronger `dramatic` recipe
+uses median5 plus a 2.5-texel Gaussian in source-defined flat regions, a coarse residual to retain 8–32 texel wear,
+and 10% broad metal contrast instead of whitening. Encoded house-paint grey is excluded from contrast changes.
+Both the complete interior and a source-defined flat mask with a 3-texel seam guard are reported; the guarded
+measurement must not be described as whole-building detail preservation. Eroded alpha, paint boundaries and structural gradients lock edges. Coverage and remap files
 are never changed. Reports use source-defined interior masks, luminance variance and before/after source hashes.
 Do not point this tool at a shared/base farm. Derived pages and reports stay outside Git.
+With `hd-bld=1`, a final 5x5 display-space bilateral gather also removes residual speckle after lighting and sharpening.
+The generic filter receives the building category from LiveView. It gathers only the exact same object code,
+protects high-contrast seams by luminance distance, and excludes vehicles, terrain and resource categories.
+Its scratch target belongs to the post-pipeline owner. Without the flag, neither the gather nor its target exists.
 
-`hd-blend=1` uses the existing lush2 cloud/light mechanism with a restrained theatre-aware grade and shared object
-shade. It adds a small edge-aware four-neighbour colour filter to grass albedo, preserving the existing water and
+`hd-blend=1` defaults to `dramatic`; `hd-blend-preset=tuned` restores the softer C ground recipe. The development
+overlay selects both presets, restores dramatic recommendations, adjusts the shared sliders and toggles grading
+with Backquote. Its A/B controls grade/light only: building pages and the compile-time grass filter remain selected
+by their launch flags. Full flag comparisons require separate views of the same real snapshot.
+The dramatic green-theatre recipe darkens and enriches grass, adds golden sun, coloured shade and the same warm
+light to objects. Snow, desert and lunar retain their existing softer theatre values. Building foundations receive
+soft rectangular contact darkening; hull contacts borrow the same shade tint. Footprint meshes follow visual
+lifetimes and share renderer-owned geometry/materials. Existing cloud drift and water remain enabled. It adds a small edge-aware four-neighbour colour filter to grass albedo, preserving the existing water and
 cliff material paths. It does not enable blanket sprite softening or replace vehicle materials. The disabled filter
 adds no shader nodes. The FX bench accepts `hd-bld=1` and `hd-blend=1` (also `blend=1`) for iteration. Sandbox clocks
 and snapshots remain synthetic: live same-frame captures, logic FPS and GPU timing require separate acceptance.
+The blend panel also exposes `buildingPolish` (0–1, default 1) when `hd-bld=1`; this adjusts only the screen gather,
+not the offline pages. Recommended values reset it to 1. Saved grade sliders are scoped to theatre and recipe.
+Contacts use premultiplied multiplicative blending so a shade tint cannot become an emitted light on dark terrain.

@@ -1,3 +1,4 @@
+import { polishSurface, type SurfacePolish } from './surfacePolish';
 import { mod, floor } from 'three/tsl';
 import { surfaceCategoryDisplay } from './surfaceDebug';
 import { objectPostMask, objectSurfaceFilter, objectOutlineFeather, ObjectMaskedSharpen } from './objectPost';
@@ -776,6 +777,8 @@ export class HdRenderer {
   outlineSearch = SILHOUETTE_SEARCH;
   /** The frame-time safeguard's tier in use (see setQualityTier). */
   private qualityTier = 0;
+  private readonly surfacePolish: SurfacePolish | undefined;
+  readonly surfacePolishAmount = uniform(1);
   /** The soft-shadow setting a tier switched off, to restore it. */
   private softShadows: boolean | null = null;
   /** Forms of the post graph (with mist or without) still to be drawn out of sight (see warm); null while not warming. */
@@ -973,12 +976,14 @@ export class HdRenderer {
     readonly canvas: HTMLCanvasElement,
     initial: RenderState,
     options: {
+      surfacePolish?: SurfacePolish;
       forceWebGL?: boolean;
       requiredLimits?: Record<string, number>;
       trackTimestamp?: boolean;
       nodes?: AtmosphereNodes;
     } = {},
   ) {
+    this.surfacePolish = options.surfacePolish;
     this.nodes = options.nodes ?? new AtmosphereNodes(false);
     this.layerNodes = this.nodes;
     this.objects = new ObjectLayer(this.layerNodes);
@@ -1624,6 +1629,14 @@ export class HdRenderer {
             undefined,
             outlineCode,
           );
+    }
+    if (this.surfacePolish && this.painterDepthEnabled && debugView === 'none') {
+      display = polishSurface(
+        objectCopy(display),
+        scenePass.getTextureNode('physicalDepth'),
+        this.surfacePolish,
+        this.surfacePolishAmount,
+      );
     }
     if (referenceOutput && protectedPixel) {
       // A tone's neighbour gathers can alter a protected edge even when its centre skipped the tone. Resolve those

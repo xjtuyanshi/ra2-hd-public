@@ -1,3 +1,4 @@
+import { softFootprint } from '../softFootprint';
 import { isProductionBuilding, productionLayerPush } from '../ra2/productionDepth';
 import type { AliveChange, AliveOptions } from '../livingWorld';
 import { hdInfantryPageIsBare } from '../ra2/infantryArt';
@@ -293,6 +294,7 @@ export interface LiveViewOptions extends VoxelUnitsOptions {
   surfaceClasses?: boolean;
   modernClouds?: boolean;
   groundDenoise?: boolean;
+  sharedContacts?: boolean;
   cleanBuildings?: boolean;
   /** URL of the map's HD cache directory (manifest.json inside). */
   mapBase: string;
@@ -522,6 +524,7 @@ interface Visual {
   turretIndex?: number;
   paletteKey: string;
   root: Group;
+  contact?: Mesh;
   turret?: Group;
   /** How it is drawn: a 3D voxel model, sprites from the map cache or the type library, or nothing (no art). */
   mode: 'voxel' | 'map-sprite' | 'library-sprite' | 'placeholder';
@@ -1424,6 +1427,7 @@ export class LiveView {
         surfaceClasses: options.surfaceClasses,
         modernClouds: options.modernClouds,
         groundDenoise: options.groundDenoise,
+        sharedContacts: options.sharedContacts,
         smoothVoxel: options.smoothVoxel,
         voxelProjection: options.voxelProjection,
       }),
@@ -1469,6 +1473,7 @@ export class LiveView {
     };
     const hd = new HdRenderer(canvas, state, {
       nodes: world.nodes,
+      ...(options.cleanBuildings ? { surfacePolish: { category: 1, sigma: 2, range: 0.08 } } : {}),
       forceWebGL: options.forceWebGL ?? false,
       trackTimestamp: options.trackTimestamp ?? false,
       requiredLimits,
@@ -2589,6 +2594,7 @@ export class LiveView {
         !!object.nativeHidden || !!visual.libraryType?.invisible || !!this.cache.lights?.types[object.type]?.invisible;
       if (visual.root.visible === hidden) this.painterDirty = true;
       visual.root.visible = !hidden;
+      if (visual.contact) visual.contact.visible = !hidden;
       if (hidden) {
         if (visual.motion) visual.motion.hasShown = false;
         continue;
@@ -2615,6 +2621,17 @@ export class LiveView {
             : undefined;
         painter.x = Math.floor(object.x / LEPTONS_PER_CELL);
         painter.z = Math.floor(object.y / LEPTONS_PER_CELL);
+      }
+      if (this.options?.sharedContacts && object.kind === 'building' && painter.foundation) {
+        const [w, h] = painter.foundation;
+        const x = painter.x! + w / 2,
+          z = painter.z! + h / 2;
+        if (!visual.contact) {
+          visual.contact = softFootprint(this.hd.nodes);
+          this.root.add(visual.contact);
+        }
+        visual.contact.position.set(x, this.world.terrain.heightAt(x, z) + 0.025, z);
+        visual.contact.scale.set(w / 2 + 0.18, 1, h / 2 + 0.18);
       }
       this.spritePool.painter = painter;
       this.spritePool.surfaceClass = object.kind === 'building' ? 1 : object.kind === 'infantry' ? 3 : 2;
@@ -3783,6 +3800,7 @@ export class LiveView {
   }
 
   private removeVisual(visual: Visual): void {
+    visual.contact?.removeFromParent();
     if (visual.mode === 'voxel') this.voxelUnits.dispose(visual);
     else visual.root.removeFromParent();
     if (visual.buildingTurret) this.voxelUnits.dispose(visual.buildingTurret);
