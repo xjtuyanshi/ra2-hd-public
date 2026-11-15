@@ -98,6 +98,46 @@ describe('offline local cache export boundaries', () => {
       expect(Object.keys(searches['body:1'])).toEqual(['strict', 'broad']);
       const selection = JSON.parse(await readFile(join(out, 'search_selection.json'), 'utf8'));
       expect(selection).toEqual({ 'body:0': 'strict', 'body:1': 'strict' });
+      const selected = join(dir, 'selected');
+      execFileSync(
+        process.execPath,
+        [
+          '--import',
+          'tsx',
+          resolve('scripts/remaster/cad/select.ts'),
+          '--candidate',
+          out,
+          '--out',
+          selected,
+          '--no-render',
+        ],
+        { stdio: 'pipe' },
+      );
+      const selectedManifest = JSON.parse(await readFile(join(selected, 'manifest.json'), 'utf8'));
+      expect(selectedManifest.kind).toBe('automatic-candidate-selection');
+      expect(selectedManifest.metricPass).toBe(true);
+      const chosen = JSON.parse(await readFile(join(selected, 'selection.json'), 'utf8'));
+      expect(chosen['body:0'].directory).toBe(await realpath(out));
+      expect(chosen['body:1'].directory).toBe(await realpath(out));
+      // A stored spec/export mutation cannot enter selection under its old manifest hash.
+      const stored = await readFile(join(out, 'export.json'), 'utf8');
+      await writeFile(join(out, 'export.json'), stored + ' ');
+      expect(() =>
+        execFileSync(
+          process.execPath,
+          [
+            '--import',
+            'tsx',
+            resolve('scripts/remaster/cad/select.ts'),
+            '--candidate',
+            out,
+            '--out',
+            join(dir, 'rejected'),
+            '--no-render',
+          ],
+          { stdio: 'pipe' },
+        ),
+      ).toThrow('manifest hash mismatch');
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

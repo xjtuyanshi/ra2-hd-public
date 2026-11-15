@@ -162,3 +162,27 @@ every trial, `search_selection.json` records the choice, and checkpoints retain 
 observed part across trials. The assembled silhouette is evaluated after automatic selection;
 part passes alone never establish vehicle acceptance. `fit:*` timings include proposal and all
 `search:*` rows and must not be summed with those nested rows.
+
+## Preserve better automatic candidates
+
+```bash
+pnpm exec tsx scripts/remaster/cad/select.ts \
+  --candidate "$NEW_AUTOMATIC_DELIVERY" --candidate "$PREVIOUS_AUTOMATIC_DELIVERY" \
+  --out "$FRESH_SELECTED_DELIVERY" --cell 256
+```
+
+Inputs must be complete automatic deliveries with intact spec/export manifest hashes and
+matching model source hash, palette hash, section set, solid lattice, affine, camera and
+explicit house colour. The output is fresh and cannot overwrite a candidate. Every eligible
+part is remeasured using the unchanged formal surface/silhouette implementation and current
+130/35/three-per-tube policy. Selection uses a fixed lexicographic rule: full part PASS, fewer
+failed independent gates, smaller worst normalized deviation/IoU shortfall, then the existing
+formal diagnostic loss. Ties keep the first input. Expanded/per-tube budget violations are
+rejected before ranking. The tool never requests model coordinates or a hand-selected part.
+
+`selection.json` and `selection_evaluations.json` retain all origins, current measurements,
+rejections and ranks. The assembled silhouette and all boards are regenerated after automatic
+selection. This does not turn part passes into a vehicle pass, certify the look, or prove a
+global optimum. Upstream trial minutes and selection wall time remain separate in HOURS.md.
+The generic `hardSurfaceSelection.ts` owns measurement/ranking; the CLI owns source
+compatibility, research-camera replay and game budgets.
