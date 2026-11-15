@@ -156,6 +156,11 @@ interface NativeInputState {
   movieOpens?: number;
   movieTotalMs?: number;
   movieTrackingFailures?: number;
+  clipOpens?: number;
+  /** Bink copies the agent skipped before the handle's first decode (agent/movie-copy.h). */
+  undecodedMovieCopiesSkipped?: number;
+  /** Copies of a still-undecoded handle let through after the agent's time limit. */
+  undecodedMovieCopiesLate?: number;
 }
 interface NativeMirrorRecovery {
   sequence: number;
@@ -721,6 +726,9 @@ export class NativeCore {
       movieOpens: state.movieOpens,
       movieTotalMs: state.movieTotalMs,
       movieTrackingFailures: state.movieTrackingFailures,
+      clipOpens: state.clipOpens,
+      undecodedMovieCopiesSkipped: state.undecodedMovieCopiesSkipped,
+      undecodedMovieCopiesLate: state.undecodedMovieCopiesLate,
     };
     // The main menu also keeps a Bink handle for its animated background.
     // A visible dialog owns input there; Escape must never be offered as a film skip.

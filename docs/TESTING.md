@@ -92,10 +92,11 @@ Fixed-address/instruction evidence lives in game modules and their tests. Never 
 
 ```bash
 node --test scripts/remaster/native/mirror-*.test.mjs
+node --test scripts/remaster/native/movie-copy.test.mjs
 bash packages/native-host/build.sh
 ```
 
-The C tests cover deadline backoff, complete-image cadence, membership/removals, ACK generations, page equality, read caching and exact protected reads. The native build needs the configured MinGW tools and vendored sources. Cadence tests model a fast consumer at 16 ms boundaries and verify immediate reset/revision/rewind eligibility, clock rounding and reconnect cleanup. They do not establish live logic FPS, HD smoothness or original-executable behavior. Measure same-scene HD/original windows at slider 5 after minute 10 separately.
+The C tests cover the skipped Bink copies before a handle's first decode, deadline backoff, complete-image cadence, membership/removals, ACK generations, page equality, read caching and exact protected reads. The native build needs the configured MinGW tools and vendored sources. Cadence tests model a fast consumer at 16 ms boundaries and verify immediate reset/revision/rewind eligibility, clock rounding and reconnect cleanup. They do not establish live logic FPS, HD smoothness or original-executable behavior. Measure same-scene HD/original windows at slider 5 after minute 10 separately.
 
 ## Save and cold-load regression
 
