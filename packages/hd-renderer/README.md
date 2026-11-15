@@ -456,7 +456,9 @@ Five laser controls (all inert, i.e. `1/0/0/0/0`, in `cur` and `new`):
   on its core, glow, hit bloom and ground light, as the original dims it. The YR reader's duration, progress and
   fades now reach the HD snapshot (`GameRenderLaser`, `LiveBeam`). Live SOV07TMD originals show a fresh Prism beam
   core of (204, 56, 221) and the same beams a few frames later at (115..132, 42..44, 167..196), thinner and bluer; a
-  glow kept at full strength there read paler and pinker than the original's deep violet.
+  glow kept at full strength there read paler and pinker than the original's deep violet. The core's white share
+  fades with it (the white is the original's additive colour clipping), so an aged beam is a deep house-colour line
+  rather than a pale lavender thread.
 - `beamOver=1`: native laser light (core, glow, hit bloom) is drawn over the scene (its fragment depth is moved to
   the near plane), as the original draws its lasers after everything else. With the depth test, and the lift above,
   the unit at a Prism volley's focus still stood in front of the converging glow and read as a dark, hard-edged

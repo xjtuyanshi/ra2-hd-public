@@ -291,17 +291,19 @@ export class RealEmissiveLayer {
       vec3(DISPLAY_GAMMA),
     );
     const glowRgb = tint.mul(laserGlow).mul(flicker).mul(shimmer);
-    // The core and the impact take 20%/45% of the source hue so violet stays violet-white, never pink.
-    const hotTint = mix(vec3(1), tint, 0.2).mul(this.look.beamCoreGain);
+    // beamFade (hd-light=beam): a fading native laser dims over its life like the original (b.w: share of the life
+    // passed). The original's aged Prism beam is a darker, thinner violet; a fresh-looking glow there read pale and pink.
+    const remaining = float(1).sub(b.w.clamp(0, 1).mul(this.look.beamFade));
+    // The core and the impact take 20%/45% of the source hue so violet stays violet-white, never pink. A fading core
+    // loses its white with its light (the white is the original's additive colour clipping): an aged Prism beam is a
+    // deep violet line in the original, and a dimmed white core read as a pale lavender thread.
+    const hotTint = mix(tint, mix(vec3(1), tint, 0.2), remaining).mul(this.look.beamCoreGain);
     const lightRgb = hotTint
       .mul(laserCore)
       .mul(flicker)
       .mul(shimmer)
       .add(glowRgb.mul(float(1).sub(laserCore.mul(0.6))))
       .add(mix(vec3(1), tint, 0.45).mul(impact).mul(flicker).mul(colour.w));
-    // beamFade (hd-light=beam): a fading native laser dims over its life like the original (b.w: share of the life
-    // passed). The original's aged Prism beam is a darker, thinner violet; a fresh-looking glow there read pale and pink.
-    const remaining = float(1).sub(b.w.clamp(0, 1).mul(this.look.beamFade));
     const rgb = mix(legacy, lightRgb.mul(remaining), phase.w.greaterThan(1.5).select(this.look.beamLight, float(0)));
     // beamDepthLift (hd-light=beam, a gain): the glow is depth-tested as if lifted towards the camera by the height
     // its screen-vertical offset would need above the ground (offset x cot(elevation)). A low near-horizontal beam's glow
