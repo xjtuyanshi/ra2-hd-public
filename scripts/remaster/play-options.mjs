@@ -11,6 +11,9 @@ export const HD_PLAY_OPTIONS = Object.freeze({
   'hd-vlook': 'remaster',
   'hd-vproj': 'vehicles-hd',
   'hd-ui': '1',
+  // Owner choice 2026-11-14: drifting cloud shade on land and water, deeper preset.
+  'hd-alive': '1',
+  'alive-preset': 'deep',
   // Single-pass reconstruction of the original menus/dialogs; HD passthrough
   // keeps its separate 1:1 overlay path and does not run this filter.
   sr: '1',

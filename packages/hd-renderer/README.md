@@ -321,8 +321,9 @@ comparisons) and `atmoperf` (frame cost, see below).
 ## Living world (hd-alive)
 
 Opt in to **clouds only** with `hd-alive=1` on the live game URL, or `alive=1` in either sandbox.
+The owner launchers (`scripts/remaster/play-options.mjs`) turn it on with `alive-preset=deep` since Build 13.
 Tree sway and grass ripple require the additional `alive-wind=1`; that flag alone enables nothing.
-Defaults and launcher presets stay unchanged. Like `hd-water`, these are URL options, without INI settings.
+The renderer default stays off. Like `hd-water`, these are URL options, without INI settings.
 Tunables in both entries: `alive-cloud=1` (shadow strength scale, 0..2; 0 disables clouds),
 `alive-sway=1` (explicit wind amplitude, 0..3), `alive-speed=1` (renderer clock speed, 0..4),
 `alive-preset=soft|deep` (cloud shape and core depth; default `soft`, unknown values keep the current preset).
