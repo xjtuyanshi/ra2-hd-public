@@ -4,7 +4,7 @@ import { readdir, readFile, realpath, mkdir, lstat } from 'node:fs/promises';
 import { resolve, relative, sep, isAbsolute } from 'node:path';
 import type { VoxelModel, VoxelSection } from '../../../packages/ra2-assets/src/manifest';
 import { gridIndex, validateGrid, type SolidGrid, type Vec3 } from '../../../packages/hd-renderer/src/hardSurfaceSolid';
-import { VOXEL_TO_WORLD } from '../../../packages/hd-renderer/src/ra2/voxelScale';
+import { voxelSectionFrame } from '../../../packages/hd-renderer/src/ra2/voxelSectionFrame';
 
 export const sha256 = (bytes: string | Uint8Array): string => createHash('sha256').update(bytes).digest('hex');
 export async function discoverModel(root: string, id: string): Promise<string> {
@@ -82,13 +82,12 @@ export function sectionAffine(s: VoxelSection, turretOffset: number): number[] {
     m = s.transform;
   if (m.length !== 12 || ![...step, ...m, ...s.minBounds].every(Number.isFinite))
     throw new Error('Invalid section transform');
-  const rows = [0, 2, 1],
-    signs = [1, 1, -1];
-  return rows.flatMap((r, i) => {
-    const scale = VOXEL_TO_WORLD * signs[i];
-    const translation = m[r * 4 + 3] + s.minBounds.reduce((v, c, a) => v + m[r * 4 + a] * c, 0);
-    return [...step.map((v, a) => m[r * 4 + a] * v * scale), translation * scale + (i === 0 ? turretOffset : 0)];
-  });
+  const frame = voxelSectionFrame(s),
+    origin = frame.position(0, 0, 0);
+  const columns = [frame.position(1, 0, 0), frame.position(0, 1, 0), frame.position(0, 0, 1)].map((p) =>
+    p.map((v, a) => v - origin[a]),
+  );
+  return [0, 1, 2].flatMap((r) => [...columns.map((p) => p[r]), origin[r] + (r === 0 ? turretOffset : 0)]);
 }
 export function transformPoint(p: Vec3, m: readonly number[]): Vec3 {
   return [0, 1, 2].map((r) => p.reduce((s, v, a) => s + v * m[r * 4 + a], m[r * 4 + 3])) as Vec3;

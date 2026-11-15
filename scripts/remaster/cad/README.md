@@ -18,6 +18,8 @@ most four nested directories, accepts voxel-section caches, and excludes generat
 `vehicles-hd` projections. It includes every section and exports section bounds, HVA frame 0,
 raw occupancy, the filled solid, source paint/remap, and current `buildStandInPartGeometry`
 vertices. Its lattice-to-world affine must agree with those vertices within `1e-5` world units.
+The affine is derived from the shared `ra2/voxelSectionFrame.ts` policy, which also places live
+voxel, smooth and CAD sections; the CLI does not maintain a second HVA/axis-swap implementation.
 
 `--house neutral` uses sRGB `(0.6, 0.6, 0.6)`. Alternatively provide `--house 0.1,0.3,0.8`.
 These are caller-selected colours, not a claim about a faction's default player colour. Remap
