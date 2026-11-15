@@ -318,3 +318,13 @@ New round evaluation logs use one compact JSON object per line. Historical round
 artifacts produced before this correction contain a whitespace-separated stream
 of pretty-printed JSON objects; retain their original bytes and use a streaming
 JSON decoder when examining that historical evidence.
+
+For at most ten detected shoulders, the shoulder pass also ranks complete source
+feature subsets by unique occupied source-region cells, counting overlap once
+and preferring fewer patches at equal coverage. It evaluates the full proposal
+under the same expanded budget, formal assembly floor, and proportion/p99 search
+constraints before selecting it. This avoids imposing those constraints on an
+intermediate fragment of a valid joint replacement. Coverage is a proposal
+heuristic, not proof of visual improvement; native-scale review remains required.
+Larger feature sets retain the bounded bundle/individual strategy and the same
+wall-clock cap, rather than enumerating an unbounded power set.

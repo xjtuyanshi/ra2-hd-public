@@ -1,10 +1,33 @@
 import { describe, it, expect } from 'vitest';
 import { ellipticCylinder } from '../src/hardSurfaceRound';
-import { buildPart, expand, mirror, insidePrimitive, type Vec3 } from '../src/hardSurfaceMesh';
+import { buildPart, expand, mirror, insidePrimitive } from '../src/hardSurfaceMesh';
 import { parseHardSurfaceSpec } from '../src/hardSurfaceLiveMesh';
-import { detectRoundShoulders } from '../src/hardSurfaceShoulder';
+import { detectRoundShoulders, rankSourceFeatureSubsets } from '../src/hardSurfaceShoulder';
 import { grid } from './hardSurfaceFixtures';
 describe('exposed elliptic shoulders', () => {
+  it('ranks complete source regions jointly without double-counting overlapping cells or unbounded enumeration', () => {
+    const regions = [
+      {
+        cells: [
+          [0, 0, 0],
+          [1, 0, 0],
+        ] as [number, number, number][],
+      },
+      {
+        cells: [
+          [1, 0, 0],
+          [2, 0, 0],
+        ] as [number, number, number][],
+      },
+      { cells: [[0, 0, 0]] as [number, number, number][] },
+    ];
+    const ranked = rankSourceFeatureSubsets(regions);
+    expect(ranked).toHaveLength(7);
+    expect(ranked[0]).toEqual({ indices: [0, 1], coveredCells: 3 });
+    expect(ranked.find((p) => p.indices.length === 3)?.coveredCells).toBe(3);
+    expect(rankSourceFeatureSubsets(Array.from({ length: 11 }, () => regions[0]))).toHaveLength(0);
+    expect(rankSourceFeatureSubsets([])).toHaveLength(0);
+  });
   it('extrudes an oriented ellipse without stretching either transverse radius', () => {
     const q = expand(ellipticCylinder([2, 3, 4], [8, 9, 4], [0, 0, 1], [2, 4]));
     expect(insidePrimitive([5, 6, 5.9], q)).toBe(true);

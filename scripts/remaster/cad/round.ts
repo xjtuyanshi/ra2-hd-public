@@ -23,7 +23,7 @@ import {
   patchUpperPipe,
 } from '../../../packages/hd-renderer/src/hardSurfaceRoundPatch';
 import { sweptCylinders, taperedCylinder } from '../../../packages/hd-renderer/src/hardSurfaceRound';
-import { detectRoundShoulders } from '../../../packages/hd-renderer/src/hardSurfaceShoulder';
+import { detectRoundShoulders, rankSourceFeatureSubsets } from '../../../packages/hd-renderer/src/hardSurfaceShoulder';
 import { tubeLanes, tubeSegments, circularTubeGroups } from '../../../packages/hd-renderer/src/hardSurfaceTube';
 import { occupiedCells, cylinderProposal } from '../../../packages/hd-renderer/src/hardSurfacePropose';
 import { evaluateHardSurface, type HardSurfaceMetrics } from '../../../packages/hd-renderer/src/hardSurfaceMetrics';
@@ -334,27 +334,47 @@ for (const key of keys) {
       if (merged.merges.length) consider(key, merged.part, `coalesce: ${merged.merges.length} exact convex unions`);
       const features = detectRoundShoulders(solid);
       detections[key] = features;
-      // Related shoulders may free each other's old clipping fragments; only the complete source-supported bundle is evaluated.
-      const groups = new Map<string, number[]>();
-      features.forEach((f, i) => {
-        const signature = f.axis + ':' + f.points.map((p) => p['xyz'.indexOf(f.axis)]).join(',');
-        const group = groups.get(signature) ?? [];
-        group.push(i);
-        groups.set(signature, group);
-      });
-      for (const indices of groups.values())
-        if (indices.length > 1) {
-          let candidate = structuredClone(spec.parts[key]);
-          for (const i of indices) candidate = patchRoundFeature(candidate, features[i], `shoulder_bundle_${i}`);
-          consider(key, candidate, `source shoulder bundle ${indices.join(',')}`, true);
+      const base = structuredClone(spec.parts[key]);
+      let jointAccepted = false;
+      for (const proposal of rankSourceFeatureSubsets(features)) {
+        if (performance.now() - started > limit) break;
+        let candidate = structuredClone(base);
+        for (const i of proposal.indices) candidate = patchRoundFeature(candidate, features[i], `shoulder_subset_${i}`);
+        if (
+          consider(
+            key,
+            candidate,
+            `source shoulder subset ${proposal.indices.join(',')}; supported source cells=${proposal.coveredCells}`,
+            true,
+          )
+        ) {
+          jointAccepted = true;
+          break;
         }
-      for (const [i, f] of features.entries())
-        consider(
-          key,
-          patchRoundFeature(spec.parts[key], f, `shoulder_${i}`),
-          `source shoulder ${i}; section-height-error=${f.profileError}; ${f.evidence.slices} slices`,
-          true,
-        );
+      }
+      if (!jointAccepted) {
+        // Related shoulders may free each other's old clipping fragments; only the complete source-supported bundle is evaluated.
+        const groups = new Map<string, number[]>();
+        features.forEach((f, i) => {
+          const signature = f.axis + ':' + f.points.map((p) => p['xyz'.indexOf(f.axis)]).join(',');
+          const group = groups.get(signature) ?? [];
+          group.push(i);
+          groups.set(signature, group);
+        });
+        for (const indices of groups.values())
+          if (indices.length > 1) {
+            let candidate = structuredClone(spec.parts[key]);
+            for (const i of indices) candidate = patchRoundFeature(candidate, features[i], `shoulder_bundle_${i}`);
+            consider(key, candidate, `source shoulder bundle ${indices.join(',')}`, true);
+          }
+        for (const [i, f] of features.entries())
+          consider(
+            key,
+            patchRoundFeature(spec.parts[key], f, `shoulder_${i}`),
+            `source shoulder ${i}; section-height-error=${f.profileError}; ${f.evidence.slices} slices`,
+            true,
+          );
+      }
     }
   } else if (mode === 'polish') {
     if (ex.parts[key].role !== 'barrel') {

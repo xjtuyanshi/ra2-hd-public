@@ -19,6 +19,24 @@ export interface ShoulderFeature extends RoundFeature {
   profileError: number;
 }
 const median = (v: number[]) => v.sort((a, b) => a - b)[Math.floor(v.length / 2)];
+/** Bounded joint proposals avoid greedy budget/floor traps. Overlapping source cells are counted once. */
+export function rankSourceFeatureSubsets(
+  regions: readonly { cells: readonly Vec3[] }[],
+): { indices: number[]; coveredCells: number }[] {
+  if (!regions.length || regions.length > 10) return [];
+  const owners = new Map<string, number>();
+  regions.forEach((r, i) => r.cells.forEach((p) => owners.set(p.join(','), (owners.get(p.join(',')) ?? 0) | (1 << i))));
+  return Array.from({ length: (1 << regions.length) - 1 }, (_, i) => {
+    const mask = i + 1;
+    return {
+      mask,
+      indices: regions.flatMap((_, j) => (mask & (1 << j) ? [j] : [])),
+      coveredCells: [...owners.values()].filter((bits) => bits & mask).length,
+    };
+  })
+    .sort((a, b) => b.coveredCells - a.coveredCells || a.indices.length - b.indices.length || a.mask - b.mask)
+    .map(({ indices, coveredCells }) => ({ indices, coveredCells }));
+}
 export function detectRoundShoulders(grid: SolidGrid, up: Axis = 'z', maximum = 24): ShoulderFeature[] {
   const u = 'xyz'.indexOf(up),
     out: ShoulderFeature[] = [];
