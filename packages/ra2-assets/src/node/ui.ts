@@ -1,7 +1,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Palette, ShpFile } from 'ra2-formats';
-import { buildCursorAtlas, rasterizeUiFrame, rasterizeUiStrip } from '../ui.ts';
+import { buildCursorAtlas, buildMarkAtlas, rasterizeUiFrame, rasterizeUiStrip, type MarkDefinition } from '../ui.ts';
 import { encodePng } from './png.ts';
 
 export interface CameoDefinition {
@@ -91,4 +91,19 @@ export function writeUiStrip(options: { out: string; file: string; shape: ShpFil
     frameSize: { width: options.shape.cx, height: options.shape.cy },
     frameCount: options.shape.count,
   };
+}
+
+/** Writes marks.png and marks.json (src/graphics/frameMarks.ts) for the listed frames of one shape. */
+export function writeMarks(options: {
+  out: string;
+  shape: ShpFile;
+  palette: Palette;
+  marks: readonly MarkDefinition[];
+  scale?: number;
+}): { marks: number; width: number; height: number } {
+  const { image, manifest } = buildMarkAtlas(options.shape, options.palette, options.marks, options.scale);
+  mkdirSync(options.out, { recursive: true });
+  writeFileSync(join(options.out, manifest.file), encodePng(image));
+  writeFileSync(join(options.out, 'marks.json'), JSON.stringify(manifest));
+  return { marks: manifest.marks.length, width: image.width, height: image.height };
 }

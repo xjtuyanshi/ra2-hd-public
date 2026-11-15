@@ -1074,6 +1074,9 @@ Optional art lives under the local HD cache's `_ui/` directory:
   canvas; only final CSS/DPR presentation resamples when needed. Hotspots remain unchanged frame-pixel runtime data.
   Export with `pnpm hd:ui -- cursor --game "$RA2_INSTALL" --out "$HD_CACHE/_ui/cursor"`.
   This YR build uses `MOUSE.SHA` and `MOUSEPAL.PAL`; CLI `--shape`/`--palette` can select other supplied files.
+- `_ui/marks/marks.json` + `marks.png`: sharp art for fixed native battlefield marks such as the rank chevrons; see
+  [HD battlefield overlays](HD_OVERLAYS.md#sharp-art-for-fixed-native-marks). Export with
+  `pnpm hd:ui -- marks --game "$RA2_INSTALL" --out "$HD_CACHE/_ui/marks"`.
 
 Manifests and bitmaps load lazily. Missing files (including 404 responses) are remembered for the controller's
 lifetime; reload to pick up newly created assets. A complete loaded chrome set covers the sidebar and command bar,

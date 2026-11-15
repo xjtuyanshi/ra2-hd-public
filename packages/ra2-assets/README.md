@@ -71,6 +71,7 @@ pnpm hd:materials -- --terrain XMP29U2 --terrain RiverRam [--cache <dir>] [--sig
 # Local YR interface art, separate from curated HD cameos
 pnpm hd:ui -- cameos --game "$RA2_INSTALL" --out "$HD_CACHE/_ui/cameos-cli-test"
 pnpm hd:ui -- cursor --game "$RA2_INSTALL" --out "$HD_CACHE/_ui/cursor"
+pnpm hd:ui -- marks --game "$RA2_INSTALL" --out "$HD_CACHE/_ui/marks"
 pnpm hd:ui -- tabs --game "$RA2_INSTALL" --out "$UI_WORK/tabs-orig"
 ```
 

@@ -198,6 +198,20 @@ export async function startVmPage(canvas: HTMLCanvasElement, resumedSource?: Gam
   let speedCleanup: (() => void) | null = null;
   let feelTelemetry: ReturnType<(typeof import('./sessionFeelTelemetry'))['startSessionFeelTelemetry']> | null = null;
   let nativeCursor: Awaited<ReturnType<(typeof import('./nativeCursor'))['createNativeCursor']>> = null;
+  let nativeMarkArt: Awaited<ReturnType<(typeof import('./nativeMarkArt'))['loadNativeMarkArt']>> = null;
+  /** Console handle for A/B checks: `__nativeMarkArt.enable(false)` shows the game's own marks again. */
+  const markGlobals = window as unknown as {
+    __nativeMarkArt?: { enable(on: boolean): boolean };
+    __nativeMarkSmooth?: { enable(on: boolean): boolean };
+  };
+  const releaseNativeMarkArt = () => {
+    frameRenderer.setMarkArt(null);
+    frameRenderer.setMarkSmoothing(false);
+    delete markGlobals.__nativeMarkSmooth;
+    nativeMarkArt?.dispose();
+    nativeMarkArt = null;
+    delete markGlobals.__nativeMarkArt;
+  };
   let hdMenus: import('./hdMenus').HdMenus | null = null;
   const menuAbort = new AbortController();
   const menuFrameListeners = new Set<() => void>();
@@ -521,6 +535,7 @@ export async function startVmPage(canvas: HTMLCanvasElement, resumedSource?: Gam
     nativeCursorFrames.dispose();
     nativeCursor?.destroy();
     nativeCursor = null;
+    releaseNativeMarkArt();
     ambientFill?.destroy();
     ambientFill = null;
     effects.stop();
@@ -659,6 +674,7 @@ export async function startVmPage(canvas: HTMLCanvasElement, resumedSource?: Gam
     nativeCursorFrames.dispose();
     nativeCursor?.destroy();
     nativeCursor = null;
+    releaseNativeMarkArt();
     // Stop the HD bridge while the VM still runs: it switches the game's passthrough off and must not keep polling (and
     // holding its GPU view) after the VM is gone.
     activeTrainingCleanup?.();
@@ -786,6 +802,41 @@ export async function startVmPage(canvas: HTMLCanvasElement, resumedSource?: Gam
       nativeCursor?.destroy();
       return;
     }
+  }
+  // Sharp native marks; only the keyed HD view uses them. Step smoothing needs no art (thin diagonal lines, brackets,
+  // pixel-font strokes); farm art replaces exactly matched fixed marks such as rank chevrons.
+  const markOptions = new URLSearchParams(window.location.search);
+  const nativeMarks =
+    import.meta.env.DEV && hdBridgeEnabled && (markOptions.get('backend') === 'native' || gameSource?.game.id === 'yr');
+  if (nativeMarks && markOptions.get('native-mark-smooth') !== '0') {
+    frameRenderer.setMarkSmoothing(true);
+    markGlobals.__nativeMarkSmooth = {
+      enable: (on) => {
+        frameRenderer.setMarkSmoothing(on);
+        return true;
+      },
+    };
+  }
+  if (nativeMarks && markOptions.get('native-mark-art') !== '0') {
+    try {
+      const { loadNativeMarkArt } = await import('./nativeMarkArt');
+      const art = await loadNativeMarkArt(undefined, menuAbort.signal);
+      if (generation !== pageGeneration || runtimeReleased) art?.dispose();
+      else if (art) {
+        nativeMarkArt = art;
+        frameRenderer.setMarkArt(art);
+        markGlobals.__nativeMarkArt = {
+          enable: (on) => {
+            if (nativeMarkArt !== art) return false;
+            frameRenderer.setMarkArt(on ? art : null);
+            return true;
+          },
+        };
+      }
+    } catch (error) {
+      if (!menuAbort.signal.aborted) console.warn('[HD] Native mark art unavailable; retaining game marks', error);
+    }
+    if (generation !== pageGeneration || runtimeReleased) return;
   }
   const viewportAbort = new AbortController();
   activeNativeViewportAbort = viewportAbort;

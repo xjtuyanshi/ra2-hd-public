@@ -5,7 +5,14 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { Palette, ShpFile, parseIni, idFromName } from 'ra2-formats';
-import { buildCursorAtlas, rasterizeUiFrame, rasterizeUiStrip } from '../src/ui.ts';
+import {
+  buildCursorAtlas,
+  buildMarkAtlas,
+  rasterizeUiFrame,
+  rasterizeUiStrip,
+  rgb565Of,
+  scale2xRgba,
+} from '../src/ui.ts';
 import { writeCameos, writeCursor, writeUiStrip } from '../src/node/ui.ts';
 import { decodePng } from '../src/node/png.ts';
 import { yrCameos, yrTabStrips } from '../src/games/yrUi.ts';
@@ -335,5 +342,53 @@ describe('UI art extraction', () => {
     } finally {
       rmSync(out, { recursive: true, force: true });
     }
+  });
+});
+
+describe('sharp battlefield marks', () => {
+  it('Scale2x refines a diagonal without new colours and keeps straight runs', () => {
+    const red = [255, 0, 0, 255],
+      none = [0, 0, 0, 0];
+    // 2x2 diagonal: red at (0,0) and (1,1).
+    const data = new Uint8Array([...red, ...none, ...none, ...red]);
+    const out = scale2xRgba({ width: 2, height: 2, channels: 4, data });
+    expect([out.width, out.height]).toEqual([4, 4]);
+    const px = (x: number, y: number) => [...out.data.slice((y * 4 + x) * 4, (y * 4 + x) * 4 + 4)];
+    // The isolated diagonal keeps its pixel centres; corners facing the gap are cut, never filled.
+    expect(px(0, 0)).toEqual(red);
+    expect(px(3, 3)).toEqual(red);
+    expect(px(3, 0)).toEqual(none);
+    expect(px(0, 3)).toEqual(none);
+    const colours = new Set<string>();
+    for (let i = 0; i < out.data.length; i += 4) colours.add(out.data.slice(i, i + 4).join(','));
+    expect([...colours].sort()).toEqual(['0,0,0,0', '255,0,0,255']);
+    const bar = scale2xRgba({ width: 3, height: 1, channels: 4, data: new Uint8Array([...red, ...red, ...red]) });
+    expect(bar.data.every((v, i) => v === red[i % 4])).toBe(true);
+  });
+
+  it('writes the native RGB565 pattern and aligned, transparent-padded art cells', () => {
+    const { shape, palette } = art();
+    const { image, manifest } = buildMarkAtlas(shape, palette, [
+      { id: 'a', frame: 0 },
+      { id: 'b', frame: 1 },
+    ]);
+    const [r, , b] = palette.rgba(1);
+    const red = rgb565Of(r, palette.rgba(1)[1], b);
+    expect(manifest.marks[0]).toMatchObject({ id: 'a', frame: 0, width: 2, height: 2 });
+    expect(manifest.marks[0]!.pixels[0]).toBe(red);
+    expect(manifest.marks[0]!.pixels[1]).toBe(-1);
+    expect(manifest.marks[0]!.atlas).toEqual({ x: 16, y: 16, width: 8, height: 8 });
+    expect(manifest.marks[1]!.atlas.x % 16).toBe(0);
+    expect(manifest.marks[1]!.atlas.x).toBeGreaterThanOrEqual(16 + 8 + 16);
+    expect(image.width).toBeGreaterThanOrEqual(manifest.marks[1]!.atlas.x + 8);
+    // Gap texels stay transparent.
+    expect(image.data[(16 * image.width + 15) * 4 + 3]).toBe(0);
+    let opaque = 0;
+    for (let y = 16; y < 24; y++)
+      for (let x = 16; x < 24; x++) opaque += image.data[(y * image.width + x) * 4 + 3]! ? 1 : 0;
+    expect(opaque).toBeGreaterThan(24);
+    expect(() => buildMarkAtlas(shape, palette, [{ id: 'empty', frame: 2 }])).toThrow(/empty/);
+    expect(() => buildMarkAtlas(shape, palette, [{ id: 'a', frame: 0 }], 3)).toThrow(/scale/);
+    expect(rgb565Of(255, 255, 255)).toBe(0xffff);
   });
 });

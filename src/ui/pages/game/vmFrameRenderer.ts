@@ -4,6 +4,8 @@ import type { FramePostProcess } from '../../../graphics/framePostProcess';
 import type { VmFrame } from '../../../vm86/win32';
 import { validFrameOverlay } from '../../../graphics/frameOverlayData';
 import { FrameOverlayPass } from '../../../graphics/frameOverlay';
+import { FrameMarkPass, FrameMarkReplacer, frameMarkVertices, type FrameMarkSet } from '../../../graphics/frameMarks';
+import { STEP_SMOOTH_GLSL, StepSmoothFlags } from '../../../graphics/frameStepSmooth';
 import { spatialUpscaleShader } from './spatialUpscale';
 import { fsrRcasShader, fsrUpscaleShader } from './fsrUpscale';
 import { ScalefxUpscale } from './scalefxUpscale';
@@ -115,6 +117,16 @@ interface FrameBackend {
    * inside its draw (8 to 125 ms measured), which is the frame the HD view replaces the original picture in.
    */
   prepareTransparentKey(): void;
+  /**
+   * Sharp art for fixed native marks in the keyed picture (src/graphics/frameMarks.ts); null keeps every native mark.
+   * Applies only on the keyed path; failures restore the native marks of that picture and disable the art.
+   */
+  setMarkArt(art: FrameMarkArt | null): void;
+  /**
+   * Smooth the stair steps of thin diagonal marks in the keyed picture (src/graphics/frameStepSmooth.ts). Applies only
+   * to 16-bit pictures on the keyed path; pixels without a diagonal step keep their exact nearest-sampled output.
+   */
+  setMarkSmoothing(on: boolean): void;
   draw(
     frame: VmFrame,
     targetWidth: number,
@@ -122,6 +134,12 @@ interface FrameBackend {
     cursorPresentation?: VmCursorPresentation,
     cursorFrame?: VmFrame,
   ): void;
+}
+
+/** Validated mark templates and their decoded atlas; the caller keeps the bitmap alive while it is set. */
+export interface FrameMarkArt {
+  set: FrameMarkSet;
+  atlas: TexImageSource;
 }
 
 /**
@@ -172,6 +190,8 @@ export function createVmFrameRenderer(
   let transparentKey: FrameKey | null = null;
   let transparentRects: readonly FrameRect[] = [];
   let smoothRect: FrameRect | null = null;
+  let markArt: FrameMarkArt | null = null;
+  let markSmoothing = false;
   return {
     get backend() {
       return backend.backend;
@@ -202,6 +222,8 @@ export function createVmFrameRenderer(
       replacement.setTransparentKey(transparentKey);
       replacement.setTransparentRects(transparentRects);
       replacement.setSmoothRect(smoothRect);
+      replacement.setMarkArt(markArt);
+      replacement.setMarkSmoothing(markSmoothing);
       backend.destroy();
       backend = replacement;
       mode = next;
@@ -232,6 +254,14 @@ export function createVmFrameRenderer(
     },
     prepareTransparentKey() {
       if (!destroyed) backend.prepareTransparentKey();
+    },
+    setMarkArt(art) {
+      markArt = art;
+      if (!destroyed) backend.setMarkArt(art);
+    },
+    setMarkSmoothing(on) {
+      markSmoothing = on;
+      if (!destroyed) backend.setMarkSmoothing(on);
     },
     draw(...args) {
       if (!destroyed) backend.draw(...args);
@@ -297,6 +327,14 @@ class WebGlIndexedFrameRenderer implements FrameBackend {
   private overlayPass: FrameOverlayPass | null = null;
   private overlaySource: VmFrame | null = null;
   private overlayPicture: VmFrame | null = null;
+  private markPass: FrameMarkPass | null = null;
+  private markReplacer: FrameMarkReplacer | null = null;
+  private markSource: VmFrame | null = null;
+  private markPicture: { frame: VmFrame; vertices: Float32Array } | null = null;
+  private markCount = -1;
+  private markSmoothing = false;
+  private stepFlags: StepSmoothFlags | null = null;
+  private stepFlagSource: { frame: VmFrame; rect: string; key: number } | null = null;
 
   get upscaleStatus(): string | null {
     return this.ai?.status ?? (this.spatialUpscale || this.fsr || this.scalefx ? this.spatialStatus : null);
@@ -537,7 +575,9 @@ class WebGlIndexedFrameRenderer implements FrameBackend {
     const { gl } = this;
     if (this.transparentKey) {
       const replacement = this.prepareOverlay(frame);
-      this.drawKeyed(replacement ?? frame, this.transparentKey, targetWidth, targetHeight);
+      const marked = this.prepareMarks(replacement ?? frame, this.transparentKey);
+      this.drawKeyed(marked?.frame ?? replacement ?? frame, this.transparentKey, targetWidth, targetHeight);
+      let native = false;
       if (replacement) {
         try {
           this.overlayPass!.draw();
@@ -545,6 +585,24 @@ class WebGlIndexedFrameRenderer implements FrameBackend {
           // The original plane is complete even when device rendering fails after preparation.
           this.drawKeyed(frame, this.transparentKey, targetWidth, targetHeight);
           this.overlayPicture = null;
+          native = true;
+        }
+      }
+      if (marked && !native) {
+        try {
+          this.markPass!.draw(marked.vertices);
+        } catch {
+          // Restore this picture's native marks (and any validated journal replacement) and stop using the art.
+          this.drawKeyed(replacement ?? frame, this.transparentKey, targetWidth, targetHeight);
+          if (replacement) {
+            try {
+              this.overlayPass!.draw();
+            } catch {
+              this.drawKeyed(frame, this.transparentKey, targetWidth, targetHeight);
+              this.overlayPicture = null;
+            }
+          }
+          this.setMarkArt(null);
         }
       }
       this.drawSmoothRegion(frame, targetWidth, targetHeight);
@@ -627,6 +685,87 @@ class WebGlIndexedFrameRenderer implements FrameBackend {
     this.postProcess(targetWidth, targetHeight);
     this.punchTransparentRect(frame, targetWidth, targetHeight);
     this.drawCursor(frameCursor(cursorFrame), cursorFrame, cursorPresentation);
+  }
+
+  setMarkArt(art: FrameMarkArt | null): void {
+    this.markPass?.destroy();
+    this.markPass = null;
+    this.markReplacer = null;
+    this.markSource = null;
+    this.markPicture = null;
+    if (!art || this.destroyed) return this.reportMarks(-1);
+    try {
+      this.markPass = new FrameMarkPass(this.gl, art.atlas);
+      this.markReplacer = new FrameMarkReplacer(art.set);
+    } catch {
+      this.markPass = null;
+    }
+    this.reportMarks(this.markPass ? 0 : -1);
+  }
+
+  setMarkSmoothing(on: boolean): void {
+    this.markSmoothing = on;
+    if (!this.canvas.dataset) return;
+    if (on) this.canvas.dataset.markSmooth = '1';
+    else delete this.canvas.dataset.markSmooth;
+  }
+
+  /**
+   * Flags for step smoothing of this picture (bound on STEP_FLAG_UNIT), computed once per picture and key. A device
+   * failure switches smoothing off for the session and leaves the nearest output.
+   */
+  private prepareStepFlags(frame: VmFrame, key: FrameKey): boolean {
+    const { gl } = this;
+    const [x0, y0, x1, y1] = keyRectUv(key.rect, frame.width, frame.height);
+    const texels = [
+      Math.round(x0 * frame.width),
+      Math.round(y0 * frame.height),
+      Math.round(x1 * frame.width),
+      Math.round(y1 * frame.height),
+    ];
+    const rect = texels.join(',');
+    try {
+      this.stepFlags ??= new StepSmoothFlags(gl);
+      const source = this.stepFlagSource;
+      if (!source || source.frame !== frame || source.rect !== rect || source.key !== key.rgb565) {
+        this.stepFlagSource = null;
+        this.stepFlags.update(2, frame.width, frame.height, texels, key.rgb565);
+        this.stepFlagSource = { frame, rect, key: key.rgb565 };
+      }
+      this.stepFlags.bind(STEP_FLAG_UNIT);
+      return true;
+    } catch {
+      this.stepFlags?.destroy();
+      this.stepFlags = null;
+      this.stepFlagSource = null;
+      this.setMarkSmoothing(false);
+      return false;
+    }
+  }
+
+  /** The key's picture with matched marks cleared, plus their art quads; null when nothing matched. */
+  private prepareMarks(frame: VmFrame, key: FrameKey): { frame: VmFrame; vertices: Float32Array } | null {
+    if (!this.markPass || !this.markReplacer || !frame.rgb565 || frame.rgba) return null;
+    if (this.markSource === frame) return this.markPicture;
+    this.markSource = frame;
+    this.markPicture = null;
+    const clean = this.markReplacer.prepare(frame.rgb565, frame.width, frame.height, key.rect, key.rgb565 & 0xffff);
+    const matches = clean ? this.markReplacer.matches : [];
+    this.reportMarks(matches.length);
+    if (!clean) return null;
+    this.markPicture = {
+      frame: { ...frame, rgb565: clean, overlayJournal: undefined },
+      vertices: frameMarkVertices(matches, this.markReplacer.set, frame.width, frame.height),
+    };
+    return this.markPicture;
+  }
+
+  /** Development evidence: number of marks replaced in the last keyed picture (-1 off), only written on change. */
+  private reportMarks(count: number): void {
+    if (count === this.markCount || !this.canvas.dataset) return;
+    this.markCount = count;
+    if (count < 0) delete this.canvas.dataset.markArt;
+    else this.canvas.dataset.markArt = String(count);
   }
 
   private prepareOverlay(frame: VmFrame): VmFrame | null {
@@ -730,8 +869,12 @@ class WebGlIndexedFrameRenderer implements FrameBackend {
     this.uploadFrame(frame);
     this.uploadedFrame = frame;
     gl.uniform4f(entry.rect, ...keyRectUv(key.rect, frame.width, frame.height));
-    if (kind === 'rgb565') gl.uniform1ui(entry.packed, key.rgb565 & 0xffff);
-    else
+    if (kind === 'rgb565') {
+      gl.uniform1ui(entry.packed, key.rgb565 & 0xffff);
+      const smooth = this.markSmoothing && this.prepareStepFlags(frame, key);
+      gl.uniform1i(entry.smooth, smooth ? 1 : 0);
+      gl.uniform2f(entry.sourceStep, frame.width / targetWidth, frame.height / targetHeight);
+    } else
       gl.uniform3f(
         entry.rgb,
         ...(rgb565ToRgb888(key.rgb565).map((channel) => channel / 255) as [number, number, number]),
@@ -880,6 +1023,14 @@ class WebGlIndexedFrameRenderer implements FrameBackend {
     this.overlayPass = null;
     this.overlaySource = null;
     this.overlayPicture = null;
+    this.markPass?.destroy();
+    this.markPass = null;
+    this.markReplacer = null;
+    this.markSource = null;
+    this.markPicture = null;
+    this.stepFlags?.destroy();
+    this.stepFlags = null;
+    this.stepFlagSource = null;
     this.uploadedFrame = null;
     this.uploadedCursor = null;
   }
@@ -959,6 +1110,8 @@ class CanvasFrameRenderer implements FrameBackend {
   setSmoothRect(): void {}
   setTransparentKey(): void {}
   prepareTransparentKey(): void {}
+  setMarkArt(): void {}
+  setMarkSmoothing(): void {}
 
   clear(): void {
     if (this.destroyed) return;
@@ -1076,6 +1229,8 @@ interface KeyProgram {
   rect: WebGLUniformLocation | null;
   rgb: WebGLUniformLocation | null;
   packed: WebGLUniformLocation | null;
+  smooth: WebGLUniformLocation | null;
+  sourceStep: WebGLUniformLocation | null;
 }
 
 const KEY_VERTEX_SHADER = `#version 300 es
@@ -1092,7 +1247,13 @@ const KEY_VERTEX_SHADER = `#version 300 es
  * Key programs: sample exactly like the plain 1:1 programs, then output (0, 0, 0, 0) for key pixels inside keyRect.
  * Texture coordinates of pixel (x, y) lie strictly inside the texel, so `uv >= rect.xy && uv < rect.zw` selects the
  * same texels NEAREST sampling reads. 16-bit frames compare the packed value, others compare RGB888 within half a step.
+ * With `stepSmooth` set, 16-bit pixels inside keyRect whose output footprint touches a thin diagonal step are drawn as
+ * the premultiplied average of 3x3 samples of the step-smoothed 4x picture (pixels outside keyRect count as key); every
+ * other pixel keeps the plain nearest result above.
  */
+/** Texture unit of the step-smoothing flags; units 0-2 hold the picture, 3/4 the post-process and mark art. */
+const STEP_FLAG_UNIT = 5;
+
 function createKeyPrograms(gl: WebGL2RenderingContext): Record<'indexed' | 'rgba' | 'rgb565', KeyProgram> {
   const inside = 'all(greaterThanEqual(uv, keyRect.xy)) && all(lessThan(uv, keyRect.zw))';
   const sources = {
@@ -1128,13 +1289,49 @@ function createKeyPrograms(gl: WebGL2RenderingContext): Record<'indexed' | 'rgba
       uniform highp usampler2D packedFrame;
       uniform vec4 keyRect;
       uniform uint keyPacked;
+      uniform bool stepSmooth;
+      uniform vec2 sourceStep;
+      uniform highp sampler2D stepFlags;
       in vec2 uv;
       out vec4 color;
-      void main() {
-        uint p = texture(packedFrame, uv).r;
+      ivec4 keyTexels;
+      uint stepSmoothFetch(ivec2 p) {
+        if (any(lessThan(p, keyTexels.xy)) || any(greaterThanEqual(p, keyTexels.zw))) return keyPacked;
+        return texelFetch(packedFrame, p, 0).r;
+      }
+      ${STEP_SMOOTH_GLSL}
+      vec3 expand(uint p) {
         uvec3 rgb = uvec3((p >> 11u) & 31u, (p >> 5u) & 63u, p & 31u);
         rgb = (rgb << uvec3(3u, 2u, 3u)) | (rgb >> uvec3(2u, 4u, 2u));
-        color = ${inside} && p == keyPacked ? vec4(0.0) : vec4(vec3(rgb) / 255.0, 1.0);
+        return vec3(rgb) / 255.0;
+      }
+      void main() {
+        uint p = texture(packedFrame, uv).r;
+        bool inside = ${inside};
+        color = inside && p == keyPacked ? vec4(0.0) : vec4(expand(p), 1.0);
+        if (!stepSmooth || !inside) return;
+        vec2 size = vec2(textureSize(packedFrame, 0));
+        keyTexels = ivec4(round(keyRect * size.xyxy));
+        vec2 s = uv * size;
+        // Per-pixel flags (StepSmoothFlags) mark source pixels whose 3x3 neighbourhood is not flat; skip when none of
+        // the pixels under this output pixel's footprint is marked.
+        ivec2 last = textureSize(packedFrame, 0) - 1;
+        ivec2 lo = clamp(ivec2(floor(s - 0.5 * sourceStep)), ivec2(0), last);
+        ivec2 hi = clamp(ivec2(floor(s + 0.5 * sourceStep)), ivec2(0), last);
+        bool marked = false;
+        for (int y = lo.y; y <= hi.y; y++)
+          for (int x = lo.x; x <= hi.x; x++) marked = marked || texelFetch(stepFlags, ivec2(x, y), 0).r > 0.5;
+        if (!marked) return;
+        vec4 sum = vec4(0.0);
+        bool changed = false;
+        for (int y = 0; y < 3; y++)
+          for (int x = 0; x < 3; x++) {
+            vec2 at = s + (vec2(x, y) - 1.0) / 3.0 * sourceStep;
+            uint v = stepSmoothAt(at);
+            changed = changed || v != stepSmoothFetch(ivec2(floor(at)));
+            if (v != keyPacked) sum += vec4(expand(v), 1.0);
+          }
+        if (changed) color = sum / 9.0;
       }
     `,
   } as const;
@@ -1147,12 +1344,15 @@ function createKeyPrograms(gl: WebGL2RenderingContext): Record<'indexed' | 'rgba
       gl.uniform1i(gl.getUniformLocation(program, 'palette'), 1);
     } else {
       gl.uniform1i(gl.getUniformLocation(program, kind === 'rgba' ? 'rgbaFrame' : 'packedFrame'), 2);
+      if (kind === 'rgb565') gl.uniform1i(gl.getUniformLocation(program, 'stepFlags'), STEP_FLAG_UNIT);
     }
     programs[kind] = {
       program,
       rect: gl.getUniformLocation(program, 'keyRect'),
       rgb: gl.getUniformLocation(program, 'keyRgb'),
       packed: gl.getUniformLocation(program, 'keyPacked'),
+      smooth: gl.getUniformLocation(program, 'stepSmooth'),
+      sourceStep: gl.getUniformLocation(program, 'sourceStep'),
     };
   }
   return programs;

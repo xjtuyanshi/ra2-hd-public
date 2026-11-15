@@ -15,6 +15,18 @@ export const YR_UI = Object.freeze({
   sidebarArchiveNumbers: [1, 2, 2],
   tabShapes: ['tab00.shp', 'tab01.shp', 'tab02.shp', 'tab03.shp'],
   sidebarPalette: 'sidebar.pal',
+  /**
+   * Battlefield marks drawn from one shape with one palette. Rank: 0x70A990 draws [0xAC147C] (loaded from the pips
+   * shape at 0x5F770A) frame 14 for veteran and 15 for elite at the bracket corner (0x70AA4F); frame 19, a 2x2
+   * square for negative veterancy (0x74FFF0), has no diagonal and needs no art. The palette is confirmed by exact live
+   * pixel matches, not by the address alone.
+   */
+  markShape: 'pips.shp',
+  markPalette: 'palette.pal',
+  marks: [
+    { id: 'veteran', frame: 14 },
+    { id: 'elite', frame: 15 },
+  ],
 });
 
 export function yrTabStrips(install: Pick<GameInstall, 'readArchive'>): {
