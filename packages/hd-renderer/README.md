@@ -428,12 +428,15 @@ controls accept 0..1. These controls have no visual effect without the opted-in,
 `?hd=1&hd-light=beam` selects the same physical light path with the `beam` preset (`look('beam')`, round 8): the
 round-7 laser light, `chronoPool=0` and the warm, smaller flashes, but smoke exactly as Build 13 draws it. The
 preset sets `AtmosphereNodes.smokeVolume` to false, so the smoke volume and smoke-card noise graphs are not even
-built. Smoke is also lit as Build 13 lights it: real light mutes the legacy explosion, flash and fire lights in the
-shared light field (the physical field owns them), so the preset's `LightField` renders a second target,
-`smokeTarget`, with those muted lights added back, and `smokeLight` reads it while real light is on (off, the shared
-field already holds them). Without it a young plume beside a fireball lost the fireball's light and drew as a dark,
-hard-edged silhouette over the fire (live SOV07TMD, frame 225). The extra render runs only while such lights are
-alive. `nodes.smokeFieldMix` (development A/B, default 1) switches the smoke back to the shared field.
+built. Smoke and objects' legacy local light are also lit as Build 13 lights them: real light mutes the legacy
+explosion, flash and fire lights in the shared light field (the physical field owns them), so the preset's
+`LightField` renders a second target, `build13Target`, with those muted lights added back, and smoke
+(`smokeLight`), sprites (`objectLightAt`) and voxels (`objectLight` without the physical part) read it while real
+light is on through `build13FieldTexel` (off, the shared field already holds them). Ground and water keep the shared
+field plus physical light, so the warm, small ground flash stays. Without it a young plume beside a fireball, and the
+unit at a Prism volley's focus, lost the blast's light and drew as dark, hard-edged shapes over the fire (live
+SOV07TMD, frame 225). The extra render runs only while such lights are alive. `nodes.build13FieldMix` (development
+A/B, default 1) switches smoke and objects back to the shared field.
 Four laser controls (all inert, i.e. `1/0/0/0`, in `cur` and `new`):
 
 - `beamOverbright=1.64`: the glow takes the hue the original shows at the beam centre. The original adds the house

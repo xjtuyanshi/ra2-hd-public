@@ -165,7 +165,7 @@ describe('round 8: hd-light=beam preset', () => {
 
   it('lights smoke from a Build 13 mirror of the light field while real light mutes the legacy event lights', () => {
     const nodes = new AtmosphereNodes({ realLight: true, lightPreset: 'beam' });
-    const field = new LightField(8, 8, { nodes, smokeMirror: true });
+    const field = new LightField(8, 8, { nodes, build13Mirror: true });
     const draws: { target: unknown; count: number }[] = [];
     let target: unknown = null;
     const dyn = (field as unknown as { dynamics: { mesh: { count: number } } }).dynamics;
@@ -176,8 +176,8 @@ describe('round 8: hd-light=beam preset', () => {
       setRenderTarget: (t: unknown) => (target = t),
       render: () => draws.push({ target, count: dyn.mesh.count }),
     } as unknown as WebGPURenderer;
-    expect(field.smokeTarget).toBeDefined();
-    expect(nodes.smokeFieldTexture.value).toBe(field.smokeTarget!.texture);
+    expect(field.build13Target).toBeDefined();
+    expect(nodes.build13FieldTexture.value).toBe(field.build13Target!.texture);
     field.source('window', 0, { x: 2, z: 2, radius: 2, colour: [0.5, 0.3, 0.1] });
     field.pulse(0, new Vector3(1, 0, 1), [1, 0.7, 0.4], 2, 1, 0.3, 0, 'explosion');
     field.pulse(0, new Vector3(1, 0, 1), [0.4, 0.4, 1], 1, 1, 0.2, 0, 'flash');
@@ -186,7 +186,7 @@ describe('round 8: hd-light=beam preset', () => {
     // The shared field keeps only the source (the physical field owns the events); the smoke mirror has all four.
     expect(draws).toEqual([
       { target: field.target, count: 1 },
-      { target: field.smokeTarget, count: 4 },
+      { target: field.build13Target, count: 4 },
     ]);
     // Once everything is over both are drawn once more (to clear them), then not again until something changes.
     draws.length = 0;
@@ -194,7 +194,7 @@ describe('round 8: hd-light=beam preset', () => {
     field.update(5.1, r, 1);
     expect(draws).toEqual([
       { target: field.target, count: 0 },
-      { target: field.smokeTarget, count: 0 },
+      { target: field.build13Target, count: 0 },
     ]);
     // Real light off: the shared field is Build 13's again and no mirror is drawn.
     nodes.realLight!.enabled.value = 0;
@@ -204,7 +204,7 @@ describe('round 8: hd-light=beam preset', () => {
     expect(draws).toEqual([{ target: field.target, count: 1 }]);
     // Without the option (hd-light=1, no real light) smoke samples the shared field.
     const plain = new LightField(8, 8, { nodes: new AtmosphereNodes({ realLight: true }) });
-    expect(plain.smokeTarget).toBeUndefined();
+    expect(plain.build13Target).toBeUndefined();
     field.dispose();
     plain.dispose();
     nodes.dispose();

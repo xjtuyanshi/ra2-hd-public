@@ -58,10 +58,13 @@ export class AtmosphereNodes extends SceneLightingUniforms {
   private readonly black = new DataTexture(new Float32Array(4), 1, 1, RGBAFormat, FloatType);
   private readonly noSurface = new DataTexture(new Uint8Array(2), 1, 1, RGFormat, UnsignedByteType);
   readonly lightFieldTexture = texture(this.black);
-  /** The light field as Build 13 draws it, for smoke under hd-light=beam (LightField.smokeTarget); else the field. */
-  readonly smokeFieldTexture = texture(this.black);
-  /** Development A/B only (same-frame review): 0 lights hd-light=beam smoke from the shared field instead. */
-  readonly smokeFieldMix = uniform(1);
+  /**
+   * The light field as Build 13 draws it (LightField.build13Target), read by smoke and by objects' legacy local light
+   * under hd-light=beam; the shared field otherwise.
+   */
+  readonly build13FieldTexture = texture(this.black);
+  /** Development A/B only (same-frame review): 0 lights hd-light=beam smoke and objects from the shared field. */
+  readonly build13FieldMix = uniform(1);
   readonly lightFieldSize = uniform(new Vector2(1, 1));
   readonly lightFieldScale = uniform(1);
   readonly surfaceTexture = texture(this.noSurface);
@@ -108,8 +111,8 @@ export class AtmosphereNodes extends SceneLightingUniforms {
     this.weatherSunShare.value = source.weatherSunShare.value;
     this.referenceLevel.value = source.referenceLevel.value;
     this.lightFieldTexture.value = source.lightFieldTexture.value;
-    this.smokeFieldTexture.value = source.smokeFieldTexture.value;
-    this.smokeFieldMix.value = source.smokeFieldMix.value;
+    this.build13FieldTexture.value = source.build13FieldTexture.value;
+    this.build13FieldMix.value = source.build13FieldMix.value;
     this.lightFieldSize.value.copy(source.lightFieldSize.value);
     this.lightFieldScale.value = source.lightFieldScale.value;
     this.surfaceTexture.value = source.surfaceTexture.value;
@@ -201,6 +204,18 @@ export function objectMoonlit(colour: ShaderNode, paint: ShaderNode, nodes: Atmo
 /** Unmodified legacy field: static sources remain present under the physical toggle. */
 export function legacyLightField(xz: ShaderNode, nodes = DEFAULT_ATMOSPHERE_NODES): ShaderNode {
   return texture(nodes.lightFieldTexture, xz.div(nodes.lightFieldSize)).rgb.mul(nodes.lightFieldScale);
+}
+/**
+ * Raw field texel (alpha: ground-only share) for smoke and objects' legacy local light. Under hd-light=beam (real light
+ * without the round-7 smoke volume) it is Build 13's field while real light is on: real light mutes the legacy
+ * explosion, flash and fire lights in the shared field, and without them a unit at a Prism volley's focus drew as a
+ * dark, hard-edged shape over the blast where Build 13 shows it lit by the blast (live SOV07TMD frame 225). Ground
+ * and water keep the shared field plus physical light, so the warm, small ground flash stays.
+ */
+export function build13FieldTexel(uv: ShaderNode, nodes: AtmosphereNodes): ShaderNode {
+  const shared: ShaderNode = texture(nodes.lightFieldTexture, uv);
+  if (!nodes.realLight || nodes.smokeVolume) return shared;
+  return mix(shared, texture(nodes.build13FieldTexture, uv), nodes.realLight.enabled.mul(nodes.build13FieldMix));
 }
 /** Participating media and water retain static light and add dynamic irradiance. */
 export function sampleLightField(xz: ShaderNode, nodes = DEFAULT_ATMOSPHERE_NODES, height?: ShaderNode): ShaderNode {
@@ -363,7 +378,10 @@ export function objectLight(
   height?: ShaderNode,
   includePhysical = true,
 ): ShaderNode {
-  const lf: ShaderNode = includePhysical ? sampleLightField(xz, nodes, height) : legacyLightField(xz, nodes);
+  // Without the physical part (the legacy local term of voxels and smoke) objects read Build 13's field (see above).
+  const lf: ShaderNode = includePhysical
+    ? sampleLightField(xz, nodes, height)
+    : build13FieldTexel(xz.div(nodes.lightFieldSize), nodes).rgb.mul(nodes.lightFieldScale);
   const l: ShaderNode = luminance(lf);
   const legacy = mix(vec3(l, l, l), lf, float(OBJECT_TINT));
   return nodes.realLight && includePhysical ? mix(legacy, lf, nodes.realLight.enabled) : legacy;
@@ -378,17 +396,9 @@ export function objectLight(
 export function smokeLight(xz: ShaderNode, nodes: AtmosphereNodes, height: ShaderNode, normal: ShaderNode): ShaderNode {
   const legacy = objectLight(xz, nodes, height);
   if (!nodes.realLight) return legacy;
-  if (!nodes.smokeVolume) {
-    // hd-light=beam: Build 13's smoke light, objectLight of the legacy field including the explosion and fire lights
-    // that real light mutes in the shared field (LightField.smokeTarget). Off, the shared field already holds them.
-    const lf: ShaderNode = mix(
-      legacyLightField(xz, nodes),
-      texture(nodes.smokeFieldTexture, xz.div(nodes.lightFieldSize)).rgb.mul(nodes.lightFieldScale),
-      nodes.realLight.enabled.mul(nodes.smokeFieldMix),
-    );
-    const l: ShaderNode = luminance(lf);
-    return mix(vec3(l, l, l), lf, float(OBJECT_TINT));
-  }
+  // hd-light=beam: Build 13's smoke light, objectLight of Build 13's field (the explosion and fire lights real light
+  // mutes in the shared field included; see build13FieldTexel), without the physical fill.
+  if (!nodes.smokeVolume) return objectLight(xz, nodes, height, false);
   const e = physicalSurfaceLight(nodes, xz, height, normal, OBJECT_KNEE).div(nodes.referenceLevel);
   const peak = max(e.r, max(e.g, e.b));
   const neutral = mix(vec3(peak), e, 0.1);
@@ -424,8 +434,8 @@ export function objectLightAt(
 ): ShaderNode {
   const share = (sample: ShaderNode, rgb: ShaderNode): ShaderNode =>
     clamp(sample.a.mul(nodes.lightFieldScale).div(max(luminance(rgb), 1e-4)), 0, 1).mul(building);
-  const front: ShaderNode = texture(nodes.lightFieldTexture, xz.div(nodes.lightFieldSize));
-  const inside: ShaderNode = texture(nodes.lightFieldTexture, own.div(nodes.lightFieldSize));
+  const front: ShaderNode = build13FieldTexel(xz.div(nodes.lightFieldSize), nodes);
+  const inside: ShaderNode = build13FieldTexel(own.div(nodes.lightFieldSize), nodes);
   const frontRgb: ShaderNode = front.rgb.mul(nodes.lightFieldScale);
   const insideRgb: ShaderNode = inside.rgb.mul(nodes.lightFieldScale);
   const lf: ShaderNode = frontRgb

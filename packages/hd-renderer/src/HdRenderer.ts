@@ -1091,7 +1091,7 @@ export class HdRenderer {
       halfFloat: LightField.supportsHalfFloat(this.renderer),
       nodes: this.nodes,
       // hd-light=beam keeps Build 13's smoke, including the explosion and fire light on it (see smokeLight).
-      smokeMirror: !!this.nodes.realLight && !this.nodes.smokeVolume,
+      build13Mirror: !!this.nodes.realLight && !this.nodes.smokeVolume,
     });
     if (this.nodes.realLight)
       this.realLightField = new RealLightField(

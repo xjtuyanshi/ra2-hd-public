@@ -219,12 +219,12 @@ export class LightField {
 
   readonly target: RenderTarget;
   /**
-   * hd-light=beam only (options.smokeMirror): the field exactly as Build 13 draws it, i.e. with the legacy explosion,
+   * hd-light=beam only (options.build13Mirror): the field exactly as Build 13 draws it, i.e. with the legacy explosion,
    * flash and fire lights that real light mutes in `target` (the physical field owns them there). Smoke reads it so its
    * light stays Build 13's: without it, a young plume beside a fireball lost the fireball's light and drew as a dark,
    * hard-edged silhouette over the fire (live SOV07TMD frame 225). Rendered only while real light is on.
    */
-  readonly smokeTarget?: RenderTarget;
+  readonly build13Target?: RenderTarget;
   private lastMirrored = 0;
   readonly texelsPerCell: number;
   /** Values are stored divided by this (8-bit fallback targets). */
@@ -265,7 +265,7 @@ export class LightField {
   constructor(
     readonly width: number,
     readonly height: number,
-    options: { halfFloat?: boolean; nodes?: AtmosphereNodes; smokeMirror?: boolean } = {},
+    options: { halfFloat?: boolean; nodes?: AtmosphereNodes; build13Mirror?: boolean } = {},
   ) {
     this.texelsPerCell = Math.max(1, Math.min(8, Math.floor(2048 / Math.max(width, height))));
     const halfFloat = options.halfFloat ?? true;
@@ -279,7 +279,7 @@ export class LightField {
         magFilter: LinearFilter,
       });
     this.target = fieldTarget();
-    if (options.smokeMirror) this.smokeTarget = fieldTarget();
+    if (options.build13Mirror) this.build13Target = fieldTarget();
     // three samples render targets with uv (0, 0) at the top of the rendered image on both backends (WebGPU natively,
     // WebGL through TextureNode's runtime flip of render-target textures), while consumers address the field with
     // uv = world xz / size. So world z = 0 must be rendered at the top: top = 0, bottom = height. With the usual
@@ -311,7 +311,7 @@ export class LightField {
 
     const nodes = (this.nodes = options.nodes ?? DEFAULT_ATMOSPHERE_NODES);
     nodes.lightFieldTexture.value = this.target.texture;
-    nodes.smokeFieldTexture.value = (this.smokeTarget ?? this.target).texture;
+    nodes.build13FieldTexture.value = (this.build13Target ?? this.target).texture;
     nodes.lightFieldSize.value.set(width, height);
     nodes.lightFieldScale.value = this.encodeScale;
   }
@@ -633,7 +633,7 @@ export class LightField {
     this.lastDynamic = n;
     // The smoke mirror adds the muted legacy lights after the ones drawn above (same instances, same order).
     let m = n;
-    if (this.smokeTarget && physical) {
+    if (this.build13Target && physical) {
       for (const pool of ['explosion', 'flash'] as const)
         for (const p of this.mutedPulses[pool]) {
           const k = LightField.pulseIntensity(p, now);
@@ -648,7 +648,7 @@ export class LightField {
         this.writeLight(dyn, m++, f.x, f.z, f.radius, SHAPE_POOL, f.colour, k, f.flicker, f.seed);
       }
     }
-    const mirror = !!this.smokeTarget && physical && (needs || m > n || this.lastMirrored > 0);
+    const mirror = !!this.build13Target && physical && (needs || m > n || this.lastMirrored > 0);
     this.lastMirrored = mirror ? m - n : 0;
     if (!needs && !mirror) return false;
     const previous = renderer.getRenderTarget();
@@ -670,7 +670,7 @@ export class LightField {
       if (m > 0) this.commit(dyn, m);
       dyn.mesh.count = m;
       dyn.mesh.visible = m > 0;
-      renderer.setRenderTarget(this.smokeTarget!);
+      renderer.setRenderTarget(this.build13Target!);
       renderer.render(this.scene, this.camera);
       this.mirrorRenders++;
     }
@@ -747,7 +747,7 @@ export class LightField {
 
   dispose(): void {
     this.target.dispose();
-    this.smokeTarget?.dispose();
+    this.build13Target?.dispose();
     this.baseTexture.dispose();
     this.scene.traverse((object) => {
       if (object instanceof Mesh) {
