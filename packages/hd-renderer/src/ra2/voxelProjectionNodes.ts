@@ -59,7 +59,9 @@ export function projectedVoxelColour(
   currentLight: ShaderNode,
   gains: VoxelLookGains,
   basis?: ProjectionBasis,
-): { colour: ShaderNode; albedo: ShaderNode; coverage: ShaderNode; paint: ShaderNode } {
+): { colour: ShaderNode; albedo: ShaderNode; coverage: ShaderNode; paint: ShaderNode; formLight: ShaderNode } {
+  // 0 for pages with baked form light: every mesh form term below (and the caller's formAO) scales by it.
+  const formLight: ShaderNode = float(1).sub(part.baked.clamp());
   const matrix = basis?.matrix ?? modelWorldMatrix;
   const axis: ShaderNode = matrix.mul(vec4(1, 0, 0, 0)).xyz;
   const theta: ShaderNode = axis.z.negate().atan(axis.x).toVar();
@@ -140,7 +142,7 @@ export function projectedVoxelColour(
     )
       .mul(state.paintSpec.max(0))
       .mul(highlightGain);
-    house = house.mul(mix(1, shade, state.paintShade.clamp())).add(glint);
+    house = house.mul(mix(1, shade, state.paintShade.clamp().mul(formLight))).add(glint.mul(formLight));
     colour = mix(colour, house, mask);
   }
   // Form light from the smooth mesh on the whole redraw (house paint already has its own shade above).
@@ -150,20 +152,23 @@ export function projectedVoxelColour(
     .mul(gains.sunGain)
     .add(0.3)
     .div(0.3 + 0.8 * 0.65);
-  colour = colour.mul(mix(1, form, state.formShade.clamp().mul(float(1).sub(mask))));
+  colour = colour.mul(mix(1, form, state.formShade.clamp().mul(float(1).sub(mask)).mul(formLight)));
   const luma: ShaderNode = colour
     .dot(vec3(0.2126, 0.7152, 0.0722))
     .max(1e-4)
     .toVar();
   // Shadows take the full power, highlights about a third of it: the redraws are bright, and a symmetric power
   // pushed light hulls to clipped white; the glint below supplies the bright edges instead.
-  const power: ShaderNode = state.contrast.sub(1).mul(mix(1, 0.35, step(0.18, luma)));
+  const power: ShaderNode = state.contrast
+    .sub(1)
+    .mul(mix(1, 0.35, step(0.18, luma)))
+    .mul(formLight);
   colour = colour.mul(pow(luma.div(0.18), power));
   const eye: ShaderNode = cameraWorldMatrix.mul(vec4(0, 0, 1, 0)).xyz.normalize();
   const sheen: ShaderNode = pow(max(n.dot(currentLight.add(eye).normalize()), 0), highlightExponent(24, highlightGain))
     .mul(smoothstep(0.03, 0.35, luma))
     .mul(step(1e-4, lit))
-    .mul(state.spec.max(0))
+    .mul(state.spec.max(0).mul(formLight))
     .mul(highlightGain);
   colour = colour.add(vec3(1, 0.97, 0.92).mul(sheen));
   const ratio: ShaderNode = max(n.dot(currentLight), 0)
@@ -177,14 +182,18 @@ export function projectedVoxelColour(
     .dot(vec3(0.2126, 0.7152, 0.0722))
     .max(1e-4)
     .toVar();
-  const albedoPower: ShaderNode = state.contrast.sub(1).mul(mix(1, 0.35, step(0.18, albedoLuma)));
+  const albedoPower: ShaderNode = state.contrast
+    .sub(1)
+    .mul(mix(1, 0.35, step(0.18, albedoLuma)))
+    .mul(formLight);
   albedo = albedo.mul(pow(albedoLuma.div(0.18), albedoPower));
   const albedoGrey: ShaderNode = albedo.dot(vec3(0.2126, 0.7152, 0.0722));
   albedo = mix(vec3(albedoGrey), albedo, state.saturation).max(0).mul(state.gain);
   return {
-    colour: colour.mul(mix(1, ratio, state.relight.clamp())),
+    colour: colour.mul(mix(1, ratio, state.relight.clamp().mul(formLight))),
     albedo,
     coverage: coverage.mul(state.strength.clamp()),
     paint: house ? mask : float(0),
+    formLight,
   };
 }

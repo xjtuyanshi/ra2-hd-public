@@ -570,7 +570,10 @@ function createGraph(
       gains,
     );
     const projState = voxelProjectionFor(nodes);
-    const formAo: ShaderNode = poweredOcclusion(float(1).sub(occlusion.mul(projState.formAO.clamp())), gains.aoPower);
+    const formAo: ShaderNode = poweredOcclusion(
+      float(1).sub(occlusion.mul(projState.formAO.clamp().mul(projected.formLight))),
+      gains.aoPower,
+    );
     const colour: ShaderNode = srgbScale(projected.colour, level.div(projState.levelRef.max(0.01))).mul(formAo);
     const projectedScene: ShaderNode = nodes.alive.shade(
       sceneLitColour(mix(moonlit(colour, nodes), colour, projected.paint).mul(voxelFill), nodes.sceneObjectMul),
@@ -631,7 +634,10 @@ function createGraph(
         gains,
         { matrix: sourceMatrix, position: positionGeometry, normal: sourceNormal },
       );
-      const formAo: ShaderNode = poweredOcclusion(float(1).sub(occlusion.mul(projState.formAO.clamp())), gains.aoPower);
+      const formAo: ShaderNode = poweredOcclusion(
+        float(1).sub(occlusion.mul(projState.formAO.clamp().mul(projected.formLight))),
+        gains.aoPower,
+      );
       const projectionLevel: ShaderNode = sourceLevel.div(projState.levelRef.max(0.01));
       const projectedAlbedo: ShaderNode = srgbScale(projected.albedo, projectionLevel).mul(formAo);
       const projectedLit: ShaderNode = srgbScale(projected.colour, projectionLevel).mul(formAo);
