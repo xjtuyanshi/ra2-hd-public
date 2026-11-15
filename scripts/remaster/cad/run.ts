@@ -1,5 +1,5 @@
 /** One offline command: discover -> export -> propose -> refine -> render -> hash delivery manifest. */
-import { readFile, writeFile } from 'node:fs/promises';
+import { readFile, writeFile, readdir } from 'node:fs/promises';
 import { resolve, dirname, join, relative, isAbsolute, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
@@ -8,7 +8,8 @@ import type { VoxelModel } from '../../../packages/ra2-assets/src/manifest';
 import { decodePng } from '../../../packages/ra2-assets/src/node/png';
 import { hardSurfaceSolid, type Vec3 } from '../../../packages/hd-renderer/src/hardSurfaceSolid';
 import { buildPart, type HardSurfaceSpec } from '../../../packages/hd-renderer/src/hardSurfaceMesh';
-import { proposeHardSurface } from '../../../packages/hd-renderer/src/hardSurfacePropose';
+import { occupiedCells, proposeHardSurface } from '../../../packages/hd-renderer/src/hardSurfacePropose';
+import { tubeLanes } from '../../../packages/hd-renderer/src/hardSurfaceTube';
 import { refineHardSurface, type RefinementResult } from '../../../packages/hd-renderer/src/hardSurfaceRefine';
 import {
   compareSilhouettes,
@@ -45,6 +46,7 @@ for (let i = 0; i < args.length; i++) {
       '--seconds',
       '--python',
       '--font',
+      '--cell',
     ].includes(k) ||
     !args[i + 1] ||
     args[i + 1].startsWith('--')
@@ -71,6 +73,30 @@ const started = performance.now(),
   here = dirname(fileURLToPath(import.meta.url)),
   repo = resolve(here, '../../..');
 const out = await externalOutputDirectory(flags.get('--out')!, repo);
+const git = (...args: string[]) => {
+  const result = spawnSync('git', args, { cwd: repo, encoding: 'utf8' });
+  if (result.status !== 0) throw new Error(`Cannot capture source provenance: ${result.stderr}`);
+  return result.stdout.trim();
+};
+const revision = git('rev-parse', 'HEAD'),
+  sourceStatus = git('status', '--porcelain');
+const sourceFiles = [
+  ...(await readdir(join(repo, 'packages/hd-renderer/src')))
+    .filter((p) => p.startsWith('hardSurface') && p.endsWith('.ts'))
+    .map((p) => `packages/hd-renderer/src/${p}`),
+  ...(await readdir(here)).filter((p) => /\.(ts|py)$/.test(p)).map((p) => `scripts/remaster/cad/${p}`),
+  'packages/hd-renderer/src/ra2/voxelSectionFrame.ts',
+  'packages/hd-renderer/src/ra2/voxels.ts',
+  'packages/hd-renderer/src/ra2/voxelCleanModel.ts',
+  'packages/hd-renderer/src/ra2/voxelPaintPolicy.ts',
+  'packages/hd-renderer/src/ra2/hardSurfaceLook.ts',
+  'packages/hd-renderer/src/voxelPaint.ts',
+].sort();
+const snapshotSources = async () =>
+  Object.fromEntries(
+    await Promise.all(sourceFiles.map(async (name) => [name, sha256(await readFile(join(repo, name)))])),
+  );
+const sourceHashes = await snapshotSources();
 const json = (value: unknown) =>
   JSON.stringify(
     value,
@@ -83,6 +109,7 @@ const json = (value: unknown) =>
     1,
   ) + '\n';
 const save = async (name: string, value: unknown) => writeFile(join(out, name), json(value));
+await save('source_snapshot.json', { revision, sourceStatus, hashes: sourceHashes, capturedAt: date });
 const log = async (message: string) => {
   const line = `${new Date().toISOString()} ${message}\n`;
   process.stdout.write(line);
@@ -206,11 +233,17 @@ for (const part of model.parts) {
     await log(`Exported ${key}: ${section.size.join('x')}, transform error ${maxTransformError}`);
     if (booleans.has('--export-only')) continue;
     const fitStart = performance.now();
-    const proposed = proposeHardSurface(solid, { category: categories[part.role], budget: sectionBudget });
+    const tubes = part.role === 'barrel' ? tubeLanes(occupiedCells(solid)).length : 0;
+    const proposed = proposeHardSurface(solid, {
+      category: categories[part.role],
+      budget: tubes ? 3 * tubes : sectionBudget,
+      ...(tubes ? { primitivesPerTube: 3 } : {}),
+      ...(part.role === 'turret' ? { minSlopeSteps: 2 } : {}),
+    });
     proposals[key] = proposed;
     timings[`propose:${key}`] = performance.now() - fitStart;
     await log(
-      `Proposed ${key}: ${proposed.regions.length} broad regions; mirror at ${proposed.symmetry.at}, IoU ${proposed.symmetry.iou.toFixed(5)}`,
+      `Proposed ${key}: ${proposed.regions.length} broad regions; budget=${proposed.options.budget}; tubes=${tubes}; mirror at ${proposed.symmetry.at}, IoU ${proposed.symmetry.iou.toFixed(5)}`,
     );
     // Checkpoint every formal evaluation, including rejected candidates; a timeout must leave a usable selection.
     const result = refineHardSurface(solid, proposed, views, {
@@ -302,6 +335,7 @@ if (!booleans.has('--export-only')) {
       '--output',
       out,
       ...(flags.has('--font') ? ['--font', flags.get('--font')!] : []),
+      ...(flags.has('--cell') ? ['--cell', String(numeric('--cell', 190))] : []),
     ];
     const rendered = spawnSync(flags.get('--python') ?? 'python3', argv, { stdio: 'inherit' });
     if (rendered.status !== 0) throw new Error(`Offline render failed: ${rendered.error ?? rendered.status}`);
@@ -314,7 +348,7 @@ if (!booleans.has('--export-only')) {
     .join('\n');
   await writeFile(
     join(out, 'REPORT.md'),
-    `# ${model.id} 自动 CAD 测量\n\n数值验收：**${assembledPass && Object.values(results).every((r) => r.result.pass) ? 'PASS' : 'FAIL'}**。视觉验收：**UNVERIFIED，需实际打开 1×、2× 板检查**。运行时验收：**UNVERIFIED，本工具仅离线运行**。\n\n| 部件 | 展开原语 | voxel→CAD p99 | CAD→voxel p99 | 最低八向 IoU | 停止原因 |\n| --- | ---: | ---: | ---: | ---: | --- |\n${summary}\n\n门槛：双向 p99 ≤ 0.85，各部件及整车每向 IoU ≥ 0.97；预算 body/turret/barrel = 130/35/3；没有 exact/cuboid-cover 回退。Infinity 表示正式采样未找到邻点，属于失败，不计作零误差。\n\n[1× 对比板](board_当前_新.png)、[2× 对比板](board_当前_新_2x.png)、[八向转台](turntable_8.png)、[全部指标](metrics.txt)、[逐次候选](evaluations.jsonl)、[工时](HOURS.md)、[交付清单](manifest.json)。\n\n当前图来自此 checkout 的 buildStandInPartGeometry，同相机与光照下离线重绘；新图使用正式 buildPart 网格。房屋色来自 --house ${houseArg}，RGB = ${house.join(', ')}，mask 来自源索引 16–31；中性色没有冒称为实机盟军默认色。几何分区、镜像轴、源涂装均自动推导；没有输入本车手工坐标。\n\n源缓存 SHA-256：${sha256(sourceBytes)}。自动阶段时长见 timing.json；工具开发与作者视觉审核应另记，不能计成零人工总工时。\n`,
+    `# ${model.id} 自动 CAD 测量\n\n数值验收：**${assembledPass && Object.values(results).every((r) => r.result.pass) ? 'PASS' : 'FAIL'}**。视觉验收：**UNVERIFIED，需实际打开 1×、2× 板检查**。运行时验收：**UNVERIFIED，本工具仅离线运行**。\n\n| 部件 | 展开原语 | voxel→CAD p99 | CAD→voxel p99 | 最低八向 IoU | 停止原因 |\n| --- | ---: | ---: | ---: | ---: | --- |\n${summary}\n\n门槛：双向 p99 ≤ 0.85，各部件及整车每向 IoU ≥ 0.97；预算 body ≤130、turret ≤35、barrel 每根 ≤3（按检测到的管数独立计数）；没有 exact/cuboid-cover 回退。Infinity 表示正式采样未找到邻点，属于失败，不计作零误差。\n\n[1× 对比板](board_当前_新.png)、[2× 对比板](board_当前_新_2x.png)、[八向转台](turntable_8.png)、[全部指标](metrics.txt)、[逐次候选](evaluations.jsonl)、[工时](HOURS.md)、[交付清单](manifest.json)。\n\n当前图来自此 checkout 的 buildStandInPartGeometry，同相机与光照下离线重绘；新图使用正式 buildPart 网格。房屋色来自 --house ${houseArg}，RGB = ${house.join(', ')}，mask 来自源索引 16–31；中性色没有冒称为实机盟军默认色。几何分区、镜像轴、源涂装均自动推导；没有输入本车手工坐标。\n\n源缓存 SHA-256：${sha256(sourceBytes)}。自动阶段时长见 timing.json；工具开发与作者视觉审核应另记，不能计成零人工总工时。\n`,
   );
 }
 await save('timing.json', {
@@ -336,13 +370,15 @@ await writeFile(
     )}\n\nNo model-specific coordinates or seed decisions were supplied to this run. Tool development, diagnosis, run selection and visual review are external hand-directed work and must be recorded separately; this file does not establish zero human labour. Elapsed includes serial computation, not active human typing.\n`,
 );
 await log('Automatic delivery complete; visual acceptance remains a separate gate');
-const revision = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).stdout.trim();
+const finalHashes = await snapshotSources();
 await writeDeliveryManifest(out, {
   version: 1,
   generatedAt: new Date().toISOString(),
   model: model.id,
   sourceSha256: sha256(sourceBytes),
   revision,
+  sourceStatusAtStart: sourceStatus,
+  sourceFilesChangedDuringRun: sourceFiles.filter((name) => sourceHashes[name] !== finalHashes[name]),
   command: process.argv.slice(2),
   colour,
   metricPass: assembledPass && Object.values(results).length > 0 && Object.values(results).every((r) => r.result.pass),

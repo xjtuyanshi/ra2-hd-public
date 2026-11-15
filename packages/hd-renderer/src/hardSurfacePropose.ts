@@ -1,6 +1,7 @@
 import { directions, fitPoly, tuneOffsets } from './hardSurfaceFit';
 import { dot, polytopeFaces, type PartSpec, type Plane, type Primitive } from './hardSurfaceMesh';
 import { forCells, gridCell, gridIndex, validateGrid, type Axis, type SolidGrid, type Vec3 } from './hardSurfaceSolid';
+import { tubeLanes, tubeSegments } from './hardSurfaceTube';
 
 export type RegionKind =
   'hull' | 'track-guard' | 'glacis' | 'rear-deck' | 'turret' | 'mantlet' | 'barrel' | 'wheel' | 'drum';
@@ -22,6 +23,9 @@ export interface ProposalOptions {
   extraRatios?: [number, number][];
   chamfer?: number;
   tunePlanes?: boolean;
+  tubeAxis?: Axis;
+  primitivesPerTube?: number;
+  minSlopeSteps?: number;
 }
 export interface SymmetryEvidence {
   axis: Axis;
@@ -34,6 +38,49 @@ export interface RegionModel {
   symmetry: SymmetryEvidence;
   part: PartSpec;
   options: ProposalOptions;
+}
+
+/** Pair only exactly reflected source regions. Asymmetric details remain independent. */
+export function mirrorRegionPairs(regions: readonly RegionProposal[], symmetry: SymmetryEvidence): Map<number, number> {
+  const axis = 'xyz'.indexOf(symmetry.axis),
+    out = new Map<number, number>();
+  const reflected = (p: Vec3) => p.map((v, a) => (a === axis ? 2 * symmetry.at - v - 1 : v)).join(',');
+  for (let i = 0; i < regions.length; i++) {
+    if (out.has(i)) continue;
+    const r = regions[i],
+      cells = new Set(r.cells.map(reflected));
+    for (let j = i + 1; j < regions.length; j++) {
+      if (out.has(j) || regions[j].cells.length !== cells.size) continue;
+      if (regions[j].cells.every((p) => cells.has(p.join(',')))) {
+        out.set(i, j);
+        out.set(j, i);
+        break;
+      }
+    }
+  }
+  return out;
+}
+export function reflectPrimitive(primitive: Primitive, symmetry: SymmetryEvidence): Primitive {
+  const q = structuredClone(primitive),
+    a = 'xyz'.indexOf(symmetry.axis);
+  const reflectPlanes = (planes: Plane[]) =>
+    planes.map((p) => {
+      const n = [...p] as Plane;
+      n[a] = -n[a];
+      n[3] -= 2 * symmetry.at * p[a];
+      return n;
+    });
+  if (q.type === 'poly') q.planes = reflectPlanes(q.planes);
+  else {
+    if (q.cuts) q.cuts = reflectPlanes(q.cuts);
+    if (q.type === 'box') [q.min[a], q.max[a]] = [2 * symmetry.at - q.max[a], 2 * symmetry.at - q.min[a]];
+    else if ('xyz'.indexOf(q.axis) === a) q.range = [2 * symmetry.at - q.range[1], 2 * symmetry.at - q.range[0]];
+    else {
+      const k = [0, 1, 2].filter((i) => i !== 'xyz'.indexOf(q.axis)).indexOf(a);
+      q.c[k] = 2 * symmetry.at - q.c[k];
+    }
+  }
+  return q;
 }
 
 export function occupiedCells(grid: SolidGrid): Vec3[] {
@@ -163,7 +210,7 @@ export function fitRegion(cells: Vec3[], id: string, whole: [Vec3, Vec3], option
   const localPlanes = fitPoly(
     centres.map((p) => p.map((v, a) => v - origin[a]) as Vec3),
     dirs,
-    3,
+    options.minSlopeSteps ?? 3,
   );
   const tuned = options.tunePlanes ? tuneOffsets(localPlanes, { size: localSize, data }) : localPlanes;
   const planes = compactPlanes(tuned.map((p) => [p[0], p[1], p[2], p[3] + dot(p, origin)]));
@@ -171,7 +218,7 @@ export function fitRegion(cells: Vec3[], id: string, whole: [Vec3, Vec3], option
     kind = semantic(bounds, whole, options);
   let score = classifyError(cells, bounds, primitive);
   if (options.category === 'tube') {
-    primitive = cylinderProposal(cells, 'x');
+    primitive = cylinderProposal(cells, options.tubeAxis ?? 'x');
     score = classifyError(cells, bounds, primitive);
   }
   const [lo, hi] = bounds;
@@ -180,7 +227,7 @@ export function fitRegion(cells: Vec3[], id: string, whole: [Vec3, Vec3], option
       uv = [0, 1, 2].filter((k) => k !== a),
       spans = uv.map((k) => hi[k] - lo[k]);
     if (Math.min(...spans) < 2 || Math.max(...spans) / Math.min(...spans) > 1.4) continue;
-    if (options.category === 'tube' && axis !== 'x') continue;
+    if (options.category === 'tube' && axis !== (options.tubeAxis ?? 'x')) continue;
     if (options.category !== 'tube' && axis === 'x') continue;
     const cyl = cylinderProposal(cells, axis),
       cs = classifyError(cells, bounds, cyl);
@@ -212,15 +259,40 @@ export function splitRegion(
   whole: [Vec3, Vec3],
   options: ProposalOptions,
 ): RegionProposal[] | undefined {
+  return splitRegionCandidates(region, whole, options)[0];
+}
+/** Alternative broad cuts let the surface gate reject an occupancy-best cut without exhausting the region. */
+export function splitRegionCandidates(
+  region: RegionProposal,
+  whole: [Vec3, Vec3],
+  options: ProposalOptions,
+  allowTies = false,
+): RegionProposal[][] {
   const [lo, hi] = region.bounds,
     minSpan = options.minSpan ?? 3,
     minCells = options.minCells ?? 6;
-  let best: RegionProposal[] | undefined,
-    bestError = region.error - Math.max(2, region.cells.length * 0.008);
+  const candidates: { parts: RegionProposal[]; error: number; axis: number; cut: number }[] = [];
+  const bestError = allowTies ? region.error + 1e-7 : region.error - Math.max(2, region.cells.length * 0.008);
   for (let a = 0; a < 3; a++) {
-    if (options.category === 'tube' && a !== 0) continue;
+    if (options.category === 'tube' && a !== 'xyz'.indexOf(options.tubeAxis ?? 'x')) continue;
     // At most five broad cuts per axis; no row-by-row candidate cover.
     const cuts = new Set([0.25, 0.4, 0.5, 0.6, 0.75].map((t) => Math.round(lo[a] + (hi[a] - lo[a]) * t)));
+    // A neck/sleeve or a change in plate width need not occur at a fixed fraction of its parent.
+    // Rank source profile changes and retain a bounded set of broad cuts.
+    const counts = new Map<number, number>();
+    if (options.category === 'crown') for (const p of region.cells) counts.set(p[a], (counts.get(p[a]) ?? 0) + 1);
+    const transitions = [...counts.keys()]
+      .filter((x) => x > lo[a])
+      .map((x) => ({
+        x,
+        score:
+          Math.abs((counts.get(x) ?? 0) - (counts.get(x - 1) ?? 0)) /
+          Math.max(1, counts.get(x) ?? 0, counts.get(x - 1) ?? 0),
+      }))
+      .filter((p) => p.score >= 0.2)
+      .sort((p, q) => q.score - p.score || p.x - q.x)
+      .slice(0, 8);
+    for (const { x } of transitions) cuts.add(x);
     for (const cut of cuts) {
       if (cut - lo[a] < minSpan || hi[a] - cut < minSpan) continue;
       const left = region.cells.filter((p) => p[a] < cut),
@@ -240,53 +312,56 @@ export function splitRegion(
       if (parts.some((p) => p.bounds[1].map((v, k) => v - p.bounds[0][k]).sort((a, b) => b - a)[0] < minSpan)) continue;
       const error = parts.reduce((s, p) => s + p.error, 0);
       if (error < bestError) {
-        bestError = error;
-        best = parts;
+        candidates.push({ parts, error, axis: a, cut });
       }
     }
   }
-  return best;
-}
-function tubeLanes(cells: Vec3[]): Vec3[][] {
-  // Transverse connected components allow several parallel barrels; no joining across empty lanes.
-  const keys = new Set(cells.map((p) => `${p[1]},${p[2]}`)),
-    groups: Vec3[][] = [];
-  while (keys.size) {
-    const first = keys.values().next().value!,
-      queue = [first],
-      component = new Set([first]);
-    keys.delete(first);
-    for (let i = 0; i < queue.length; i++) {
-      const [y, z] = queue[i].split(',').map(Number);
-      for (const [dy, dz] of [
-        [1, 0],
-        [-1, 0],
-        [0, 1],
-        [0, -1],
-      ]) {
-        const k = `${y + dy},${z + dz}`;
-        if (keys.delete(k)) {
-          component.add(k);
-          queue.push(k);
-        }
-      }
-    }
-    groups.push(cells.filter((p) => component.has(`${p[1]},${p[2]}`)));
-  }
-  return groups;
+  const sorted = candidates.sort((a, b) => a.error - b.error || a.axis - b.axis || a.cut - b.cut);
+  if (!allowTies) return sorted.map((c) => c.parts);
+  // Do not spend the entire formal-evaluation allowance on similar cuts along just one axis.
+  const axes = new Set<number>(),
+    diverse = sorted.filter((c) => {
+      if (axes.has(c.axis)) return false;
+      axes.add(c.axis);
+      return true;
+    });
+  return [...diverse, ...sorted.filter((c) => !diverse.includes(c))].map((c) => c.parts);
 }
 export function proposeHardSurface(grid: SolidGrid, options: ProposalOptions): RegionModel {
   if (!Number.isInteger(options.budget) || options.budget < 1) throw new Error('Primitive budget must be positive');
   const cells = occupiedCells(grid),
     whole = cellBounds(cells),
     symmetry = detectMirror(grid);
-  const groups = options.category === 'tube' ? tubeLanes(cells) : [cells];
+  const bilateral =
+    options.category === 'crown' && symmetry.iou >= 0.9 && options.budget >= 2 && Number.isInteger(symmetry.at);
+  const groups =
+    options.category === 'tube'
+      ? tubeLanes(cells, options.tubeAxis)
+      : bilateral
+        ? [cells.filter((p) => p[1] < symmetry.at), cells.filter((p) => p[1] >= symmetry.at)]
+        : [cells];
   if (groups.length > options.budget) throw new Error('Disconnected tube lanes exceed the primitive budget');
-  const regions = groups.map((g, i) => fitRegion(g, String(i), whole, options));
+  const regions = groups.flatMap((g, i) => {
+    if (options.category !== 'tube' || !options.primitivesPerTube) return [fitRegion(g, String(i), whole, options)];
+    const axis = options.tubeAxis ?? 'x',
+      cylinder = cylinderProposal(g, axis);
+    if (cylinder.type !== 'cyl') throw new Error('Expected shared tube axis');
+    return tubeSegments(g, axis, Math.min(options.primitivesPerTube, Math.floor(options.budget / groups.length))).map(
+      (s, j) => {
+        const region = fitRegion(s, `${i}_${j}`, whole, options);
+        if (region.primitive.type === 'cyl') {
+          region.primitive.c = [...cylinder.c];
+          Object.assign(region, classifyError(region.cells, region.bounds, region.primitive));
+        }
+        return region;
+      },
+    );
+  });
   // Proposal stage is deliberately small. The acceptance loop owns further complexity growth.
   while (
+    !(options.category === 'tube' && options.primitivesPerTube) &&
     regions.length <
-    Math.min(options.budget, options.category === 'chassis' ? 12 : options.category === 'crown' ? 8 : options.budget)
+      Math.min(options.budget, options.category === 'chassis' ? 12 : options.category === 'crown' ? 8 : options.budget)
   ) {
     const ranked = regions.map((r, i) => ({ r, i })).sort((a, b) => b.r.error - a.r.error);
     let changed = false;
@@ -300,5 +375,12 @@ export function proposeHardSurface(grid: SolidGrid, options: ProposalOptions): R
     }
     if (!changed) break;
   }
+  for (const [i, j] of mirrorRegionPairs(regions, symmetry))
+    if (i < j) {
+      const reflected = reflectPrimitive(regions[i].primitive, symmetry);
+      reflected.name = regions[j].primitive.name;
+      regions[j].primitive = reflected;
+      Object.assign(regions[j], classifyError(regions[j].cells, regions[j].bounds, reflected));
+    }
   return { regions, symmetry, options, part: { primitives: regions.map((r) => r.primitive) } };
 }

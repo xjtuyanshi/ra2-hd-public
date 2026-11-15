@@ -1,7 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { grid } from './hardSurfaceFixtures';
-import { detectMirror, proposeHardSurface, cylinderProposal, occupiedCells } from '../src/hardSurfacePropose';
-import { buildPart } from '../src/hardSurfaceMesh';
+import {
+  detectMirror,
+  proposeHardSurface,
+  cylinderProposal,
+  occupiedCells,
+  mirrorRegionPairs,
+  reflectPrimitive,
+} from '../src/hardSurfacePropose';
+import { buildPart, insideAny } from '../src/hardSurfaceMesh';
 
 describe('automatic source-supported broad regions', () => {
   it('finds a part-local mirror plane and reports rather than discards asymmetric source cells', () => {
@@ -61,5 +68,32 @@ describe('automatic source-supported broad regions', () => {
     const tube = cylinderProposal(occupiedCells(source), 'x');
     expect(tube.type).toBe('cyl');
     if (tube.type === 'cyl') expect(tube.c).toEqual([3.5, 4.5]);
+  });
+  it('finds a source-supported front mantlet and preserves exact bilateral plate pairs', () => {
+    const source = grid([20, 16, 7], ([x, y, z]) =>
+      x < 14
+        ? y >= 2 && y < 14 && z < 5 && z + Math.abs(y + 0.5 - 8) < 9
+        : x < 19 && y >= 6 && y < 10 && z >= 1 && z < 4,
+    );
+    const model = proposeHardSurface(source, { category: 'crown', budget: 20, minSlopeSteps: 2 });
+    expect(model.symmetry.iou).toBe(1);
+    expect(model.regions.some((r) => r.kind === 'mantlet')).toBe(true);
+    const pairs = mirrorRegionPairs(model.regions, model.symmetry);
+    expect(pairs.size).toBeGreaterThan(0);
+    const built = buildPart(model.part);
+    expect(insideAny([18, 8, 2], built.primitives)).toBe(true);
+    expect(insideAny([18, 3, 2], built.primitives)).toBe(false);
+    // Reflection preserves round primitives rather than flattening a drum into planes.
+    expect(reflectPrimitive({ type: 'cyl', axis: 'x', c: [3, 2], r: 1, range: [0, 4] }, model.symmetry)).toMatchObject({
+      type: 'cyl',
+      c: [13, 2],
+      range: [0, 4],
+    });
+    for (const [i, j] of pairs) {
+      const mirrored = reflectPrimitive(model.regions[i].primitive, model.symmetry);
+      expect({ ...mirrored, name: undefined }).toEqual({ ...model.regions[j].primitive, name: undefined });
+    }
+    source.data[0] = 1;
+    expect(detectMirror(source).iou).toBeLessThan(1);
   });
 });

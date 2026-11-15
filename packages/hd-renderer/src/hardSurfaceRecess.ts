@@ -23,22 +23,11 @@ export function proposeRecesses(solid: SolidGrid, primitives: readonly ExpandedP
     return [Math.floor(i / (solid.size[1] * solid.size[2])), y, z];
   };
   const out: RecessProposal[] = [];
-  while (extra.size) {
-    const first = extra.values().next().value!,
-      queue = [point(first)];
-    extra.delete(first);
-    for (let head = 0; head < queue.length; head++)
-      for (let a = 0; a < 3; a++)
-        for (const sign of [-1, 1]) {
-          const q = [...queue[head]] as Vec3;
-          q[a] += sign;
-          if (q.some((v, a) => v < 0 || v >= solid.size[a])) continue;
-          if (extra.delete(gridIndex(solid.size, ...q))) queue.push(q);
-        }
+  function consider(queue: Vec3[], depth: number): void {
     const bounds = cellBounds(queue),
       spans = bounds[1].map((v, a) => v - bounds[0][a]).sort((a, b) => b - a);
     // A large groove/deck pocket is eligible. Tiny dimples and rows of isolated residual cells are not.
-    if (queue.length < 12 || spans[0] < 6 || spans[1] < 2) continue;
+    if (queue.length < 12 || spans[0] < 6 || spans[1] < 2) return;
     const enclosedAxes: number[] = [];
     for (let a = 0; a < 3; a++) {
       let enclosed = 0;
@@ -56,7 +45,7 @@ export function proposeRecesses(solid: SolidGrid, primitives: readonly ExpandedP
       }
       if (enclosed / queue.length >= 0.25) enclosedAxes.push(a);
     }
-    if (!enclosedAxes.length) continue;
+    if (!enclosedAxes.length) return;
     const [lo, hi] = bounds;
     let boxOverlap = false;
     for (let x = lo[0]; x < hi[0]; x++)
@@ -70,7 +59,7 @@ export function proposeRecesses(solid: SolidGrid, primitives: readonly ExpandedP
     );
     const { faces } = polytopeFaces(planes),
       compact = planes.filter((_, i) => faces.some((f) => f.plane === i));
-    if (compact.length < 4) continue;
+    if (compact.length < 4) return;
     let covered = 0,
       overlap = 0;
     for (let x = lo[0]; x < hi[0]; x++)
@@ -83,7 +72,25 @@ export function proposeRecesses(solid: SolidGrid, primitives: readonly ExpandedP
         }
     // Source occupancy, rather than dark paint, must justify a subtraction. Formal subvoxel metrics follow.
     const sourceOverlap = overlap / Math.max(1, covered);
-    if (sourceOverlap > 0.01) continue;
+    if (sourceOverlap > 0.01) {
+      // Connected residual space can wrap around a source-supported island. Its convex
+      // envelope is unsafe, but a few broad sub-pockets may still be valid. Never cut
+      // source-occupied cells or recurse into dimples/voxel-sized patches.
+      if (depth < 3) {
+        const axes = [0, 1, 2].sort((a, b) => hi[b] - lo[b] - (hi[a] - lo[a]));
+        for (const axis of axes) {
+          if (hi[axis] - lo[axis] < 12) continue;
+          const cut = Math.floor((lo[axis] + hi[axis]) / 2),
+            left = queue.filter((p) => p[axis] < cut),
+            right = queue.filter((p) => p[axis] >= cut);
+          if (Math.min(left.length, right.length) < 12) continue;
+          consider(left, depth + 1);
+          consider(right, depth + 1);
+          break;
+        }
+      }
+      return;
+    }
     out.push({
       id: `${lo.join(',')}:${hi.join(',')}`,
       bounds,
@@ -93,5 +100,20 @@ export function proposeRecesses(solid: SolidGrid, primitives: readonly ExpandedP
       carve: { type: 'poly', planes: compact },
     });
   }
+  while (extra.size) {
+    const first = extra.values().next().value!,
+      queue = [point(first)];
+    extra.delete(first);
+    for (let head = 0; head < queue.length; head++)
+      for (let a = 0; a < 3; a++)
+        for (const sign of [-1, 1]) {
+          const q = [...queue[head]] as Vec3;
+          q[a] += sign;
+          if (q.some((v, a) => v < 0 || v >= solid.size[a])) continue;
+          if (extra.delete(gridIndex(solid.size, ...q))) queue.push(q);
+        }
+    consider(queue, 0);
+  }
+
   return out.sort((a, b) => b.cells - a.cells || a.id.localeCompare(b.id));
 }

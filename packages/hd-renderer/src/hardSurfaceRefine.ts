@@ -7,7 +7,15 @@ import {
   rayVisible,
   type HardSurfaceMetrics,
 } from './hardSurfaceMetrics';
-import { cellBounds, splitRegion, fitRegion, type RegionModel } from './hardSurfacePropose';
+import {
+  cellBounds,
+  splitRegionCandidates,
+  fitRegion,
+  mirrorRegionPairs,
+  reflectPrimitive,
+  type RegionModel,
+  type RegionProposal,
+} from './hardSurfacePropose';
 import {
   compareSilhouettes,
   partMeshes,
@@ -121,6 +129,7 @@ export function refineHardSurface(
   let residualPart: PartSpec | undefined,
     surfaceWeights: number[] = [];
   const tried = new Set<string>();
+  const splitCandidates = new Map<string, RegionProposal[][]>();
   const reserveParameter = (key: string, state: unknown): boolean => {
     // The same delta is a new candidate after a parameter change. Coaxial groups include every segment's radius.
     const scoped = `${key}@${JSON.stringify(state)}`;
@@ -188,6 +197,8 @@ export function refineHardSurface(
         return { r, i, residual: residual + (surfaceFail ? surfaceWeights[i] : 0) };
       })
       .sort((a, b) => b.residual - a.residual || b.r.error - a.r.error || b.r.cells.length - a.r.cells.length);
+    const mirrorPairs =
+      model.options.category === 'crown' ? mirrorRegionPairs(regions, model.symmetry) : new Map<number, number>();
     let candidate: PartSpec | undefined,
       action = '',
       nextRegions = regions;
@@ -234,12 +245,39 @@ export function refineHardSurface(
     }
     if (!candidate)
       for (const { r, i } of ranked) {
-        const key = 'split:' + r.id;
-        if (tried.has(key) || part.primitives.length >= model.options.budget) continue;
+        if (part.primitives.length >= model.options.budget) continue;
+        if (model.options.category === 'tube' && model.options.primitivesPerTube && r.primitive.type === 'cyl') {
+          const q = r.primitive;
+          if (
+            part.primitives.filter((p) => p.type === 'cyl' && p.axis === q.axis && p.c.every((v, a) => v === q.c[a]))
+              .length >= model.options.primitivesPerTube
+          )
+            continue;
+        }
+        const state = r.id + (r.primitive.type === 'cyl' ? JSON.stringify(r.primitive.c) : '');
+        if (!splitCandidates.has(state))
+          splitCandidates.set(state, splitRegionCandidates(r, whole, model.options, true).slice(0, 4));
+        const choices = splitCandidates.get(state)!;
+        const alternative = choices.findIndex((_, j) => !tried.has(`split:${state}:${j}`));
+        if (alternative < 0) continue;
+        const key = `split:${state}:${alternative}`;
         tried.add(key);
-        const children = splitRegion(r, whole, model.options);
+        const children = choices[alternative];
         if (children) {
-          nextRegions = [...regions.slice(0, i), ...children, ...regions.slice(i + 1)];
+          const partner = mirrorPairs.get(i);
+          if (partner !== undefined) {
+            if (part.primitives.length + 2 > model.options.budget) continue;
+            const axis = 'xyz'.indexOf(model.symmetry.axis);
+            const reflected = children.map((child, j) => {
+              const cells = child.cells.map(
+                (p) => p.map((v, a) => (a === axis ? 2 * model.symmetry.at - v - 1 : v)) as typeof p,
+              );
+              const region = fitRegion(cells, regions[partner].id + (j ? 'b' : 'a'), whole, model.options);
+              region.primitive = { ...reflectPrimitive(child.primitive, model.symmetry), name: region.primitive.name };
+              return region;
+            });
+            nextRegions = regions.filter((_, j) => j !== i && j !== partner).concat(children, reflected);
+          } else nextRegions = [...regions.slice(0, i), ...children, ...regions.slice(i + 1)];
           candidate = { ...part, primitives: nextRegions.map((r) => r.primitive) };
           action = `${key}; worst facing ${worst}`;
           break;
@@ -256,6 +294,28 @@ export function refineHardSurface(
         nextRegions[i] = fitted;
         action = `${key}; surface and facing ${worst}`;
         break;
+      }
+    if (!candidate)
+      for (const { r, i } of ranked) {
+        const q = part.primitives[i];
+        if (q.type !== 'poly') continue;
+        for (let plane = 0; plane < q.planes.length; plane++) {
+          const p = q.planes[plane];
+          if (p.slice(0, 3).filter((v) => v !== 0).length < 2) continue;
+          for (const delta of [-0.15, 0.15, -0.075, 0.075]) {
+            const key = `plane:${r.id}:${plane}:${delta}`;
+            if (!reserveParameter(key, q)) continue;
+            candidate = structuredClone(part);
+            const changed = candidate.primitives[i];
+            if (changed.type === 'poly') changed.planes[plane][3] += delta * Math.hypot(p[0], p[1], p[2]);
+            nextRegions = structuredClone(regions);
+            nextRegions[i].primitive = changed;
+            action = `${key}; independent snapped plate, facing ${worst}`;
+            break;
+          }
+          if (candidate) break;
+        }
+        if (candidate) break;
       }
     if (!candidate)
       for (const { r, i } of ranked) {
@@ -276,6 +336,25 @@ export function refineHardSurface(
       break;
     }
     try {
+      // A local edit to an exactly supported bilateral region moves its reflected plate too.
+      // Do this before formal evaluation; never silently symmetrize an accepted result afterward.
+      if (candidate.primitives.length === part.primitives.length && mirrorPairs.size) {
+        for (const [i, j] of mirrorPairs) {
+          if (i >= j) continue;
+          const changedI = JSON.stringify(candidate.primitives[i]) !== JSON.stringify(part.primitives[i]),
+            changedJ = JSON.stringify(candidate.primitives[j]) !== JSON.stringify(part.primitives[j]);
+          if (changedI === changedJ) continue;
+          const from = changedI ? i : j,
+            to = changedI ? j : i;
+          candidate.primitives[to] = {
+            ...reflectPrimitive(candidate.primitives[from], model.symmetry),
+            name: part.primitives[to].name,
+          };
+          nextRegions = structuredClone(nextRegions);
+          nextRegions[to].primitive = candidate.primitives[to];
+          action += `; source-exact mirror ${regions[to].id}`;
+        }
+      }
       if (buildPart(candidate).primitives.length > model.options.budget) {
         record(action, false, undefined, 'Expanded primitive budget exceeded');
         continue;
@@ -283,9 +362,11 @@ export function refineHardSurface(
       const trial = evaluate(candidate);
       // Once a surface gate closes, a silhouette improvement cannot reopen it.
       const preserveSurface = result.metrics.dev_vox_to_cad.p99 <= p99 && result.metrics.dev_cad_to_vox.p99 <= p99;
+      const preserveSilhouette = result.silhouettes.every((s) => s.iou >= iou);
       const accepted =
         trial.loss < result.loss - 1e-7 &&
-        (!preserveSurface || (trial.metrics.dev_vox_to_cad.p99 <= p99 && trial.metrics.dev_cad_to_vox.p99 <= p99));
+        (!preserveSurface || (trial.metrics.dev_vox_to_cad.p99 <= p99 && trial.metrics.dev_cad_to_vox.p99 <= p99)) &&
+        (!preserveSilhouette || trial.silhouettes.every((s) => s.iou >= iou));
       if (accepted) {
         part = candidate;
         regions = nextRegions;

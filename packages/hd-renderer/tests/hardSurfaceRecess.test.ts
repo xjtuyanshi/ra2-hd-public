@@ -34,4 +34,27 @@ describe('source-empty broad recess proposals', () => {
     const exterior = grid([12, 10, 5], ([x]) => x < 6);
     expect(proposeRecesses(exterior, partPrimitives(shell))).toHaveLength(0);
   });
+  it('finds broad safe sub-pockets when connected empty space wraps around a source island', () => {
+    const source = grid(
+      [26, 18, 5],
+      ([x, y, z]) => !(z >= 3 && ((x >= 2 && x < 24 && y >= 3 && y < 7) || (x >= 2 && x < 10 && y >= 3 && y < 15))),
+    );
+    const envelope = {
+      primitives: [
+        {
+          type: 'box' as const,
+          min: [0, 0, 0] as [number, number, number],
+          max: [26, 18, 5] as [number, number, number],
+          chamfer: 0,
+        },
+      ],
+    };
+    const proposals = proposeRecesses(source, partPrimitives(envelope));
+    expect(proposals.length).toBeGreaterThanOrEqual(2);
+    expect(proposals.length).toBeLessThanOrEqual(8);
+    expect(proposals.every((p) => p.cells >= 12 && p.sourceOverlap <= 0.01 && p.enclosedAxes.length > 0)).toBe(true);
+    const carved = { ...envelope, carve: proposals.map((p) => p.carve) };
+    expect(evaluateHardSurface(source, carved).iou).toBeGreaterThan(evaluateHardSurface(source, envelope).iou);
+    expect(buildPart(carved).primitives.length).toBeLessThan(35);
+  });
 });

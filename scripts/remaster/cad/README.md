@@ -32,7 +32,9 @@ The generic modules in `packages/hd-renderer/src/` own:
 
 - `hardSurfacePropose.ts`: part-local mirror evidence, bounded broad BSP regions, snapped
   axis/1:1/1:2/2:1 planes plus configurable ratios, occupancy-supported circular hypotheses,
-  and disconnected parallel tube lanes with shared centres on axial refinements. Slice-median
+  and parallel tube lanes with source-step dynamic-programming chains. A majority of disjoint
+  axial slices can separate tubes joined at a short root. Axial gaps are never bridged.
+  Each chain shares one axis and receives its own caller-supplied segment budget. Slice-median
   axes prevent a short asymmetric base from displacing a long tube; centre search moves every
   segment of one coaxial group together. Semantic
   names are geometric hypotheses, not recognition of a particular game's model.
@@ -46,17 +48,27 @@ The generic modules in `packages/hd-renderer/src/` own:
   sloped-plane/radius adjustment, with formal `hardSurfaceMetrics` and every-view silhouette
   selection. It fixes partition planes to avoid opening cracks and never invokes an exact
   or per-voxel cuboid cover. Once both surface gates pass, silhouette search cannot reopen
-  them. Non-finite formal values remain visible and cannot satisfy the corresponding gate.
+  them. Once all eight silhouette gates close, surface search cannot reopen those either.
+  Up to four source-supported broad split alternatives can be evaluated per region;
+  a rejected occupancy-best cut does not exhaust its entire region. Crown regions begin at
+  the detected bilateral plane when source support is strong. Only exactly reflected source
+  regions are coupled, including their splits and plate adjustments; asymmetric source
+  details remain independent. Non-finite formal values remain visible and cannot satisfy the corresponding gate.
   Parameter-candidate memoization includes the current primitive or entire coaxial group, so
   changing a radius cannot suppress a newly useful centre move or another step in the same direction.
 - `hardSurfaceRecess.ts`: broad connected overfill pockets with source occupancy on opposite
   sides. Convex subtraction candidates need at least twelve source-empty cells, a long span
   of six cells, and at most one percent source overlap. Tiny dimples, paint-only marks and
   unconstrained exterior space cannot become residual-cell cuts. Every subtraction still
-  goes through the same expanded primitive, surface and silhouette gates.
+  goes through the same expanded primitive, surface and silhouette gates. If a connected
+  pocket wraps around source material, bounded broad subdivisions can yield safe convex
+  sub-pockets. Recursion stops at depth three; the same extent/enclosure/source-overlap
+  requirements apply to every child.
 
 The RA2 composition script maps chassis/crown/tube policy and applies expanded primitive
-budgets 130/35/3. A multi-section part divides its budget between sections. Lateral reflection
+budgets body <=130, turret <=35, and <=3 primitives per detected barrel tube. A multi-section
+body or turret divides its budget between sections. Barrel lanes receive independent budgets
+(the twin-tube case permits six total). Lateral reflection
 is reported; source asymmetries are retained rather than silently replaced by mirrored geometry.
 Round hypotheses need source occupancy support; labels alone never authorize added wheels,
 drums, panels, or other decoration. There is no learned semantic model or promise that every
@@ -75,7 +87,9 @@ tile is required; clipping fails instead of silently rescaling the model.
 
 Deliveries contain source hashes, exports, proposals, the authoritative CAD mesh, formal
 metrics, every facing's IoU, 1x/nearest-neighbour 2x boards, a turntable, automatic timings,
-draft reports and `manifest.json`. Reports must separately account for tool development,
+draft reports and `manifest.json`. `source_snapshot.json` records the starting revision,
+working-tree status and tooling hashes; the manifest also reports source files changed during
+a run, so a dirty or concurrently edited checkout cannot masquerade as an immutable revision. Reports must separately account for tool development,
 manual diagnosis/selection and visual review. Empty model-coordinate decisions do not prove
 zero hand-directed labour. After reviewing or annotating a delivery, refresh its hashes:
 
@@ -89,3 +103,49 @@ The primitive budgets, bidirectional p99 ceiling of 0.85, and each part/assembly
 floors of 0.97 are independent. A reviewer must open both board scales to check continuous
 plates, source-supported cylinders, unchanged proportions and no additions. No offline
 artifact establishes runtime behaviour, GPU appearance, performance or artistic approval.
+
+## Residual evidence
+
+The diagnostic below consumes an existing offline delivery; it never changes its spec or the
+formal acceptance metric. It writes projected surface-sample heat maps at the same native
+research scale and at nearest-neighbour 4x. Dark pixels are unsampled; this is a depth-selected
+sample board, not a silhouette mask or a runtime capture.
+
+```bash
+pnpm exec tsx scripts/remaster/cad/residual.ts --input "$DELIVERY" --out "$RESIDUAL_OUTPUT"
+python3 scripts/remaster/cad/residual_board.py --input "$DELIVERY" --residual "$RESIDUAL_OUTPUT"
+```
+
+`residual_summary.json` compares unchanged formal NN distances with independent triangle
+surface distances, sampling seed 11, a zero-chamfer geometry probe, and half-voxel translation
+probes. Translation probes report their stratified subset sizes and are never acceptance.
+The triangle query in `hardSurfaceResidual.ts` uses a tested AABB hierarchy. CAD-to-voxel
+queries use the exposed source surface. Voxel-to-CAD queries include all input triangles,
+including buried primitive faces, and are therefore explicitly a lower bound on distance to
+the actual union boundary. A lower bound above the gate proves a real geometry discrepancy;
+a lower bound below it does not prove a sampling artefact. None of these diagnostics replaces
+`hardSurfaceMetrics`, changes thresholds, or makes a failed fit pass.
+
+## Batch execution
+
+```bash
+pnpm exec tsx scripts/remaster/cad/batch.ts \
+  --ids "$MODEL_IDS" --cache-root "$SOURCE_CACHE" --palette "$UNIT_PALETTE_PNG" \
+  --house neutral --out "$BATCH_OUTPUT" --concurrency 4 \
+  --evaluations 1000 --seconds 1200 --cell 256 --pre-gate
+pnpm exec tsx scripts/remaster/cad/summary.ts "$BATCH_OUTPUT"
+```
+
+`MODEL_IDS` is an explicit comma-separated list, without duplicates. The batch writes each
+vehicle under `units/`, continues after child failures, and retains actual exit codes and
+elapsed minutes in `batch_status.json`. `--pre-gate` labels exploratory results before the
+primary vehicles satisfy full acceptance. A gated label alone never constitutes acceptance:
+`summary.ts` requires successful process and metric evidence plus an independently written
+`visual_review.json` with `pass`, `reason`, and `agentDirectedMinutes`. Missing reviews stay
+UNVERIFIED. Record actual review windows and all shared direction separately in HOURS.md.
+The summary can be refreshed after author review without regenerating geometry.
+
+`--cell` is an optional fixed board tile size forwarded to the renderer. It adds whitespace
+without changing model scale, projection, thresholds or masks; the default remains 190.
+A larger tile is useful for long models. Clipping still fails. The batch itself has no
+implicit wall deadline: select compute limits and start early enough for review and delivery.
