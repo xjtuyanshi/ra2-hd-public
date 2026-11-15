@@ -8,6 +8,7 @@ import {
   lightMoment,
   irradianceKnee,
   reconstructLight,
+  saturateAtLuminance,
   type Rgb,
 } from '../src/realLight';
 import {
@@ -163,7 +164,10 @@ describe('round 7: source-class ground response', () => {
       f.field.put('flash', 'blast', 0, light, 0.08, 0.3);
       f.field.update(0, f.r, 1);
       const now = f.data()[2]!.slice(0, 3) as unknown as Rgb;
-      expect(saturation(now)).toBeCloseTo(0.32, 6);
+      // Round 7b: the live warm flash is pushed to flashSat (0.32 summed with the blue night base to grey-white).
+      expect(saturation(now)).toBeGreaterThan(0.45);
+      expect(now[0]).toBeGreaterThan(now[1]);
+      expect(now[1]).toBeGreaterThan(now[2]);
       expect(f.data()[2]![3]).toBeCloseTo(0.9);
       lightLook(f.nodes.smokeLook, 'cur');
       f.field.update(0, f.r, 1);
@@ -171,6 +175,25 @@ describe('round 7: source-class ground response', () => {
       f.dispose();
     }
     expect(saturation(warmFlashColour([1, 1, 1]))).toBeCloseTo(0.32);
+  });
+  it('flashSat keeps luminance and hue order; flashSize shrinks only warm flash pools', () => {
+    const warm = warmFlashColour([1, 0.85, 0.72]);
+    const more = saturateAtLuminance(warm, LIGHT_LOOK_NEW.flashSat / 0.32);
+    expect(lightLuminance(more)).toBeCloseTo(lightLuminance(warm), 8);
+    expect(saturation(more)).toBeGreaterThan(saturation(warm));
+    expect(saturateAtLuminance(warm, 1).map((c, i) => c - warm[i]!)).toEqual([0, 0, 0].map(() => expect.closeTo(0, 9)));
+    const p = animLightPolicy('EXPLOLRG')!;
+    const light = animPhysicalLight(anim('EXPLOLRG'), p);
+    const f = fieldFixture();
+    f.field.put('flash', 'blast', 0, light, 0.08, 0.3);
+    f.field.update(0, f.r, 1);
+    const small = [f.data()[0]![3]!, f.data()[1]![3]!];
+    lightLook(f.nodes.smokeLook, 'cur');
+    f.field.update(0, f.r, 1);
+    const old = [f.data()[0]![3]!, f.data()[1]![3]!];
+    expect(small[0]! / old[0]!).toBeCloseTo(LIGHT_LOOK_NEW.flashSize, 5);
+    expect(small[1]! / old[1]!).toBeCloseTo(LIGHT_LOOK_NEW.flashSize, 5);
+    f.dispose();
   });
   it('neutralizes graded road/grass only for flash contribution; beams have byte-identical packed values', () => {
     for (const [albedo, shown] of [
@@ -239,20 +262,27 @@ describe('round 7: source-class ground response', () => {
 
 describe('round 7: native laser light profile', () => {
   it.each([{ source: [137, 0, 197] as Rgb }, { source: [255, 0, 0] as Rgb }])(
-    'keeps glow hue, a thin near-white core and a decreasing Gaussian for %j',
+    'keeps glow hue, a bright near-white core and a soft tail that reaches zero inside the quad for %j',
     ({ source }) => {
       const colour = source.map((c) => (c / 255) ** 2.2) as [number, number, number];
       const core = laserLightProfile(0, colour);
-      expect(saturation(core)).toBeCloseTo(0.2);
-      expect(Math.max(...core)).toBeLessThan(1);
-      for (let r = 0.36; r < 2.4; r += 0.03) {
-        const v = laserLightProfile(r, colour),
-          prev = laserLightProfile(r - 0.01, colour);
+      // Hot core: near white (20% source hue) and above the night bloom threshold (~0.85-1), so it seeds bloom.
+      expect(Math.min(...core)).toBeGreaterThan(1);
+      const glowAt = (r: number) => laserLightProfile(r, colour);
+      // Core clearly brighter than the glow beside it (round-7 review: neon tube with a weak core).
+      expect(Math.max(...core)).toBeGreaterThan(2 * Math.max(...glowAt(1)));
+      const reach = 2.5 * LIGHT_LOOK_NEW.beamSpread;
+      let prev = Infinity;
+      for (let r = 0.6; r < reach; r += 0.02) {
+        const v = glowAt(r);
         expect(Math.abs(hue(display(v)) - hue(display(colour)))).toBeLessThan(8);
-        expect(Math.max(...v)).toBeLessThan(Math.max(...prev));
+        expect(Math.max(...v)).toBeLessThan(prev);
+        prev = Math.max(...v);
       }
-      // The old 12px opaque core becomes a ~4px hot line (live SOV07TMD calibration: 3 px read too thin at 1:1).
-      expect(1.4 * LIGHT_LOOK_NEW.beamCore * 0.72 * 0.11 * 106.07).toBeCloseTo(4, 0);
+      // No step at the quad edge: the windowed tail is already below 1% of its peak there.
+      expect(Math.max(...glowAt(reach - 0.05))).toBeLessThan(0.01 * Math.max(...glowAt(0.6)));
+      // No plateau: the glow keeps falling across the band where the old clamp held it flat.
+      expect(Math.max(...glowAt(1.5))).toBeLessThan(0.75 * Math.max(...glowAt(0.8)));
     },
   );
   it('does not opt auxiliary emitters or bolts into native laser treatment', () => {
@@ -297,7 +327,7 @@ describe('round 7: smoke and legacy boundaries', () => {
       const taps = new Map<string, number>();
       for (const [, binding] of code.matchAll(/\btextureSample\w*\(\s*([\w]+)/g))
         taps.set(binding!, (taps.get(binding!) ?? 0) + 1);
-      expect(Math.max(...taps.values())).toBeLessThanOrEqual(6); // Original three noise taps plus at most three.
+      expect(Math.max(...taps.values())).toBeLessThanOrEqual(7); // Original three noise taps plus at most four.
       lightLook(nodes.smokeLook, 'cur');
       expect(shaderBytes(mesh).replace(/NodeBuffer_\d+/g, 'NodeBuffer')).toBe(
         code.replace(/NodeBuffer_\d+/g, 'NodeBuffer'),

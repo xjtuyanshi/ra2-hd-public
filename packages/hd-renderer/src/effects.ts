@@ -614,9 +614,11 @@ function smokeLobes(
   return { density, normal, shadow };
 }
 
-/** Three texture reads: two domain-warped density octaves and one soft overhead offset for self-shadow.
- * No sphere surfaces, normals or rim. Stretch changes density within the existing quad, never its bounds/depth.
- * The layer wind is shared with native smoke cards, not randomized per puff. */
+/** Four texture reads: domain-warped density octaves (one ridged, for filaments) and one soft overhead offset for
+ * self-shadow. No sphere surfaces, normals or rim. The noise frame is aligned with the puff's on-screen drift (rise
+ * plus the ONE layer wind, shared with native smoke cards) and stretched along it with age, so the edges pull out into
+ * wisps downwind instead of blurring evenly (round-7 review: the first volume read as a uniformly blurred fog blob).
+ * Stretch changes density within the existing quad, never its bounds/depth. */
 function smokeVolume(
   p: ShaderNode,
   age: ShaderNode,
@@ -625,43 +627,42 @@ function smokeVolume(
   nodes: typeof DEFAULT_ATMOSPHERE_NODES,
   cameraRight: ShaderNode,
   cameraUp: ShaderNode,
-  /** Density response [erosion floor share, full-density level, noise gain, noise bias]: calibrated per pool so the
-   * mean coverage of a puff over its life matches the legacy shading (billows/columns ~0.2, garnish puffs ~0.3). */
-  response: readonly [number, number, number, number] = [0.35, 0.72, 0.85, 0.35],
+  /** Density response [erosion floor, unused, noise gain, noise bias]: calibrated per pool on the live board so the
+   * puff keeps roughly its legacy coverage (billows/columns ~0.2, garnish puffs ~0.3). */
+  response: readonly [number, number, number, number] = [0.12, 0, 0.95, 0.3],
 ): { density: ShaderNode; shade: ShaderNode } {
   const look = nodes.smokeLook;
   const noise = waterTextures().noise;
   const wind3 = vec3(nodes.smokeWind.x, 0, nodes.smokeWind.y);
   const wind = vec2(dot(wind3, cameraRight), dot(wind3, cameraUp));
-  const q = vec2(p.x, p.y.div(float(1).add(t.mul(look.smokeStretch))))
+  const dir = normalize(vec2(wind.x.mul(0.6), wind.y.mul(0.6).add(1)));
+  const across = vec2(dir.y, dir.x.negate());
+  const stretch = float(1).add(t.mul(look.smokeStretch).mul(2));
+  // Puff-local frame: x across the drift, y along it (stretched with age). The density centre slides downwind/up.
+  const local = vec2(dot(p, across), dot(p, dir).sub(t.mul(look.smokeStretch).mul(0.35)));
+  const ps = vec2(local.x, local.y.div(stretch));
+  const q = ps
     .mul(look.smokeDetail)
-    .mul(0.52)
+    .mul(0.55)
     .add(vec2(seed.mul(3.7), seed.mul(1.9)))
-    .sub(wind.mul(age.mul(0.12)))
-    .sub(vec2(0, age.mul(0.09)));
+    .sub(vec2(0, age.mul(0.11)));
   const coarse = texture(noise, q).toVar();
-  const warped = q.mul(2.1).add(coarse.rg.sub(0.5).mul(look.smokeWarp).mul(0.28));
+  const warped = q.mul(2.1).add(coarse.rg.sub(0.5).mul(look.smokeWarp).mul(0.5));
   const fine = texture(noise, warped).r.toVar();
+  const ridge = float(1).sub(fine.mul(2).sub(1).abs());
+  const finer = texture(noise, warped.mul(2.3).add(vec2(0.37, 0.71))).g;
   const overhead = texture(noise, warped.add(vec2(0, 0.09))).r;
-  const densityNoise = coarse.r.mul(0.65).add(fine.mul(0.35));
-  const boundary = exp(
-    p.x
-      .pow(2)
-      .mul(-2.6)
-      .sub(
-        p.y
-          .div(float(1).add(t.mul(look.smokeStretch)))
-          .pow(2)
-          .mul(2.6),
-      ),
-  ).mul(smoothstep(1, 0.73, p.abs().max(p.abs().yx).x));
-  const erosion = look.smokeWisp.mul(t.mul(0.5).add(0.3));
-  const density = smoothstep(
-    erosion.mul(response[0]),
-    response[1],
-    boundary.mul(densityNoise.mul(response[2]).add(response[3])),
-  ).mul(float(1).sub(t.mul(0.3)));
-  const shade = float(0.68).add(fine.sub(overhead).mul(0.25).clamp(-0.12, 0.12));
+  const densityNoise = coarse.r
+    .mul(0.5)
+    .add(mix(fine, ridge, look.smokeRidge).mul(0.32))
+    .add(finer.mul(0.18));
+  // Radial (not square) quad fade: a square fade let downwind streaks end on a straight quad edge.
+  const boundary = exp(ps.x.pow(2).add(ps.y.pow(2)).mul(-3)).mul(smoothstep(1, 0.6, length(p)));
+  const field = boundary.mul(densityNoise.mul(response[2]).add(response[3]));
+  // The erosion threshold rises with age: the body thins out and only the denser filaments survive.
+  const threshold = float(response[0]).add(look.smokeWisp.mul(t.mul(0.4).add(0.05)));
+  const density = smoothstep(threshold, threshold.add(look.smokeEdge.max(0.02)), field).mul(float(1).sub(t.mul(0.3)));
+  const shade = float(0.66).add(fine.sub(overhead).mul(0.45).add(densityNoise.sub(0.5).mul(0.25)).clamp(-0.18, 0.18));
   return { density, shade };
 }
 
@@ -1050,7 +1051,7 @@ export class EffectsLayer {
         const n = mx_noise_float(vec3(p.mul(1.8), seed.mul(20).add(t.mul(1.5)))).mul(0.3);
         const oldMask = smoothstep(1.0, 0.2, length(p).add(n));
         const volume = this.nodes.realLight
-          ? smokeVolume(p, age, t, seed, this.nodes, this.cameraRight, this.cameraUp, [0.25, 0.55, 0.9, 0.4])
+          ? smokeVolume(p, age, t, seed, this.nodes, this.cameraRight, this.cameraUp, [0.15, 0, 0.9, 0.35])
           : undefined;
         const mask = volume
           ? mix(oldMask, volume.density, this.nodes.smokeLook.smokeVolume.mul(this.nodes.realLight!.enabled))
@@ -2689,6 +2690,7 @@ export class BeamLayer {
               coreWidth: beam.bolt ? undefined : this.laserStyle.coreWidth,
               preserveHue: !beam.bolt,
               laserLight: !beam.bolt,
+              impactEnd: !beam.bolt && i === end - 1,
               colour: beam.colour.toArray() as [number, number, number],
               hot: beam.bolt
                 ? emissiveCoreTint(beam.colour.toArray() as [number, number, number])

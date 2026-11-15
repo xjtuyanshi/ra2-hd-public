@@ -411,20 +411,29 @@ __hdBridge.light.look('new'); // New defaults below.
 __hdBridge.light.look({ smokeWisp: 0.5, beamFlicker: 0.1 });
 ```
 
-Shared uniforms live on `hd.nodes.smokeLook`: `smokeVolume=1`, `smokeWisp=0.75`, `smokeWarp=0.8`,
-`smokeStretch=0.35`, `smokeDetail=2`; `beamLight=1`, `beamCore=0.35`, `beamGlow=1.9`, `beamFlicker=0.12`,
-`beamImpact=0.18`; `chronoPool=0`, `flashWarm=1`, `flashNeutral=0.9`, `wreckGlow=1`. Master switches
-`smokeVolume=0` and `beamLight=0` restore their old profiles. `chronoPool=1`, `flashWarm=0` and `wreckGlow=0`
-restore old source policies. Detail/glow accept 0..4; other controls accept 0..1. These controls have no visual
-effect without the opted-in, enabled physical path.
+Shared uniforms live on `hd.nodes.smokeLook` (round 7b defaults): smoke `smokeVolume=1`, `smokeWisp=0.75`,
+`smokeWarp=0.8`, `smokeStretch=0.35`, `smokeDetail=2`, `smokeEdge=0.22` (width of the density ramp: smaller is
+crisper wisps), `smokeRidge=0.6` (share of ridged noise: filaments); lasers `beamLight=1`, `beamCore=0.35` (core
+radius share), `beamCoreGain=1.6` (core radiance; above the night bloom threshold so the core blooms), `beamGlow=1.2`
+(glow radius), `beamTail=0.45` (exponential tail share), `beamSpread=1.6` (laser quad width factor, so the tail
+reaches zero inside it), `beamFlicker=0.12`, `beamImpact=0.9` (hit-point bloom); sources `chronoPool=0`,
+`flashWarm=1`, `flashNeutral=0.9`, `flashSat=0.55` (warm flash saturation at constant luminance),
+`flashSize=0.7` (flash pool falloff and reach factor), `wreckGlow=1`. Master switches `smokeVolume=0` and
+`beamLight=0` restore their old profiles; `chronoPool=1`, `flashWarm=0` and `wreckGlow=0` restore old source
+policies, and `look('cur')` restores all of them. Detail, glow, spread, core gain and impact accept 0..4; other
+controls accept 0..1. These controls have no visual effect without the opted-in, enabled physical path.
 
-Smoke density uses the existing noise texture (three additional taps per procedural puff, two per eligible card
-texel); card coverage and premultiplied grey luminance are bounded within 4% per texel. Frame rectangles, grey
-colour, emission timing, depth and particle budgets are retained. Native straight lasers alone use a thin (about 4 device px)
-tinted-white core, Gaussian house-colour glow, 23 Hz seeded flicker and a small endpoint bloom in the same quad.
-Bolts and auxiliary beams retain their profiles. Chrono emission to ground defaults to zero. Flash luminance in the
-existing ground-footprint alpha selects neutral graded ground albedo only for the flash share; isolated beam ground
-lighting is unchanged. Wrecks retain their 0.45-cell radius with four times the old energy and calm 2–3 Hz flicker.
+Procedural smoke density uses the existing noise texture (four additional taps per puff: a domain-warped coarse
+octave, a ridged fine octave, a finer octave and an overhead tap for self-shadow), in a frame aligned with the puff's
+on-screen drift (rise plus the shared wind) and stretched along it with age, so edges pull into wisps downwind and
+the body thins as the erosion threshold rises. Card smoke takes two taps per eligible texel; card coverage and
+premultiplied grey luminance are bounded within 4% per texel. Frame rectangles, grey colour, emission timing, depth
+and particle budgets are retained. Native straight lasers alone use a widened quad with a Gaussian white-hot core
+(20% source hue), a house-colour glow that is a Gaussian plus an exponential tail windowed to zero at the quad edge
+(no clamp plateau), 23 Hz seeded flicker and a bloom at the hit point of the beam's last segment. Bolts and
+auxiliary beams retain their profiles. Chrono emission to ground defaults to zero. Flash luminance in the existing
+ground-footprint alpha selects neutral graded ground albedo only for the flash share; isolated beam ground lighting
+is unchanged. Wrecks retain their 0.45-cell radius with four times the old energy and calm 2–3 Hz flicker.
 CPU/shader tests do not establish private-art appearance, GPU frame cost or live battle acceptance.
 `LiveView.holdLight` also guards its implementation with `import.meta.env.DEV`. `setRealLight` returns false on
 views created without physical graphs. `stats()` reports pool sizes; `top(n)` reports source positions and energy.

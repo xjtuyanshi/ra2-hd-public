@@ -435,6 +435,13 @@ export function sampleRealLight(
   return capScale === OBJECT_KNEE ? kneeNode(attenuated, cap) : softKneeNode(attenuated, cap);
 }
 
+/** Scale an RGB radiance's chroma about its luminance by k (k = 1 unchanged), clamped at zero, same luminance. */
+export function saturateAtLuminance(c: Rgb, k: number): [number, number, number] {
+  const l = c[0] * LUMA[0] + c[1] * LUMA[1] + c[2] * LUMA[2];
+  const out = c.map((v) => Math.max(0, l + (v - l) * k)) as [number, number, number];
+  const l2 = out[0] * LUMA[0] + out[1] * LUMA[1] + out[2] * LUMA[2];
+  return out.map((v) => (v * l) / Math.max(l2, 1e-8)) as [number, number, number];
+}
 /** Fraction of ground irradiance from warm flashes only; beams retain exactly their existing receiver albedo. */
 export function flashNeutralWeight(nodes: RealLightNodes, xz: ShaderNode): ShaderNode {
   const uv = clamp(xz.div(nodes.size), nodes.groundHalfTexel, vec2(1).sub(nodes.groundHalfTexel))
@@ -867,12 +874,16 @@ export class RealLightField {
         const selected = isStatic
           ? this.attributes.slice(this.layers.length, this.layers.length * 2)
           : [...this.attributes.slice(0, this.layers.length), this.attributes[this.layers.length * 2]!];
+        const warm = l.lookClass === 'flash' ? look.flashWarm.value : 0;
+        // Warm flashes (round 7b): flashSize shrinks the pool's falloff and reach together; flashSat moves the warm
+        // colour's saturation away from the 0.32 it was built with, at constant luminance. On a neutralized night
+        // receiver 0.32 summed with the blue night base to a grey-white pool (61,61,60) on the live review board.
+        const size = 1 + (look.flashSize.value - 1) * warm;
+        const target = l.warmIntensity ? saturateAtLuminance(l.warmIntensity, look.flashSat.value / 0.32) : l.intensity;
         for (const attrs of selected) {
-          attrs[0]!.setXYZW(index, ...l.position, l.radius);
-          attrs[1]!.setXYZW(index, ...(l.end ?? l.position), lightReach(l));
+          attrs[0]!.setXYZW(index, ...l.position, l.radius * size);
+          attrs[1]!.setXYZW(index, ...(l.end ?? l.position), lightReach(l) * size);
           const intensity = l.initialIntensity && now - born < (l.hotSeconds ?? 0) ? l.initialIntensity : l.intensity;
-          const warm = l.lookClass === 'flash' ? look.flashWarm.value : 0;
-          const target = l.warmIntensity ?? l.intensity;
           attrs[2]!.setXYZW(
             index,
             (intensity[0] + (target[0] - intensity[0]) * warm) * gain,

@@ -12,9 +12,16 @@ export const LIGHT_LOOK_CURRENT = {
   beamGlow: 1,
   beamFlicker: 0,
   beamImpact: 0,
+  beamSpread: 1,
+  beamTail: 0,
+  beamCoreGain: 0.82,
   chronoPool: 1,
   flashWarm: 0,
   flashNeutral: 0,
+  flashSat: 0.32,
+  flashSize: 1,
+  smokeEdge: 0.4,
+  smokeRidge: 0,
   wreckGlow: 0,
 } as const;
 export const LIGHT_LOOK_NEW = {
@@ -25,14 +32,23 @@ export const LIGHT_LOOK_NEW = {
   smokeDetail: 2,
   beamLight: 1,
   beamCore: 0.35,
-  beamGlow: 1.9,
+  beamGlow: 1.2,
   beamFlicker: 0.12,
-  beamImpact: 0.18,
+  beamImpact: 0.9,
+  beamSpread: 1.6,
+  beamTail: 0.45,
+  beamCoreGain: 1.6,
   chronoPool: 0,
   flashWarm: 1,
   flashNeutral: 0.9,
+  flashSat: 0.55,
+  flashSize: 0.7,
+  smokeEdge: 0.22,
+  smokeRidge: 0.6,
   wreckGlow: 1,
 } as const;
+/** Parameters that are gains or widths rather than 0..1 shares. */
+const WIDE = new Set<string>(['smokeDetail', 'beamGlow', 'beamSpread', 'beamCoreGain', 'beamImpact']);
 export type LightLookValues = { [K in keyof typeof LIGHT_LOOK_NEW]: number };
 const lookUniform = (v: number) => uniform(v);
 export type LightLook = { [K in keyof LightLookValues]: ReturnType<typeof lookUniform> };
@@ -51,7 +67,7 @@ export function lightLook(look: LightLook, arg?: LightLookArgument): LightLookVa
   if (values)
     for (const [key, value] of Object.entries(values)) {
       const k = key as keyof LightLookValues;
-      look[k].value = Math.max(0, Math.min(k === 'smokeDetail' || k === 'beamGlow' ? 4 : 1, value!));
+      look[k].value = Math.max(0, Math.min(WIDE.has(k) ? 4 : 1, value!));
     }
   return Object.fromEntries(Object.entries(look).map(([k, v]) => [k, v.value])) as LightLookValues;
 }
