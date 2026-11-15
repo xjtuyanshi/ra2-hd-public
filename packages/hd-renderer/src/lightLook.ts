@@ -28,6 +28,10 @@ export const LIGHT_LOOK_CURRENT = {
   beamDepthLift: 0,
   beamFade: 0,
   beamOver: 0,
+  beamAgeKnee: 0,
+  beamAgeWhite: 0,
+  beamAgeCore: 0,
+  beamAgeClip: 0,
 } as const;
 export const LIGHT_LOOK_NEW = {
   smokeVolume: 1,
@@ -56,6 +60,10 @@ export const LIGHT_LOOK_NEW = {
   beamDepthLift: 0,
   beamFade: 0,
   beamOver: 0,
+  beamAgeKnee: 0,
+  beamAgeWhite: 0,
+  beamAgeCore: 0,
+  beamAgeClip: 0,
 } as const;
 /**
  * hd-light=beam (round 8, the default-on candidate): round 7's laser light, chrono and warm-flash fixes with the smoke
@@ -73,6 +81,11 @@ export const LIGHT_LOOK_NEW = {
  * - beamDepthLift: a gain on the depth lift of glow fragments towards the camera, by the height their screen offset
  *   would need above the ground (plus a little at the core). A glow below a low, near-horizontal beam is otherwise cut
  *   off by the terrain it is drawn over; the original draws its lasers over the scene, so a generous lift is faithful.
+ * - beamAgeKnee / beamAgeWhite / beamAgeCore / beamAgeClip (with beamFade): past 0.3 of its life (ramping over the
+ *   next 0.2) a fading laser loses its additive-clipping white and 30% of its overbright, and its core widens up to
+ *   2x, so the aged violet Prism beam is the original's 2-3 px deep violet line rather than a pale lavender thread.
+ *   A beam younger than the knee (the fresh Prism beam at live SOV07TMD frame 165 is 0.13-0.27 through its life)
+ *   keeps the look it had. Aged beam at frame 393: hue/saturation/value 273/0.68/0.71, original 273/0.77/0.72.
  */
 export const LIGHT_LOOK_BEAM = {
   ...LIGHT_LOOK_NEW,
@@ -90,6 +103,10 @@ export const LIGHT_LOOK_BEAM = {
   beamDepthLift: 2.5,
   beamFade: 1,
   beamOver: 1,
+  beamAgeKnee: 0.3,
+  beamAgeWhite: 1,
+  beamAgeCore: 1,
+  beamAgeClip: 0.3,
 } as const;
 export type LightLookPreset = 'new' | 'beam';
 /** Parameters that are gains or widths rather than 0..1 shares. */
@@ -101,6 +118,7 @@ const WIDE = new Set<string>([
   'beamImpact',
   'beamOverbright',
   'beamDepthLift',
+  'beamAgeCore',
 ]);
 export type LightLookValues = { [K in keyof typeof LIGHT_LOOK_NEW]: number };
 const lookUniform = (v: number) => uniform(v);

@@ -459,6 +459,16 @@ Five laser controls (all inert, i.e. `1/0/0/0/0`, in `cur` and `new`):
   glow kept at full strength there read paler and pinker than the original's deep violet. The core's white share
   fades with it (the white is the original's additive colour clipping), so an aged beam is a deep house-colour line
   rather than a pale lavender thread.
+- `beamAgeKnee=0.3`, `beamAgeWhite=1`, `beamAgeCore=1`, `beamAgeClip=0.3` (with `beamFade`; all 0 in the other
+  presets): past `beamAgeKnee` of its life, ramping over the next 0.2, a fading laser loses `beamAgeWhite` of its
+  clipping white, its core radius grows by up to `1 + beamAgeCore`, and `beamAgeClip` of its overbright goes with the
+  white, so its glow takes the house colour's own, bluer ratios. With the white share only linear in the light, the
+  aged violet Prism beam measured saturation 0.51 against the original's 0.73 at the same value (brightest 2% in a box
+  on the beam, raw pixels, live SOV07TMD frame 393). Now it is the original's 2-3 px deep violet line: hue, saturation
+  and value 273/0.68/0.71 against the original's 273/0.77/0.72 (the HD ground under the beam is brighter than the
+  original's, which caps the saturation). Beams younger than the knee keep their look: the fresh Prism beam at frame
+  165 (0.13-0.27 through its life) and the red volley at frame 252 are unchanged. Red beams past the knee (frame 225,
+  0.6 through) lose their white core too and read pure red, as the original's single-channel red never clips to white.
 - `beamOver=1`: native laser light (core, glow, hit bloom) is drawn over the scene (its fragment depth is moved to
   the near plane), as the original draws its lasers after everything else. With the depth test, and the lift above,
   the unit at a Prism volley's focus still stood in front of the converging glow and read as a dark, hard-edged

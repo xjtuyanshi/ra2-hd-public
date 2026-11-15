@@ -49,9 +49,18 @@ describe('round 8: hd-light=beam preset', () => {
       expect(preset.beamDepthLift).toBe(0);
       expect(preset.beamFade).toBe(0);
       expect(preset.beamOver).toBe(0);
+      expect(preset.beamAgeKnee).toBe(0);
+      expect(preset.beamAgeWhite).toBe(0);
+      expect(preset.beamAgeCore).toBe(0);
+      expect(preset.beamAgeClip).toBe(0);
     }
     expect(LIGHT_LOOK_BEAM.beamFade).toBe(1);
     expect(LIGHT_LOOK_BEAM.beamOver).toBe(1);
+    // A late beam loses its white and part of its overbright and its core widens; a young one keeps its look.
+    expect(LIGHT_LOOK_BEAM.beamAgeKnee).toBeGreaterThanOrEqual(0.27);
+    expect(LIGHT_LOOK_BEAM.beamAgeWhite).toBeGreaterThan(0);
+    expect(LIGHT_LOOK_BEAM.beamAgeCore).toBeGreaterThan(0);
+    expect(LIGHT_LOOK_BEAM.beamAgeClip).toBeGreaterThan(0);
     const look = createLightLook('beam');
     expect(lightLook(look)).toEqual(LIGHT_LOOK_BEAM);
     expect(lightLook(look, 'new')).toEqual(LIGHT_LOOK_NEW);

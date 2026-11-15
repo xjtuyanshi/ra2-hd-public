@@ -255,7 +255,15 @@ export class RealEmissiveLayer {
     // white-hot core bright enough to seed the night bloom, a colour glow that is a Gaussian plus an exponential tail
     // (no plateau: the old per-fragment clamp made a flat band), windowed to zero at the widened quad edge, and a small
     // bloom at the hit point. The glow keeps the source's own RGB ratios, so its hue is the original house colour.
-    const coreR = coreWidth.mul(this.look.beamCore).max(1e-4);
+    // age: share of a fading laser's life passed (under beamFade). late: 0 until beamAgeKnee, 1 from 0.2 later, so a
+    // beam in the first part of its life keeps the look it had. beamAgeCore (a gain): a late beam's core widens by
+    // 1 + late x gain, so the aged Prism beam is the original's 2-3 px deep violet line, not a 1 px thread.
+    const age = b.w.clamp(0, 1).mul(this.look.beamFade);
+    const late = smoothstep(this.look.beamAgeKnee, this.look.beamAgeKnee.add(0.2), age);
+    const coreR = coreWidth
+      .mul(this.look.beamCore)
+      .mul(float(1).add(late.mul(this.look.beamAgeCore)))
+      .max(1e-4);
     const laserCore = exp(r.div(coreR).pow(2).mul(-2.2));
     const glowR = this.look.beamGlow.max(1e-4);
     const reach = float(EMISSIVE_BUDGET.outerWidth).mul(spread);
@@ -282,22 +290,33 @@ export class RealEmissiveLayer {
       .mul(this.look.beamImpact)
       .mul(extra.z)
       .mul(window);
-    // Glow hue as the original shows it at the beam centre (beamOverbright; exactly colour / peak at 1).
+    // beamFade (hd-light=beam): a fading native laser dims over its life like the original (b.w: share of the life
+    // passed). The original's aged Prism beam is a darker, thinner violet; a fresh-looking glow there read pale and pink.
+    const remaining = float(1).sub(age);
+    // The original's white and pink are additive colour clipping, which goes as its light fades. beamAgeWhite (0..1)
+    // takes that share of it away from a late beam: with the white share only linear in the light the aged Prism beam
+    // still measured saturation 0.51 against the original's 0.73 at the same value (round-8 recheck, frame 393).
+    const clipShare = remaining.mul(float(1).sub(late.mul(this.look.beamAgeWhite)));
+    // Glow hue as the original shows it at the beam centre (beamOverbright; exactly colour / peak at 1). beamAgeClip
+    // (0..1): the overbright fades with clipShare, so an aged beam takes the house colour's own, bluer ratios, as the
+    // original's aged Prism beam does (272 deg against 294 deg fresh, live SOV07TMD).
+    const overbright = mix(
+      this.look.beamOverbright,
+      mix(float(1), this.look.beamOverbright, clipShare),
+      this.look.beamAgeClip,
+    );
     const display = pow(colour.rgb.max(0), vec3(1 / DISPLAY_GAMMA))
-      .mul(this.look.beamOverbright)
+      .mul(overbright)
       .min(1);
     const tint = pow(
       display.div(max(display.r, max(display.g, display.b)).max(1e-8)),
       vec3(DISPLAY_GAMMA),
     );
     const glowRgb = tint.mul(laserGlow).mul(flicker).mul(shimmer);
-    // beamFade (hd-light=beam): a fading native laser dims over its life like the original (b.w: share of the life
-    // passed). The original's aged Prism beam is a darker, thinner violet; a fresh-looking glow there read pale and pink.
-    const remaining = float(1).sub(b.w.clamp(0, 1).mul(this.look.beamFade));
     // The core and the impact take 20%/45% of the source hue so violet stays violet-white, never pink. A fading core
     // loses its white with its light (the white is the original's additive colour clipping): an aged Prism beam is a
-    // deep violet line in the original, and a dimmed white core read as a pale lavender thread.
-    const hotTint = mix(tint, mix(vec3(1), tint, 0.2), remaining).mul(this.look.beamCoreGain);
+    // deep violet line in the original, and a dimmed white core read as a pale lavender thread (clipShare above).
+    const hotTint = mix(tint, mix(vec3(1), tint, 0.2), clipShare).mul(this.look.beamCoreGain);
     const lightRgb = hotTint
       .mul(laserCore)
       .mul(flicker)
