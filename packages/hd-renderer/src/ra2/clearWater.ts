@@ -73,6 +73,14 @@ export const CLEAR_WATER = {
   clarity: 0.9,
   /** How far (1/m) the bed's own light and dark (sand ripples, rocks) stays visible through the water. */
   bedTexture: 0.25,
+  /**
+   * Night: hue shift of the water body under the blue moonlight (luma 1, so it only keeps the water a dark teal rather
+   * than navy) and the body's brightness relative to the ground's own night darkening. The body is lit by the same
+   * scene light as the ground, so at 1 the water darkens with the night exactly as the land does; the earlier fixed
+   * x3.6 lift (5.0, 3.4, 1.9) kept the night sea about as bright as by day and read as a glowing, fluorescent sea.
+   */
+  nightTint: [1.38, 0.94, 0.52],
+  nightLevel: 1,
   motionTarget: 1.5,
   anisotropyTarget: 0.4,
   highlightTarget: 0.04,
@@ -115,18 +123,24 @@ export const CLEAR_GLINT_LIGHT = (() => {
   return [x / n, up / n, z / n] as const;
 })();
 
-/** sRGB palette before scene lighting: deep teal-blue, turquoise shallows, the sand bed seen through the shallows. */
+/**
+ * sRGB palette before scene lighting: deep teal-blue, turquoise shallows, the sand bed seen through the shallows, and
+ * `murk`, the theatre's water clarity relative to the approved temperate sea (1): it scales the absorption and the
+ * fade of the bed, so a higher value gives less turquoise and a darker, deeper-looking sea at the same shore distance.
+ * Snow is a cold, polar sea: dark navy-teal, a narrow steel-teal fringe instead of tropical turquoise (owner
+ * 2026-11-15: arctic sea reads deep and dark; the earlier bright cyan read as a glowing sea against the snow).
+ */
 export function clearPalette(theater = '') {
   switch (theater.toLowerCase()) {
     case 'snow':
-      return { deep: 0x114558, shallow: 0x3796b2, bed: 0x8a969c };
+      return { deep: 0x0d3444, shallow: 0x2c7488, bed: 0x7c878d, murk: 1.6 };
     case 'desert':
-      return { deep: 0x174750, shallow: 0x45aea4, bed: 0xa89470 };
+      return { deep: 0x174750, shallow: 0x45aea4, bed: 0xa89470, murk: 1 };
     case 'urban':
     case 'newurban':
-      return { deep: 0x17434f, shallow: 0x3a908c, bed: 0x8a8a80 };
+      return { deep: 0x17434f, shallow: 0x3a908c, bed: 0x8a8a80, murk: 1 };
     default:
-      return { deep: 0x134250, shallow: 0x2a9894, bed: 0x8c7c5e };
+      return { deep: 0x134250, shallow: 0x2a9894, bed: 0x8c7c5e, murk: 1 };
   }
 }
 
@@ -348,14 +362,17 @@ export function clearWaterLook(
   const bedShade = mix(
     float(1),
     bedLuma.clamp(0.4, 1.6).pow(1.4),
-    exp(metres.mul(-CLEAR_WATER.bedTexture))
+    exp(metres.mul(-CLEAR_WATER.bedTexture * palette.murk))
       .mul(float(1).sub(quayDeep))
       .mul(float(1).sub(night.mul(0.8))),
   );
   // Only near the shallows may the perturbation make the water read shallower: further out it raised isolated
   // turquoise blobs in deep water.
   const tintWarp = rockTap.g.sub(0.5).mul(0.7);
-  const tintDepth = metres.mul(float(1).add(max(tintWarp, tintWarp.mul(smoothstep(3.2, 1.8, metres)))));
+  // A murkier theatre (palette.murk) turns to the deep colour sooner.
+  const tintDepth = metres
+    .mul(palette.murk)
+    .mul(float(1).add(max(tintWarp, tintWarp.mul(smoothstep(3.2, 1.8, metres)))));
   // At night the shallows keep the deep colour: the night transform below brightens the water body, and a turquoise
   // band brightened with it glowed as a pale ring (a lace of rings where the reef edge wanders).
   // Islets and headlands (short shores) have steep rock sides and no sand flats: their narrow fringe is a darker,
@@ -378,7 +395,7 @@ export function clearWaterLook(
   )
     .mul(dapple)
     .mul(bedShade);
-  const seen = exp(metres.mul(-CLEAR_WATER.clarity));
+  const seen = exp(metres.mul(-CLEAR_WATER.clarity * palette.murk));
   // Caustics: drifting light on the bed between about a third of a cell and a cell and a half from the beach.
   const caustic = texture(
     waterTextures().caustics,
@@ -393,7 +410,7 @@ export function clearWaterLook(
     .mul(float(1).sub(hard).mul(float(1).sub(quayDeep)))
     // Caustics need sunlight: under the moon they drew a regular honeycomb over the night shallows.
     .mul(float(1).sub(night));
-  const transmission = exp(vec3(...CLEAR_WATER.absorption).mul(metres.negate()));
+  const transmission = exp(vec3(...CLEAR_WATER.absorption.map((a) => a * palette.murk)).mul(metres.negate()));
   // The bed seen through the first metre keeps its own light and dark but takes the water's turquoise hue within about
   // half a metre (sand colour mixed straight into turquoise read as a grey, milky rim).
   const aquaLuma =
@@ -440,8 +457,9 @@ export function clearWaterLook(
       .add(quay.mul(0.03))
       .sub(quay.mul(smoothstep(0.07, 0.0, edge)).mul(0.3)),
   );
-  // Night: the moonlight is blue; a greener, brighter body keeps the water a dark teal, never black navy.
-  const nightBody = body.mul(vec3(5.0, 3.4, 1.9));
+  // Night: the moonlight is blue; a greener body keeps the water a dark teal, never black navy, while its brightness
+  // follows the scene light like the ground's (CLEAR_WATER.nightTint, nightLevel).
+  const nightBody = body.mul(vec3(...CLEAR_WATER.nightTint).mul(CLEAR_WATER.nightLevel));
   body = mix(body, mix(nightBody, vec3(dot(nightBody, vec3(0.2126, 0.7152, 0.0722))), 0.1), night);
 
   // The RTS camera is orthographic: one view direction for the whole screen (IsoCamera, 30 degree pitch), so the
