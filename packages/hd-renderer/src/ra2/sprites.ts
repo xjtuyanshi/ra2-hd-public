@@ -1,3 +1,13 @@
+import {
+  spriteIntegrationFor,
+  quotientGradientNode,
+  integratedCoverageNode,
+  nonGreyNode,
+  quadraticGradientNode,
+  colourFilterWeightNode,
+  softRangeNode,
+  highlightRollNode,
+} from '../spriteIntegration';
 import type { TerrainDepth } from '../terrainDepth';
 import { NOT_CAPTURED_CODE } from '../objectDepth';
 import { DirtyAttribute } from '../dirtyAttribute';
@@ -97,6 +107,7 @@ import {
   poweredOcclusion,
   relightFactor,
   sampleMaterial,
+  smoothMaterial,
   spriteLookFor,
   sunHighlight,
   type SpriteMaterialAtlas,
@@ -514,6 +525,7 @@ interface SpriteGraphFeatures {
   paintSaturation: number;
   windows: boolean;
   materials: boolean;
+  integration: boolean;
   capture: TerrainDepth | null;
   /**
    * Sampling class of each page (see samplingClass): three writes a texel load or a filtered sample into the shader
@@ -556,6 +568,7 @@ class SpriteGraph {
   readonly hdScale = uniform(1);
   readonly windowsPage: ShaderNode;
   readonly materialPage: ShaderNode;
+  readonly materialSize = uniform(new Vector2(1, 1));
   /** Per-instance anchor code of capture-enabled layers, for the materials that are captured. */
   captureCode: ShaderNode | null = null;
   readonly materials: Record<
@@ -568,6 +581,8 @@ class SpriteGraph {
     const { referenceLevel, windowGain } = nodes;
     const look = spriteLookFor(nodes);
     const { capture, sampling } = features;
+    const integration = features.integration && features.hd && !features.hdSupersample;
+    const tune = spriteIntegrationFor(nodes).uniforms;
     this.atlasPage = textureSlot(sampling.atlas);
     this.hdColour = textureSlot(sampling.hd);
     this.hdRemap = textureSlot(sampling.remap);
@@ -884,6 +899,12 @@ class SpriteGraph {
         nodes.alive.shadow.toStack();
         const texel = vec2(aRect.x.add(u.mul(aRect.z)), aRect.y.add(v.mul(aRect.w))).toVar();
         const atlasUv = texel.div(atlasSize);
+        // Derivatives must be evaluated before any non-uniform control flow (including the look branch).
+        const devicePx: ShaderNode = integration
+          ? float(1)
+              .div(max(max(length(dFdx(texel)), length(dFdy(texel))), 1e-6))
+              .toVar('spriteIntegrationPx')
+          : null;
         const paletteColour = (i: ShaderNode): ShaderNode =>
           texture(cache.paletteAtlas, vec2(i.add(0.5).div(256), aParams.z.add(0.5).div(paletteRows))).rgb;
 
@@ -912,33 +933,117 @@ class SpriteGraph {
         // Bilinear tents of the opaque taps and of those with an unlit index (unlitPalette.ts unlitShare).
         const unlitTaps: ShaderNode | null = features.hd ? float(0).toVar() : null;
         const opaqueTaps: ShaderNode | null = features.hd ? float(0).toVar() : null;
-        for (const oy of [-1, 0, 1]) {
-          for (const ox of [-1, 0, 1]) {
-            const k: ShaderNode = k0.add(vec2(ox, oy));
-            const inside: ShaderNode = step(lo, k).mul(float(1).sub(step(hi, k)));
-            const i: ShaderNode = floor(texture(atlasPage, k.add(0.5).div(atlasSize)).r.mul(255).add(0.5)).toVar();
-            const occupied: ShaderNode = step(0.5, i).mul(inside.x).mul(inside.y).toVar();
-            const w: ShaderNode = weights(ox).x.mul(weights(oy).y).mul(occupied).toVar();
-            coverage.addAssign(w);
-            if (houseIndex && houseWeight) {
-              const paintWeight: ShaderNode = w.mul(step(15.5, i)).mul(step(i, 31.5));
-              houseIndex.addAssign(i.mul(paintWeight));
-              houseWeight.addAssign(paintWeight);
-            }
-            if (unlitTaps && opaqueTaps) {
-              const tent: ShaderNode = unlitTapWeightNode(ox, oy, t0).mul(occupied);
-              opaqueTaps.addAssign(tent);
-              unlitTaps.addAssign(tent.mul(houseConverterUnlitIndexNode(i)));
-            }
-            if (ox === 0 && oy === 0) {
-              index.assign(i.mul(occupied));
-            } else {
-              const stronger: ShaderNode = step(fillWeight.add(1e-6), w);
-              fill.assign(mix(fill, i, stronger));
-              fillWeight.assign(max(fillWeight, w));
-            }
+        const wideSum: ShaderNode = integration ? float(0).toVar() : null;
+        const wideNorm: ShaderNode = integration ? float(0).toVar() : null;
+        const wideGrad: ShaderNode = integration ? vec2(0).toVar() : null;
+        const normGrad: ShaderNode = integration ? vec2(0).toVar() : null;
+        const narrowGrad: ShaderNode = integration ? vec2(0).toVar() : null;
+        const houseSum: ShaderNode = integration ? float(0).toVar() : null;
+        const houseGrad: ShaderNode = integration ? vec2(0).toVar() : null;
+        const narrowHouseGrad: ShaderNode = integration ? vec2(0).toVar() : null;
+        const strongestHouse: ShaderNode = integration ? float(0).toVar() : null;
+        const strongestHouseUv: ShaderNode = integration ? vec2(0).toVar() : null;
+        const localLuma: ShaderNode = integration ? float(0).toVar() : null;
+        const innerOpaque: ShaderNode = integration ? float(0).toVar() : null;
+        const innerPaint: ShaderNode = integration ? float(0).toVar() : null;
+        const houseRingTaps: { i: ShaderNode; occupied: ShaderNode; g: ShaderNode; dg: ShaderNode }[] = [];
+        // Reuse palette luminances for the continuous weighted mean absolute deviation after the loop.
+        const lumaTaps: { w: ShaderNode; l: ShaderNode }[] = [];
+        // The Gaussian is separable: ten scalar exponentials, rather than one for each of the 25 taps.
+        const inverseSigma2: ShaderNode = integration ? float(1).div(tune.edgeSigma.mul(tune.edgeSigma)).toVar() : null;
+        const gaussianAxes = new Map<number, ShaderNode>();
+        if (integration)
+          for (const offset of [-2, -1, 0, 1, 2]) {
+            const d: ShaderNode = vec2(offset).sub(t0);
+            gaussianAxes.set(offset, exp(d.mul(d).mul(inverseSigma2).mul(-0.5)).toVar());
           }
-        }
+        const accumulateTap = (ox: number, oy: number): void => {
+          const k: ShaderNode = k0.add(vec2(ox, oy));
+          const inside: ShaderNode = step(lo, k).mul(float(1).sub(step(hi, k)));
+          const sample = texture(atlasPage, k.add(0.5).div(atlasSize));
+          // Ring loads may run in a non-uniform branch. Explicit LOD needs no implicit derivatives.
+          const i: ShaderNode = floor((integration ? sample.level(float(0)) : sample).r.mul(255).add(0.5)).toVar();
+          const occupied: ShaderNode = step(0.5, i).mul(inside.x).mul(inside.y).toVar();
+          if (integration) {
+            const d: ShaderNode = k.add(0.5).sub(texel);
+            const g: ShaderNode = gaussianAxes.get(ox)!.x.mul(gaussianAxes.get(oy)!.y).toVar();
+            const dg: ShaderNode = d.mul(g).mul(inverseSigma2);
+            wideSum.addAssign(g.mul(occupied));
+            wideNorm.addAssign(g);
+            wideGrad.addAssign(dg.mul(occupied));
+            normGrad.addAssign(dg);
+            if (Math.abs(ox) > 1 || Math.abs(oy) > 1) {
+              houseRingTaps.push({ i, occupied, g, dg });
+              return;
+            }
+            const hp: ShaderNode = step(15.5, i).mul(step(i, 31.5)).mul(occupied);
+            innerOpaque.addAssign(occupied);
+            innerPaint.addAssign(hp);
+            houseSum.addAssign(g.mul(hp));
+            houseGrad.addAssign(dg.mul(hp));
+          }
+          const w: ShaderNode = weights(ox).x.mul(weights(oy).y).mul(occupied).toVar();
+          if (integration) {
+            const dw: ShaderNode = vec2(
+              quadraticGradientNode(t0.x, ox).mul(weights(oy).y),
+              weights(ox).x.mul(quadraticGradientNode(t0.y, oy)),
+            ).mul(occupied);
+            narrowGrad.addAssign(dw);
+            const hp: ShaderNode = step(15.5, i).mul(step(i, 31.5));
+            narrowHouseGrad.addAssign(dw.mul(hp));
+            const hw: ShaderNode = w.mul(hp);
+            const stronger: ShaderNode = step(strongestHouse.add(1e-6), hw);
+            strongestHouseUv.assign(mix(strongestHouseUv, k.add(0.5).div(atlasSize), stronger));
+            strongestHouse.assign(max(strongestHouse, hw));
+            const l: ShaderNode = luminance(paletteColour(i)).toVar();
+            localLuma.addAssign(w.mul(l));
+            lumaTaps.push({ w, l });
+          }
+          coverage.addAssign(w);
+          if (houseIndex && houseWeight) {
+            const paintWeight: ShaderNode = w.mul(step(15.5, i)).mul(step(i, 31.5));
+            houseIndex.addAssign(i.mul(paintWeight));
+            houseWeight.addAssign(paintWeight);
+          }
+          if (unlitTaps && opaqueTaps) {
+            const tent: ShaderNode = unlitTapWeightNode(ox, oy, t0).mul(occupied);
+            opaqueTaps.addAssign(tent);
+            unlitTaps.addAssign(tent.mul(houseConverterUnlitIndexNode(i)));
+          }
+          if (ox === 0 && oy === 0) {
+            index.assign(i.mul(occupied));
+          } else {
+            const stronger: ShaderNode = step(fillWeight.add(1e-6), w);
+            fill.assign(mix(fill, i, stronger));
+            fillWeight.assign(max(fillWeight, w));
+          }
+        };
+        // Preserve the original inner tap order and all its indexed, house, fill and unlit accumulators.
+        for (const oy of [-1, 0, 1]) for (const ox of [-1, 0, 1]) accumulateTap(ox, oy);
+        if (integration)
+          If(tune.on.greaterThan(0.5), () => {
+            for (const oy of [-2, -1, 0, 1, 2])
+              for (const ox of [-2, -1, 0, 1, 2]) {
+                if (Math.abs(ox) === 2 || Math.abs(oy) === 2) accumulateTap(ox, oy);
+              }
+            // In a full homogeneous inner 3x3, the narrow paint bounds coincide at 0 or 1. Wide paint cannot
+            // change that result. Still reconstruct wide opacity: colour inset and rim relight depend on it.
+            const needsHouseRing: ShaderNode = innerOpaque
+              .lessThan(9)
+              .or(innerPaint.greaterThan(0).and(innerPaint.lessThan(9)))
+              .toVar('spriteNeedsHouseRing');
+            If(needsHouseRing, () => {
+              for (const tap of houseRingTaps) {
+                const hp: ShaderNode = step(15.5, tap.i).mul(step(tap.i, 31.5)).mul(tap.occupied);
+                houseSum.addAssign(tap.g.mul(hp));
+                houseGrad.addAssign(tap.dg.mul(hp));
+              }
+            });
+          });
+        const wide: ShaderNode = integration ? wideSum.div(max(wideNorm, 1e-8)).toVar() : null;
+        const gradientW: ShaderNode = integration
+          ? quotientGradientNode(wideSum, wideGrad, wideNorm, normGrad).toVar()
+          : null;
         // Shadows take the filtered coverage itself: solid shadow art stays solid with a soft edge, and the stippled
         // shadows of trees and bushes become an even half shadow (their average at 1x) instead of blotches.
         // Existing building/vehicle shadows retain indexed coverage. Only the new infantry page supplies HD alpha.
@@ -1094,11 +1199,143 @@ class SpriteGraph {
             .div(max(luminance(colour), 1e-4))
             .min(1);
           const fringed: ShaderNode = mix(colour.mul(limit), colour, solid).toVar('spriteFringedColour');
+          // Upright terrain-light cards share the existing instance class; decals and self-lit art are excluded.
+          const treeProtection: ShaderNode = integration
+            ? float(1)
+                .sub(
+                  max(isFull, isNone.sub(isUnlit))
+                    .mul(float(1).sub(step(0.5, aFlat)))
+                    .mul(tune.treeDetail)
+                    .mul(tune.on),
+                )
+                .toVar('spriteTreeProtection')
+            : null;
+          const objectSoften: ShaderNode = integration ? tune.soften.mul(treeProtection) : null;
+          const newAlpha: ShaderNode = integration ? hdArt.a.mul(edge).toVar() : null;
+          const shadePaint: ShaderNode = integration ? float(paint).toVar() : paint;
+          if (integration) {
+            If(tune.on.greaterThan(0.5), () => {
+              // Move the colour footprint inward, but keep the geometric silhouette independent of binary HD alpha.
+              const inward: ShaderNode = gradientW
+                .div(max(length(gradientW), 1e-6))
+                .mul(float(1).sub(smoothstep(0.85, 1, wide)))
+                .mul(0.6)
+                .div(atlasSize);
+              const hdSize: ShaderNode = atlasSize.mul(this.hdScale);
+              const q: ShaderNode = atlasUv.add(inward).mul(hdSize).sub(0.5);
+              const k: ShaderNode = floor(q.add(0.5));
+              const t: ShaderNode = q.sub(k);
+              const snp: ShaderNode = float(0).toVar(),
+                sp: ShaderNode = float(0).toVar();
+              const nonGreySum: ShaderNode = float(0).toVar();
+              const cnpSum: ShaderNode = vec3(0).toVar(),
+                gpSum: ShaderNode = vec3(0).toVar();
+              for (const oy of [-1, 0, 1])
+                for (const ox of [-1, 0, 1]) {
+                  const at: ShaderNode = k.add(vec2(ox, oy)).add(0.5).div(hdSize);
+                  const tap: ShaderNode = texture(hdColour, at).level(float(0)).toVar();
+                  const mask: ShaderNode = texture(hdRemap, at).level(float(0)).r;
+                  // Rect clipping also excludes adjacent packed frames when filtering near the outer edge.
+                  const original: ShaderNode = k.add(vec2(ox, oy)).add(0.5).div(this.hdScale);
+                  const inside: ShaderNode = step(lo, original).mul(float(1).sub(step(hi, original)));
+                  const wa: ShaderNode = colourFilterWeightNode(t.x, ox, objectSoften)
+                    .mul(colourFilterWeightNode(t.y, oy, objectSoften))
+                    .mul(tap.a)
+                    .mul(inside.x)
+                    .mul(inside.y);
+                  const wp: ShaderNode = wa.mul(mask),
+                    wn: ShaderNode = wa.mul(float(1).sub(mask));
+                  snp.addAssign(wn);
+                  sp.addAssign(wp);
+                  nonGreySum.addAssign(wp.mul(nonGreyNode(tap.rgb)));
+                  cnpSum.addAssign(tap.rgb.mul(wn));
+                  gpSum.addAssign(tap.rgb.mul(wp));
+                }
+              const gp: ShaderNode = gpSum.div(max(sp, 1e-8)).toVar();
+              const encoded: ShaderNode = clamp(
+                float(16).add(
+                  float(255)
+                    .sub(pow(max(gp.g, 0), 1 / 2.2).mul(255))
+                    .div(15),
+                ),
+                16,
+                31,
+              );
+              const nonGreyFraction: ShaderNode = nonGreySum.div(max(sp, 1e-8)).toVar('spriteNonGreyFraction');
+              const valid: ShaderNode = step(1e-4, sp).mul(
+                float(1).sub(indexedHousePaint.mul(smoothstep(0.3, 0.7, nonGreyFraction))),
+              );
+              const idx: ShaderNode = mix(originalIndex, encoded, valid);
+              const i0: ShaderNode = floor(idx);
+              let newHouse: ShaderNode = mix(paletteColour(i0), paletteColour(i0.add(1).min(31)), idx.sub(i0));
+              if (features.paintSaturation < 1)
+                newHouse = mix(vec3(newHouse.dot(vec3(0.2126, 0.7152, 0.0722))), newHouse, features.paintSaturation);
+              const cnp: ShaderNode = select(snp.greaterThanEqual(1e-4), cnpSum.div(max(snp, 1e-8)), newHouse).toVar();
+              const mu: ShaderNode = localLuma.div(max(coverage, 1e-8));
+              const deviation: ShaderNode = float(0).toVar();
+              for (const tap of lumaTaps) deviation.addAssign(tap.w.mul(tap.l.sub(mu).abs()));
+              const spread: ShaderNode = deviation.div(max(coverage, 1e-8)).mul(2).add(0.06);
+              const low: ShaderNode = max(mu.sub(spread), 0),
+                high: ShaderNode = mu.add(spread);
+              const l: ShaderNode = luminance(cnp);
+              // Do not clamp house fallback: its hue and luminance belong to the palette ramp.
+              cnp.mulAssign(
+                mix(
+                  1,
+                  softRangeNode(l, low, high).div(max(l, 1e-4)),
+                  tune.deHalo.mul(treeProtection).mul(step(1e-4, snp)),
+                ),
+              );
+              const after: ShaderNode = luminance(cnp);
+              cnp.mulAssign(
+                mix(
+                  1,
+                  highlightRollNode(after, max(high, mu).mul(0.75), tune.highlightRoll).div(max(after, 1e-4)),
+                  step(1e-4, snp),
+                ),
+              );
+              const frac: ShaderNode = houseSum.div(max(wideSum, 1e-8));
+              const gradFrac: ShaderNode = quotientGradientNode(houseSum, houseGrad, wideSum, wideGrad);
+              const narrowFrac: ShaderNode = houseWeight.div(max(coverage, 1e-8));
+              const gradNarrowFrac: ShaderNode = quotientGradientNode(
+                houseWeight,
+                narrowHouseGrad,
+                coverage,
+                narrowGrad,
+              );
+              const paintSmooth: ShaderNode = integratedCoverageNode(
+                frac,
+                narrowFrac,
+                gradFrac,
+                gradNarrowFrac,
+                devicePx,
+                tune.edgeSoft,
+                tune.thinKeep,
+              );
+              const gate: ShaderNode = max(
+                indexedHousePaint,
+                step(0.5, texture(hdRemap, strongestHouseUv).level(float(0)).r).mul(step(1e-6, strongestHouse)),
+              );
+              const newPaint: ShaderNode = gate.mul(paintSmooth);
+              const newColour: ShaderNode = select(sp.add(snp).lessThan(1e-4), nearest, mix(cnp, newHouse, newPaint));
+              // The paint control blends final colours: encoded greys never enter the reconstructed colour filter.
+              fringed.assign(mix(fringed, newColour, tune.paint));
+              shadePaint.assign(mix(paint, newPaint, tune.paint));
+              newAlpha.assign(
+                integratedCoverageNode(wide, coverage, gradientW, narrowGrad, devicePx, tune.edgeSoft, tune.thinKeep),
+              );
+            });
+          }
+
           unlitShare = houseArt.mul(unlitShareNode(unlitTaps!, opaqueTaps!)).toVar('spriteUnlitShareHere');
           unlitColour = unlitOf(fringed).toVar('spriteUnlitColour');
-          lit = shade(fringed, paint).toVar();
+          lit = shade(fringed, shadePaint).toVar();
           litGlow = vec3(glow).toVar();
-          litAlpha = hdArt.a.mul(edge).toVar();
+          litAlpha = integration ? newAlpha : hdArt.a.mul(edge).toVar();
+          if (features.integration && features.hdSupersample) {
+            // These pages carry real HD alpha. Retain the old 1x edge only for runtime A/B off.
+            litAlpha = hdArt.a.mul(mix(edge, 1, step(0.5, tune.on))).toVar('spriteSupersampleAlpha');
+          }
           art = vec4(lit.add(litGlow), litAlpha);
         }
         const result: ShaderNode = mix(art, shadow, isShadow).toVar();
@@ -1110,23 +1347,48 @@ class SpriteGraph {
           const wet: ShaderNode = look.wetness;
           // Upright art with material data: relight as a delta on the baked shading, occlusion, highlights, glass.
           if (features.materials) {
-            const m = sampleMaterial(materialPage, atlasUv);
-            const weight: ShaderNode = m.has.mul(float(1).sub(step(0.5, aFlat)));
-            const factor: ShaderNode = mix(vec3(1), relightFactor(m.normal, look), look.relight.mul(weight));
+            const centre = sampleMaterial(materialPage, atlasUv);
+            const m = integration
+              ? {
+                  normal: vec3(centre.normal).toVar(),
+                  spec: float(centre.spec).toVar(),
+                  ao: float(centre.ao).toVar(),
+                  has: centre.has,
+                }
+              : centre;
+            if (integration) {
+              If(tune.on.greaterThan(0.5), () => {
+                const smooth = smoothMaterial(materialPage, atlasUv, this.materialSize, centre, tune.normalSmooth);
+                m.normal.assign(smooth.normal);
+                m.spec.assign(smooth.spec);
+                m.ao.assign(smooth.ao);
+              });
+            }
+            const originalWeight: ShaderNode = m.has.mul(float(1).sub(step(0.5, aFlat)));
+            const weight: ShaderNode = integration
+              ? originalWeight.mul(mix(1, smoothstep(0.55, 1, wide), tune.rimFade.mul(step(0.5, tune.on))))
+              : originalWeight;
+            const relight: ShaderNode = integration
+              ? look.relight.mul(mix(1, tune.relight, step(0.5, tune.on)))
+              : look.relight;
+            const specular: ShaderNode = integration
+              ? look.specular.mul(mix(1, tune.specular, step(0.5, tune.on)))
+              : look.specular;
+            const factor: ShaderNode = mix(vec3(1), relightFactor(m.normal, look), relight.mul(weight));
             const occlusion: ShaderNode = mix(
               float(1),
               poweredOcclusion(m.ao, look.aoPower),
               look.occlusion.mul(weight),
             );
             const base: ShaderNode = lit.mul(factor).mul(occlusion);
-            const glass: ShaderNode = smoothstep(0.75, 0.98, m.spec).mul(weight);
+            const glass: ShaderNode = smoothstep(0.75, 0.98, centre.spec).mul(originalWeight);
             // Glass: a street-level mirror (see glassReflection) with sky, cloud streaks and a sun glint, tinted by the
             // pane. Its own strength (look.glass) is independent of the facade highlights (look.specular).
             const facade: ShaderNode = vec2(ground.x.add(ground.y), py.div(ppu).negate());
-            const pane = glassReflection(m.normal, view, sun, facade, lit, look);
+            const pane = glassReflection(centre.normal, view, sun, facade, lit, look);
             const reflectance: ShaderNode = look.glass
               .mul(glass.mul(GLASS_REFLECTANCE))
-              .add(look.specular.mul(wet.mul(weight).mul(0.05)));
+              .add(specular.mul(wet.mul(weight).mul(0.05)));
             const roughness: ShaderNode = highlightRoughness(classRoughness(m.spec, wet), look.specularSize);
             // Facades and roofs: a physical GGX highlight, weak on matte classes.
             const highlight: ShaderNode = sunHighlight(m.normal, sun, view, roughness, float(0.03))
@@ -1134,14 +1396,14 @@ class SpriteGraph {
               .mul(gradeLight)
               .mul(look.specularSize.mul(look.specularSize))
               .mul(
-                look.specular
+                specular
                   .mul(weight)
                   .mul(mix(float(0.25), float(1), m.spec))
                   .mul(float(1).sub(glass))
                   .mul(occlusion),
               );
             // Glints only on the full inside of a pane (not its softer rim), so they never sparkle as single pixels.
-            const core: ShaderNode = smoothstep(0.92, 0.99, m.spec).mul(weight);
+            const core: ShaderNode = smoothstep(0.92, 0.99, centre.spec).mul(originalWeight);
             const glint: ShaderNode = pane.glint
               .mul(look.sunLight)
               .mul(gradeLight)
@@ -1159,7 +1421,7 @@ class SpriteGraph {
             const hdScale: ShaderNode = this.hdScale;
             const crystalColour = groundCrystalColour(
               lit,
-              m,
+              centre,
               crystal,
               texel.mul(hdScale),
               view,
@@ -1475,23 +1737,24 @@ function objectId(object: object | null | undefined): number {
 function spriteGraphFor(cache: Ra2Cache, features: SpriteGraphFeatures): SpriteGraph {
   let graphs = spriteGraphs.get(cache);
   if (!graphs) spriteGraphs.set(cache, (graphs = new Map()));
-  const key = [
-    features.hd ? `hd${features.paintSaturation < 1 ? features.paintSaturation : ''}` : 'indexed',
-    features.hdSupersample ? 'supersample' : '',
-    features.windows ? 'windows' : '',
-    features.materials ? 'materials' : '',
-    objectId(features.capture),
-    // The cache's depth template is read by the shader (its texture and size) and arrives with the type library,
-    // after the map's own layers were built: layers made before and after it are different shaders.
-    objectId(cache.depthTemplate),
-    // Read by the shader as well; fixed for a cache's lifetime today, keyed so that a replaced one cannot be missed.
-    objectId(cache.paletteAtlas),
-    objectId(cache.mapLight),
-    features.sampling.atlas,
-    features.hd ? `${features.sampling.hd}/${features.sampling.remap}` : '',
-    features.windows ? features.sampling.windows : '',
-    features.materials ? features.sampling.materials : '',
-  ].join('|');
+  const key =
+    [
+      features.hd ? `hd${features.paintSaturation < 1 ? features.paintSaturation : ''}` : 'indexed',
+      features.hdSupersample ? 'supersample' : '',
+      features.windows ? 'windows' : '',
+      features.materials ? 'materials' : '',
+      objectId(features.capture),
+      // The cache's depth template is read by the shader (its texture and size) and arrives with the type library,
+      // after the map's own layers were built: layers made before and after it are different shaders.
+      objectId(cache.depthTemplate),
+      // Read by the shader as well; fixed for a cache's lifetime today, keyed so that a replaced one cannot be missed.
+      objectId(cache.paletteAtlas),
+      objectId(cache.mapLight),
+      features.sampling.atlas,
+      features.hd ? `${features.sampling.hd}/${features.sampling.remap}` : '',
+      features.windows ? features.sampling.windows : '',
+      features.materials ? features.sampling.materials : '',
+    ].join('|') + (features.integration ? '|integration' : '');
   let graph = graphs.get(key);
   if (!graph) graphs.set(key, (graph = new SpriteGraph(cache, features)));
   return graph;
@@ -1603,6 +1866,7 @@ export class SpriteLayer {
     const hdScale = hd ? ((hd.color.image as { width?: number } | null)?.width ?? atlas.width) / atlas.width : 1;
     const graph = spriteGraphFor(cache, {
       hd: !!hd,
+      integration: spriteIntegrationFor(nodes).compiled,
       hdSupersample: hdSupersampled(hd, hdScale),
       paintSaturation: hd ? (hd.paintSaturation ?? 1) : 1,
       windows: !!windows,
@@ -1642,7 +1906,13 @@ export class SpriteLayer {
         graph.hdRemap.value = hd.remap;
       }
       if (windows) graph.windowsPage.value = windows;
-      if (materials) graph.materialPage.value = materials.texture;
+      if (materials) {
+        graph.materialPage.value = materials.texture;
+        if (spriteIntegrationFor(nodes).compiled) {
+          const image = materials.texture.image as { width: number; height: number };
+          graph.materialSize.value.set(image.width, image.height);
+        }
+      }
     };
     /** This layer's material for one pass: the graph's, drawn with this layer's pages. */
     const own = (prototype: MeshBasicNodeMaterial, captured = false): MeshBasicNodeMaterial => {

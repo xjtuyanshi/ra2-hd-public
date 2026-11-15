@@ -1,4 +1,5 @@
 import { parseAliveParams } from '../src/livingWorld';
+import { mountSpriteIntegrationTuning, spriteIntegrationAPI } from '../src/ra2/spriteIntegrationTuning';
 /**
  * Live-view bench (development only): drives LiveView with synthetic snapshots on a frozen clock, so one engine anim,
  * a set of units or buildings can be looked at (and screenshotted) deterministically, without running the game.
@@ -127,6 +128,7 @@ const time = Number(params.get('time') ?? 0);
 const house = Number(params.get('house') ?? (params.get('fx')?.split(',').includes('shpunits') ? 11 : 15));
 const live = await LiveView.create(canvas, {
   ...voxelLookParams(params),
+  spriteIntegration: params.get('sprite') === '1',
   ...parseWeatherParams(params),
   mapBase: `/${encodeURIComponent(mapName)}`,
   libraryBase: '/_library',
@@ -145,6 +147,20 @@ const live = await LiveView.create(canvas, {
   ...(params.get('glints') === 'off' ? { oreGlints: false } : {}),
   ...(params.has('sparkle') ? { crystalSparkle: Number(params.get('sparkle')) } : {}),
 });
+const sprite =
+  params.get('sprite') === '1'
+    ? params.get('tune') === '1'
+      ? mountSpriteIntegrationTuning(document.body, live.hd.spriteIntegration)
+      : spriteIntegrationAPI(live.hd.spriteIntegration)
+    : undefined;
+if (sprite && 'dispose' in sprite && typeof sprite.dispose === 'function') {
+  const disposePanel = sprite.dispose;
+  const dispose = live.dispose.bind(live);
+  live.dispose = () => {
+    disposePanel();
+    dispose();
+  };
+}
 // As the game page shows it: pipelines compiled off the frame (objects appear when theirs is ready).
 if (params.get('pipelines') === 'async') live.hd.enableAsyncPipelines();
 if (params.get('outofsight') === '1') live.outOfSight = true;
@@ -306,7 +322,7 @@ async function replay(): Promise<never> {
     pushDue();
     live.render(clock);
   };
-  (window as unknown as { __fx: unknown }).__fx = { live, advance, ready: true };
+  (window as unknown as { __fx: unknown }).__fx = { live, sprite, advance, ready: true };
   return new Promise<never>(() => {});
 }
 
@@ -996,4 +1012,4 @@ function loop(): void {
   requestAnimationFrame(loop);
 }
 requestAnimationFrame(loop);
-(window as unknown as { __fx: unknown }).__fx = { live, step, advance, snapshot, ready: true };
+(window as unknown as { __fx: unknown }).__fx = { live, sprite, step, advance, snapshot, ready: true };

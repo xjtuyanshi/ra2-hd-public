@@ -1,3 +1,5 @@
+import { configureSpriteIntegration } from '../src/ra2/spriteIntegrationTuning';
+import { spriteIntegrationFor } from '../src/spriteIntegration';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   DataTexture,
@@ -334,8 +336,21 @@ describe('projected materials and shader compilation', () => {
     nodes.dispose();
   });
   /** WebGPU (WGSL) or WebGL2 (GLSL) shaders of a projected body part and of its water reflection twin. */
-  const shaders = (spec: VoxelProjectionManifest, forceWebGL = false, turret = false) => {
+  const shaders = (
+    spec: VoxelProjectionManifest,
+    forceWebGL = false,
+    turret = false,
+    integrated = false,
+    variant = 'physical',
+    on = true,
+  ) => {
     const nodes = new AtmosphereNodes();
+    configureSpriteIntegration(nodes, integrated);
+    const integration = spriteIntegrationFor(nodes);
+    integration.ab(on);
+    integration.uniforms.vCut.setName('integrationVCut');
+    integration.uniforms.vSharpen.setName('integrationVSharpen');
+    integration.uniforms.vShine.setName('integrationVShine');
     const size = spec.parts.body!.size;
     const texture = () => nodes.own(new DataTexture(new Uint8Array(size[0] * size[1] * 4), size[0], size[1]));
     const part = createVoxelProjectionPart(spec, turret ? 'turret' : 'body', texture(), texture());
@@ -345,6 +360,8 @@ describe('projected materials and shader compilation', () => {
     const unit = instantiateVoxel([parts[0]!], material, nodes);
     const mesh = unit.root.children.find((o) => o instanceof Mesh && o.material === material) as Mesh;
     const twin = unit.root.children.find((o) => o instanceof Mesh && o.name === 'voxel-reflection') as Mesh;
+    if (variant === 'native' || variant === 'translucent') updateVoxelNativeDepth(unit, unit.root.position);
+    if (variant === 'translucent') unit.root.setOpacity(0.5);
     const canvas = {
       width: 64,
       height: 64,
@@ -368,6 +385,30 @@ describe('projected materials and shader compilation', () => {
     nodes.dispose();
     return out;
   };
+
+  it.each([false, true])(
+    'keeps integration discard uniform-driven across types, A/B and native/translucent variants (WebGL=%s)',
+    (webgl) => {
+      const first = shaders(manifest(), webgl, false, true);
+      const second = shaders(otherManifest(), webgl, false, true);
+      const off = shaders(manifest(), webgl, false, true, 'physical', false);
+      expect(first.main).toEqual(second.main);
+      expect(off.main).toEqual(first.main);
+      for (const variant of ['physical', 'native', 'translucent']) {
+        const current = shaders(manifest(), webgl, false, true, variant);
+        expect(current.main.fragment).toContain('integrationVCut');
+        expect(current.main.fragment).toContain('discard');
+        expect(current.main.fragment).toContain('integrationVSharpen');
+        expect(current.main.fragment).toContain('integrationVShine');
+        // Reflection uses the same projection filtering/shine, but deliberately retains its flattened mesh silhouette.
+        expect(current.reflection.fragment).not.toContain('integrationVCut');
+        expect(current.reflection.fragment).toContain('integrationVSharpen');
+      }
+      const plain = shaders(manifest(), webgl);
+      expect(plain.main.fragment).not.toContain('integrationVCut');
+      expect(plain.main).not.toEqual(first.main);
+    },
+  );
 
   it('keeps the page exposure in a slot: 1 for pages stored without headroom', () => {
     const exposed = shaders({ ...manifest(), exposure: 1.625 });

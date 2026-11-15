@@ -1,3 +1,4 @@
+import { spriteIntegrationFor } from '../spriteIntegration';
 import {
   BackSide,
   BufferGeometry,
@@ -17,6 +18,9 @@ import {
 } from 'three/webgpu';
 import {
   abs,
+  cameraProjectionMatrix,
+  cameraViewMatrix,
+  modelViewProjection,
   float,
   floor,
   fract,
@@ -90,6 +94,8 @@ export const SHADOW_OPACITY = ENGINE_SHADOW_OPACITY;
 export const SHADOW_LIFT = 0.03;
 /** Contact penumbra radius in cells, independent of camera zoom. */
 export const SHADOW_PENUMBRA = 0.04;
+/** 1.5 gives 1.45 times the existing radius: about 4.9 device px radially at view scale 2.5. */
+export const SHADOW_INTEGRATION_REACH = 0.3;
 /** Extra normal lift per layer, above the iso camera's depth quantisation step (400 / 2^20). */
 export const SHADOW_COPY_LIFT = 0.001;
 export const SHADOW_COPIES = [
@@ -644,6 +650,19 @@ function createSurfaceMaterial(
     }
     material.alphaTest = 0.001;
   }
+  const integration = spriteIntegrationFor(nodes);
+  if (layer === 'shadow' && integration.compiled) {
+    // The original five matrices/opacity layers stay intact at on=0. Only tangent-plane reach changes on the GPU.
+    const offset = uniform(new Vector3()).onObjectUpdate(({ object }) => {
+      if (object instanceof VoxelSurfaceMesh && !object.onWater) offset.value.copy(object.penumbraOffset);
+      else offset.value.set(0, 0, 0);
+    });
+    const t = integration.uniforms;
+    const extra = offset.mul(t.on).mul(t.shadowSoft).mul(SHADOW_INTEGRATION_REACH);
+    material.vertexNode = (modelViewProjection as ShaderNode).add(
+      cameraProjectionMatrix.mul(cameraViewMatrix.mul(vec4(extra, 0))),
+    );
+  }
   material.depthWrite = true;
   material.depthFunc = LessDepth;
   const plane = uniform(new Vector4());
@@ -763,6 +782,7 @@ const retilt = new Quaternion();
  */
 class VoxelSurfaceMesh extends Mesh {
   readonly planeNormal = new Vector3(0, 1, 0);
+  readonly penumbraOffset = new Vector3();
   planeConstant = SHADOW_LIFT;
   onWater = false;
   /** This twin currently draws the engine's contact footprint (see setShadowContact). */
@@ -891,6 +911,7 @@ class VoxelSurfaceMesh extends Mesh {
       const cx = copy.x * soft;
       const cz = copy.z * soft;
       const cy = -(drawn.x * cx + drawn.z * cz) / drawn.y;
+      this.penumbraOffset.set(cx, cy, cz);
       // The picture is exactly the footprint through the unit's origin; only the analytic depth is lifted.
       this.matrixWorld.set(
         axisX.x,
@@ -959,6 +980,7 @@ class VoxelSurfaceMesh extends Mesh {
     }
     const copy = SHADOW_COPIES[this.copyIndex]!;
     // Offset in the tangent plane (including ramps), then lift along its normal. Flight never scales the penumbra.
+    this.penumbraOffset.set(copy.x, -(normal.x * copy.x + normal.z * copy.z) / normal.y, copy.z);
     const p = projection.elements;
     p[12] += copy.x + copy.lift * normal.x;
     p[13] += -(normal.x * copy.x + normal.z * copy.z) / normal.y + copy.lift * normal.y;

@@ -1,3 +1,5 @@
+import { objectPostMask, objectSurfaceFilter, objectOutlineFeather, ObjectMaskedSharpen } from './objectPost';
+import { spriteIntegrationFor } from './spriteIntegration';
 import {
   ACESFilmicToneMapping,
   AgXToneMapping,
@@ -938,6 +940,11 @@ export class HdRenderer {
     toCamera: new Vector3(0, 1, 0),
   };
 
+  /** Shared sprite integration controls; compile choice belongs to LiveViewOptions. */
+  get spriteIntegration() {
+    return spriteIntegrationFor(this.nodes);
+  }
+
   constructor(
     readonly canvas: HTMLCanvasElement,
     initial: RenderState,
@@ -1232,6 +1239,7 @@ export class HdRenderer {
     if (this.world && debugView === 'none') key.push('unlit');
     if (this.topEffectsPass) key.push('top-effects');
     if (this.mistWanted()) key.push('mist');
+    if (this.painterDepthEnabled && debugView === 'none' && this.spriteIntegration.compiled) key.push('object-post');
     return JSON.stringify(key);
   }
 
@@ -1415,12 +1423,21 @@ export class HdRenderer {
         .max(0),
       1,
     );
+    const objectPost = this.painterDepthEnabled && debugView === 'none' && this.spriteIntegration.compiled;
+    const objectCodes: ShaderNode = objectPost ? scenePass.getTextureNode('physicalDepth') : null;
+    const objectMask: ShaderNode = objectPost ? objectPostMask(objectCodes) : null;
+    const integration = this.spriteIntegration.uniforms;
+    const objectCopy = (input: ShaderNode): ShaderNode => {
+      const copy: ShaderNode = convertToTexture(input);
+      if (copy.isRTTNode && !nodes.includes(copy)) nodes.push(copy);
+      return copy;
+    };
     if (this.settings.clarity > 0 && debugView === 'none') {
       // Band-pass (difference of two half-resolution blurs): faces, crevices and canopy masses a few CSS px and up gain
       // contrast while pixel-scale texture (brick, asphalt grain) is left as it is; the plain unsharp mask doubled it.
       this.claritySampleScale.value = this.viewPixelScale() / CLARITY_KERNEL_SCALE;
       // Both blurs read one copy of the picture: handed the expression, each drew a full-size copy of its own.
-      const picture: ShaderNode = convertToTexture(display);
+      const picture: ShaderNode = objectPost ? objectCopy(display) : convertToTexture(display);
       // Keep kernel weights and materials stable. Scaling the sample offsets preserves the blur's scene radius;
       // encoding the scale in sigma instead rebuilt four shaders on every sufficiently large window-size change.
       const fine: ShaderNode = gaussianBlur(
@@ -1441,11 +1458,21 @@ export class HdRenderer {
       const band = dot(fine.rgb, luma).sub(dot(broad.rgb, luma));
       // Lit edges gain fully, shaded sides half as much: deep shade must not grow (the targets keep warm, readable
       // shadows); mid-tones only, so near-white highlights and the darkest pixels do not ring.
-      const detail = band.max(0).add(band.min(0).mul(0.5));
+      let detail = band.max(0).add(band.min(0).mul(0.5));
+      if (objectPost) detail = detail.mul(float(1).sub(objectMask.mul(integration.on).mul(integration.objClarity)));
       const weight = smoothstep(0.05, 0.25, lum).mul(smoothstep(0.98, 0.75, lum));
       display = vec4(
         display.rgb.mul(float(1).add(detail.mul(this.clarityAmount).mul(weight).div(lum.max(0.05)))).max(0),
         1,
+      );
+    }
+    if (objectPost) {
+      // One shared source for both same-code gathers. The RCAS input copy below is reused for its A/B mix.
+      display = objectSurfaceFilter(
+        objectCopy(display),
+        objectCodes,
+        this.spriteIntegration,
+        this.claritySampleScale.mul(CLARITY_KERNEL_SCALE),
       );
     }
     if (antialias === 'fxaa') {
@@ -1453,14 +1480,32 @@ export class HdRenderer {
       nodes.push(display);
     }
     if (sharpness >= 0 && sharpness < 2) {
-      display = sharpen(display, sharpness);
-      nodes.push(display);
+      if (objectPost) {
+        const unsharpened: ShaderNode = objectCopy(display);
+        const sharpened = new ObjectMaskedSharpen(unsharpened, sharpness, objectCodes, this.spriteIntegration);
+        nodes.push(sharpened);
+        display = sharpened;
+      } else {
+        display = sharpen(display, sharpness);
+        nodes.push(display);
+      }
+    }
+    if (objectPost && antialias !== 'edges') {
+      const finished: ShaderNode =
+        (display as { getTextureNode?: () => ShaderNode }).getTextureNode?.() ?? objectCopy(display);
+      display = objectOutlineFeather(finished, objectCodes, this.spriteIntegration);
     }
     if (antialias === 'edges' && this.painterDepthEnabled) {
       // Last of all, on the finished picture: what the pass does not touch reaches the canvas exactly as before.
       const finished: ShaderNode =
-        (display as { getTextureNode?: () => ShaderNode }).getTextureNode?.() ?? convertToTexture(display);
-      display = silhouetteSmooth(finished, scenePass.getTextureNode('physicalDepth'), this.outlineSearch);
+        (display as { getTextureNode?: () => ShaderNode }).getTextureNode?.() ??
+        (objectPost ? objectCopy(display) : convertToTexture(display));
+      // Resolve feathered neighbours lazily inside MLAA: one added source copy, no separate feather render target.
+      display = objectPost
+        ? silhouetteSmooth(finished, objectCodes, this.outlineSearch, (pixel) =>
+            objectOutlineFeather(finished, objectCodes, this.spriteIntegration, pixel),
+          )
+        : silhouetteSmooth(finished, scenePass.getTextureNode('physicalDepth'), this.outlineSearch);
     }
     // Reuse the existing display pass and physical depth: no debug render target, grading, or extra pass.
     // This branch is uniform-only and does not evaluate the cloud field while debug is disabled.

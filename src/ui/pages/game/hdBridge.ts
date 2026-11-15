@@ -1446,6 +1446,7 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
           ...(params.has('hd-sparkle') && Number.isFinite(Number(params.get('hd-sparkle')))
             ? { crystalSparkle: Number(params.get('hd-sparkle')) }
             : {}),
+          spriteIntegration: params.get('hd-sprite') === '1',
           ...(params.get('hd-vlook') === 'remaster' ? { voxelLook: 'remaster' } : {}),
           ...(projectionDir && !/\.\.|[\\:]/.test(projectionDir)
             ? { voxelProjection: `/hd-cache/${projectionDir}` }
@@ -1461,12 +1462,31 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
         if (params.get('hd-pipelines') !== 'sync') view.hd.enableAsyncPipelines();
         return view;
       })
-      .then((view) => {
+      .then(async (view) => {
         if (!view) return;
         // Stopped, or superseded by a load for another map while this one was in flight.
         if (stopped || loading !== mapId) return view.dispose();
+        const spriteTuning =
+          import.meta.env.DEV && params.get('hd-sprite') === '1'
+            ? await import('../../../../packages/hd-renderer/src/ra2/spriteIntegrationTuning')
+            : null;
+        if (stopped || loading !== mapId) return view.dispose();
         diagnostics?.cancelFrameCapture('HD view replaced');
         live?.dispose();
+        if (spriteTuning) {
+          const panel = spriteTuning.mountSpriteIntegrationTuning(
+            canvas.parentElement ?? document.body,
+            view.hd.spriteIntegration,
+          );
+          const target = window as unknown as { __hdSprite?: typeof panel };
+          target.__hdSprite = panel;
+          const dispose = view.dispose.bind(view);
+          view.dispose = () => {
+            panel.dispose();
+            if (target.__hdSprite === panel) delete target.__hdSprite;
+            dispose();
+          };
+        }
         live = view;
         liveMap = mapId;
         viewHadState = stateMap === mapId && latestState !== null;

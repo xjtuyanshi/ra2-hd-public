@@ -1,3 +1,4 @@
+import { spriteIntegrationFor } from '../spriteIntegration';
 import {
   Color,
   DataTexture,
@@ -15,6 +16,7 @@ import {
   BRDF_GGX,
   BRDF_Lambert,
   Fn,
+  Discard,
   attribute,
   clamp,
   diffuseColor,
@@ -491,6 +493,8 @@ function createGraph(
   house: boolean | null,
 ): VoxelGraph {
   const state = voxelLightingFor(nodes);
+  const integration = spriteIntegrationFor(nodes);
+  const integrated = integration.compiled ? integration : undefined;
   const { voxelFill, voxelDebug, voxelExtraLight, voxelOcclusion, voxelSunDiffuse, lightDirection } = state;
   // Every part mesh drawn with a material of this graph carries its unit's silhouette code (see VoxelUnit).
   const material = setSilhouette(new VoxelMaterial());
@@ -568,6 +572,8 @@ function createGraph(
       lightDirection,
       look.sunDirection,
       gains,
+      undefined,
+      integrated,
     );
     const projState = voxelProjectionFor(nodes);
     const formAo: ShaderNode = poweredOcclusion(float(1).sub(occlusion.mul(projState.formAO.clamp())), gains.aoPower);
@@ -581,6 +587,16 @@ function createGraph(
     // The redraw already contains AO and directional shading. Only uncovered engine art receives mesh AO/sheen.
     shaded = mix(shaded, projectedShade, projected.coverage);
     uncovered = float(1).sub(projected.coverage);
+    if (integrated) {
+      const t = integrated.uniforms;
+      // Discard belongs to this projected fragment, so colour, physical depth and silhouette MRT agree.
+      // With on/cut zero even completely uncovered engine faces are retained, exactly as before.
+      const shadedProjection = shaded;
+      shaded = Fn(() => {
+        Discard(projected.rawCoverage.lessThan(t.on.mul(t.vCut)).and(projState.strength.greaterThan(0)));
+        return shadedProjection;
+      })();
+    }
     material.matp = vec3(matp.xy, matp.z.mul(uncovered));
   }
   material.emissiveNode = mix(shaded, debugColour, debugOn);
@@ -630,6 +646,7 @@ function createGraph(
         look.sunDirection,
         gains,
         { matrix: sourceMatrix, position: positionGeometry, normal: sourceNormal },
+        integrated,
       );
       const formAo: ShaderNode = poweredOcclusion(float(1).sub(occlusion.mul(projState.formAO.clamp())), gains.aoPower);
       const projectionLevel: ShaderNode = sourceLevel.div(projState.levelRef.max(0.01));
@@ -659,7 +676,9 @@ function graphFor(
   house: boolean | null,
 ): VoxelGraph {
   const sections = state.loaded?.sections ?? 0;
-  const key = `${sections}|${house === null ? 'plain' : house ? 'projected-house' : 'projected'}`;
+  const key =
+    `${sections}|${house === null ? 'plain' : house ? 'projected-house' : 'projected'}` +
+    (house !== null && spriteIntegrationFor(nodes).compiled ? '|integration' : '');
   let grades = state.graphs.get(key);
   if (!grades) state.graphs.set(key, (grades = new Map()));
   let graph = grades.get(grade);

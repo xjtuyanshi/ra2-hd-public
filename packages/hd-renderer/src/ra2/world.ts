@@ -1,3 +1,4 @@
+import { configureSpriteIntegration } from './spriteIntegrationTuning';
 import { DataTexture, LinearFilter, Object3D, RGFormat, UnsignedByteType, Vector3 } from 'three/webgpu';
 import { SURFACE, surfaceFromLandType } from '../../../ra2-assets/src/lights';
 import type { MapObject } from '../../../ra2-assets/src/manifest';
@@ -105,6 +106,7 @@ export async function loadRa2World(
     /** Immutable per-world voxel refinement; defaults are captured before asynchronous resource loading starts. */
     voxelShape?: Readonly<VoxelShape>;
     voxelLook?: 'engine' | 'remaster';
+    spriteIntegration?: boolean;
     smoothVoxel?: Partial<SmoothVoxelOptions>;
     /** Optional base URL of view-dependent vehicle redraw atlases; absent/failed types keep their current look. */
     voxelProjection?: string;
@@ -120,6 +122,7 @@ export async function loadRa2World(
   } & Ra2CacheOptions = {},
 ): Promise<HdWorld> {
   const nodes = options.nodes ?? new AtmosphereNodes();
+  configureSpriteIntegration(nodes, options.spriteIntegration === true);
   const voxelLook = options.voxelLook ?? 'engine';
   const smoothVoxel = smoothVoxelOptions(options.smoothVoxel);
   const projections = options.voxelProjection ? voxelProjectionLibrary(options.voxelProjection, nodes) : undefined;

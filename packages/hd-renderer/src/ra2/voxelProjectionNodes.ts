@@ -22,6 +22,7 @@ import {
   vec3,
   vec4,
 } from 'three/tsl';
+import type { SpriteIntegration } from '../spriteIntegration';
 import type { ShaderNode } from '../tsl';
 import type { VoxelProjectionInputs, VoxelProjectionState } from './voxelProjection';
 import { highlightExponent } from './spriteLook';
@@ -59,7 +60,13 @@ export function projectedVoxelColour(
   currentLight: ShaderNode,
   gains: VoxelLookGains,
   basis?: ProjectionBasis,
-): { colour: ShaderNode; albedo: ShaderNode; coverage: ShaderNode; paint: ShaderNode } {
+  integration?: SpriteIntegration,
+): { colour: ShaderNode; albedo: ShaderNode; coverage: ShaderNode; rawCoverage: ShaderNode; paint: ShaderNode } {
+  const t = integration?.uniforms;
+  const shine: ShaderNode = t ? float(1).sub(t.on.mul(t.vShine)) : null;
+  const contrast: ShaderNode = t
+    ? state.contrast.sub(max(state.contrast.sub(1), 0).mul(t.on).mul(t.vShine).mul(0.5))
+    : state.contrast;
   const matrix = basis?.matrix ?? modelWorldMatrix;
   const axis: ShaderNode = matrix.mul(vec4(1, 0, 0, 0)).xyz;
   const theta: ShaderNode = axis.z.negate().atan(axis.x).toVar();
@@ -96,7 +103,12 @@ export function projectedVoxelColour(
       .mul(float(1).sub(step(rect.y.add(rect.w), px.y)));
     // Top-left atlas convention, upload flipY=false. Clamp to this frame even when coverage is zero.
     const uv: ShaderNode = px.clamp(rect.xy.add(0.5), rect.xy.add(rect.zw).sub(0.5)).div(part.atlasSize);
-    const bias: ShaderNode = state.sharpen.clamp(0, 2).negate();
+    const bias: ShaderNode = t
+      ? state.sharpen
+          .clamp(0, 2)
+          .negate()
+          .mul(float(1).sub(t.on.mul(t.vSharpen)))
+      : state.sharpen.clamp(0, 2).negate();
     const colour: ShaderNode = texture(part.colour, uv).bias(bias).toVar();
     const paint: ShaderNode = texture(part.paint, uv).bias(bias).rgb.toVar();
     // Pages with headroom store sRGB / exposure (see VoxelProjectionManifest.exposure); 1 leaves the sample as is
@@ -138,7 +150,7 @@ export function projectedVoxelColour(
       max(n.dot(currentLight.add(view).normalize()), 0),
       highlightExponent(28, highlightGain),
     )
-      .mul(state.paintSpec.max(0))
+      .mul(t ? state.paintSpec.max(0).mul(shine) : state.paintSpec.max(0))
       .mul(highlightGain);
     house = house.mul(mix(1, shade, state.paintShade.clamp())).add(glint);
     colour = mix(colour, house, mask);
@@ -157,13 +169,13 @@ export function projectedVoxelColour(
     .toVar();
   // Shadows take the full power, highlights about a third of it: the redraws are bright, and a symmetric power
   // pushed light hulls to clipped white; the glint below supplies the bright edges instead.
-  const power: ShaderNode = state.contrast.sub(1).mul(mix(1, 0.35, step(0.18, luma)));
+  const power: ShaderNode = contrast.sub(1).mul(mix(1, 0.35, step(0.18, luma)));
   colour = colour.mul(pow(luma.div(0.18), power));
   const eye: ShaderNode = cameraWorldMatrix.mul(vec4(0, 0, 1, 0)).xyz.normalize();
   const sheen: ShaderNode = pow(max(n.dot(currentLight.add(eye).normalize()), 0), highlightExponent(24, highlightGain))
     .mul(smoothstep(0.03, 0.35, luma))
     .mul(step(1e-4, lit))
-    .mul(state.spec.max(0))
+    .mul(t ? state.spec.max(0).mul(shine) : state.spec.max(0))
     .mul(highlightGain);
   colour = colour.add(vec3(1, 0.97, 0.92).mul(sheen));
   const ratio: ShaderNode = max(n.dot(currentLight), 0)
@@ -177,7 +189,7 @@ export function projectedVoxelColour(
     .dot(vec3(0.2126, 0.7152, 0.0722))
     .max(1e-4)
     .toVar();
-  const albedoPower: ShaderNode = state.contrast.sub(1).mul(mix(1, 0.35, step(0.18, albedoLuma)));
+  const albedoPower: ShaderNode = contrast.sub(1).mul(mix(1, 0.35, step(0.18, albedoLuma)));
   albedo = albedo.mul(pow(albedoLuma.div(0.18), albedoPower));
   const albedoGrey: ShaderNode = albedo.dot(vec3(0.2126, 0.7152, 0.0722));
   albedo = mix(vec3(albedoGrey), albedo, state.saturation).max(0).mul(state.gain);
@@ -185,6 +197,7 @@ export function projectedVoxelColour(
     colour: colour.mul(mix(1, ratio, state.relight.clamp())),
     albedo,
     coverage: coverage.mul(state.strength.clamp()),
+    rawCoverage: coverage,
     paint: house ? mask : float(0),
   };
 }

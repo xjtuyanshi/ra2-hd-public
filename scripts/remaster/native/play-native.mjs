@@ -37,7 +37,7 @@ import {
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 const packageDirectory = join(repository, 'packages/native-host');
-const help = `Usage: scripts/remaster/native/play-native.sh [--open] [--fullscreen] [--size WxH] [--view classic|moderate|wide] [--hd-marks] [--owner]
+const help = `Usage: scripts/remaster/native/play-native.sh [--open] [--fullscreen] [--size WxH] [--view classic|moderate|wide] [--hd-marks] [--hd-option key=value]... [--owner]
 
 Required environment:
   RA2_NATIVE_GAME_DIR           Player-owned game copy containing gamemd.exe.
@@ -65,6 +65,9 @@ restarts this owned game at the new view (about 20 s); during a match it refuses
 requires that user click for fullscreen.
 --hd-marks enables experimental sharp health bars and group numbers for this
 launch only (off by default). Stop with Ctrl-C and launch without it to turn them off.
+--hd-option key=value adds one experimental HD page option for this launch only, e.g.
+--hd-option hd-sprite=1 for a look pilot and its tuning panel. Keys must start with
+hd- and cannot replace the shared play look; repeat it for several options.
 --owner keeps the terminal to short Chinese progress lines: Wine, build and page
 output go to the run folder, the tokened page address is written to play-url.txt
 there instead of the terminal, and the game runs with WINEDEBUG=-all unless
@@ -647,6 +650,7 @@ export async function runLauncher(arguments_, environment = process.env) {
   let openBrowser = false;
   let fullscreenBrowser = false;
   let hdMarks = false;
+  const hdOptions = {};
   let requestedSize = null;
   let requestedView = null;
   let owner = false;
@@ -656,7 +660,13 @@ export async function runLauncher(arguments_, environment = process.env) {
     else if (argument === '--owner') owner = true;
     else if (argument === '--fullscreen') fullscreenBrowser = true;
     else if (argument === '--hd-marks') hdMarks = true;
-    else if (argument === '--size') requestedSize = parseNativeSize(arguments_[++index]);
+    else if (argument === '--hd-option') {
+      const match = /^(hd-[a-z0-9-]+)=([A-Za-z0-9._-]+)$/.exec(arguments_[++index] ?? '');
+      // Pilot flags only: the shared look in HD_PLAY_OPTIONS stays the owner's approved default.
+      if (!match || Object.hasOwn(HD_PLAY_OPTIONS, match[1]))
+        throw new Error('--hd-option 请写成 hd-名称=值（例如 hd-sprite=1），且不能改动默认画面设置。');
+      hdOptions[match[1]] = match[2];
+    } else if (argument === '--size') requestedSize = parseNativeSize(arguments_[++index]);
     else if (argument === '--view') {
       requestedView = arguments_[++index];
       if (!['classic', 'moderate', 'wide'].includes(requestedView))
@@ -695,6 +705,8 @@ export async function runLauncher(arguments_, environment = process.env) {
   };
   if (owner) console.log(`本次记录文件夹：${runDirectory}`);
   else console.log('正在启动游戏；本次记录和文件备份的位置如下。');
+  if (Object.keys(hdOptions).length)
+    console.log(`本次开启实验画面选项：${new URLSearchParams(hdOptions)}；不加 --hd-option 重新启动即恢复默认。`);
   if (hdMarks)
     console.log('本次开启实验高清血条和编队数字；在启动器按 Ctrl-C 退出，重新启动时不加 --hd-marks 即可关闭。');
   detail(`Private launch logs and DLL backups: ${runDirectory}`);
@@ -1061,6 +1073,7 @@ export async function runLauncher(arguments_, environment = process.env) {
       'native-viewport': requestedSize ? '0' : '1',
       'native-fullscreen': fullscreenBrowser && !requestedSize ? '1' : '0',
       ...(hdMarks ? { 'native-draw-journal': '1' } : {}),
+      ...hdOptions,
       ...(resolution
         ? { resolution: `${resolution.width}x${resolution.height}` }
         : requestedView

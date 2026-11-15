@@ -285,6 +285,8 @@ function visibleObjectEffects(snapshot: LiveSnapshot): LiveEffects | null | unde
 }
 
 export interface LiveViewOptions extends VoxelUnitsOptions {
+  /** Compile sprite integration once; its parameters remain uniforms. */
+  spriteIntegration?: boolean;
   /** URL of the map's HD cache directory (manifest.json inside). */
   mapBase: string;
   /** URL of the type library root (holding <theater>/library.json and common/effects/), for players' art. */
@@ -1399,6 +1401,7 @@ export class LiveView {
       loadRa2World(options.mapBase, {
         includeObject: (object) => object.kind === 'tree',
         voxelLook: options.voxelLook,
+        spriteIntegration: options.spriteIntegration,
         smoothVoxel: options.smoothVoxel,
         voxelProjection: options.voxelProjection,
       }),
@@ -1842,8 +1845,7 @@ export class LiveView {
     if (this.gpuFenceAt != null) return;
     // Optional: test stand-ins of the renderer have no backend.
     const backend = this.hd.renderer?.backend as
-      | { device?: { queue?: { onSubmittedWorkDone?(): Promise<void> } } }
-      | undefined;
+      { device?: { queue?: { onSubmittedWorkDone?(): Promise<void> } } } | undefined;
     const queue = backend?.device?.queue;
     if (typeof queue?.onSubmittedWorkDone !== 'function') return;
     this.gpuFenceAt = now;
