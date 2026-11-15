@@ -1401,6 +1401,7 @@ export class LiveView {
         voxelLook: options.voxelLook,
         smoothVoxel: options.smoothVoxel,
         voxelProjection: options.voxelProjection,
+        voxelCad: options.voxelCad,
       }),
       HdRenderer.adapterLimits(),
     ]);
@@ -1842,8 +1843,7 @@ export class LiveView {
     if (this.gpuFenceAt != null) return;
     // Optional: test stand-ins of the renderer have no backend.
     const backend = this.hd.renderer?.backend as
-      | { device?: { queue?: { onSubmittedWorkDone?(): Promise<void> } } }
-      | undefined;
+      { device?: { queue?: { onSubmittedWorkDone?(): Promise<void> } } } | undefined;
     const queue = backend?.device?.queue;
     if (typeof queue?.onSubmittedWorkDone !== 'function') return;
     this.gpuFenceAt = now;

@@ -5,6 +5,7 @@ import {
   dot,
   expand,
   insidePrimitive,
+  insideAny,
   mirror,
   partPrimitives,
   polytopeFaces,
@@ -18,6 +19,25 @@ import {
 } from '../src/hardSurfaceMesh';
 const box: Primitive = { type: 'box', min: [0, 0, 0], max: [4, 4, 4], chamfer: 0.2 };
 describe('hard surface mesh', () => {
+  it('preserves carve membership for internal, covering, touching and disjoint cutters', () => {
+    for (const cutter of [
+      { min: [1, 1, -1], max: [3, 3, 5] },
+      { min: [-1, -1, -1], max: [5, 5, 5] },
+      { min: [4, 0, 0], max: [5, 4, 4] },
+      { min: [5, 0, 0], max: [6, 4, 4] },
+    ]) {
+      const cut = { type: 'box' as const, min: cutter.min as Vec3, max: cutter.max as Vec3 };
+      const parts = partPrimitives({ primitives: [box], carve: [cut] });
+      const solid = expand(box),
+        subtract = expand(cut);
+      for (let x = -0.3; x < 4.4; x += 0.57)
+        for (let y = -0.3; y < 4.4; y += 0.57)
+          for (let z = -0.3; z < 4.4; z += 0.57) {
+            const p: Vec3 = [x, y, z];
+            expect(insideAny(p, parts)).toBe(insidePrimitive(p, solid) && !insidePrimitive(p, subtract));
+          }
+    }
+  });
   it('enumerates box vertices, outward faces and exactly twelve chamfer edges', () => {
     const p = expand(box),
       poly = polytopeFaces(p.planes),

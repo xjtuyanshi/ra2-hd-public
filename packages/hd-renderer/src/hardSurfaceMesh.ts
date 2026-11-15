@@ -122,26 +122,45 @@ export function roundEven(v: number): number {
     r = v - f;
   return r === 0.5 ? (f % 2 === 0 ? f : f + 1) : Math.round(v);
 }
-export function polytopeFaces(planes: readonly Plane[]): { vertices: Vec3[]; faces: PolytopeFace[] } {
-  const vertices: Vec3[] = [],
-    seen = new Set<string>();
+/** Enumerate in the reference order without allocating vector temporaries for rejected plane triples. */
+function visitIntersections(planes: readonly Plane[], visit: (p: Vec3) => boolean): boolean {
   for (let i = 0; i < planes.length; i++)
     for (let j = i + 1; j < planes.length; j++)
       for (let k = j + 1; k < planes.length; k++) {
         const a = planes[i],
           b = planes[j],
-          c = planes[k],
-          bc = cross(b, c),
-          det = dot(a, bc);
+          c = planes[k];
+        const x = b[1] * c[2] - b[2] * c[1],
+          y = b[2] * c[0] - b[0] * c[2],
+          z = b[0] * c[1] - b[1] * c[0];
+        const det = a[0] * x + a[1] * y + a[2] * z;
         if (Math.abs(det) <= 1e-9) continue;
-        const p = scale(add(add(scale(bc, a[3]), scale(cross(c, a), b[3])), scale(cross(a, b), c[3])), 1 / det);
-        if (!planes.every((n) => dot(n, p) <= n[3] + 1e-6)) continue;
-        const key = p.map((v) => roundEven(v / 1e-5)).join(',');
-        if (!seen.has(key)) {
-          seen.add(key);
-          vertices.push(p);
-        }
+        const inv = 1 / det;
+        // Preserve the multiply/add order of scale(add(add(scale(bc,a.w),scale(cross(c,a),b.w)),scale(cross(a,b),c.w)),inv).
+        const px = (x * a[3] + (c[1] * a[2] - c[2] * a[1]) * b[3] + (a[1] * b[2] - a[2] * b[1]) * c[3]) * inv;
+        const py = (y * a[3] + (c[2] * a[0] - c[0] * a[2]) * b[3] + (a[2] * b[0] - a[0] * b[2]) * c[3]) * inv;
+        const pz = (z * a[3] + (c[0] * a[1] - c[1] * a[0]) * b[3] + (a[0] * b[1] - a[1] * b[0]) * c[3]) * inv;
+        let valid = true;
+        for (const n of planes)
+          if (!(n[0] * px + n[1] * py + n[2] * pz <= n[3] + 1e-6)) {
+            valid = false;
+            break;
+          }
+        if (valid && visit([px, py, pz])) return true;
       }
+  return false;
+}
+export function polytopeFaces(planes: readonly Plane[]): { vertices: Vec3[]; faces: PolytopeFace[] } {
+  const vertices: Vec3[] = [],
+    seen = new Set<string>();
+  visitIntersections(planes, (p) => {
+    const key = p.map((v) => roundEven(v / 1e-5)).join(',');
+    if (!seen.has(key)) {
+      seen.add(key);
+      vertices.push(p);
+    }
+    return false;
+  });
   const faces: PolytopeFace[] = [];
   planes.forEach((pl, i) => {
     const on = vertices.flatMap((p, k) => (Math.abs(dot(pl, p) - pl[3]) < 1e-5 ? [k] : []));
@@ -302,14 +321,22 @@ function carvePlanes(c: Carve): Plane[] {
 }
 /** True when the halfspaces bound a solid with extent in all three axes (not empty, not a flat contact). */
 function solidPolytope(planes: readonly Plane[]): boolean {
-  const { vertices } = polytopeFaces(planes);
-  if (vertices.length < 4) return false;
-  for (let a = 0; a < 3; a++) {
-    const v = vertices.map((p) => p[a]);
-    if (Math.max(...v) - Math.min(...v) < 1e-4) return false;
-  }
-  return true;
+  // Additional vertices cannot invalidate four distinct vertices with extent. Keep the reference quantisation.
+  const seen = new Set<string>(),
+    min = [Infinity, Infinity, Infinity],
+    max = [-Infinity, -Infinity, -Infinity];
+  return visitIntersections(planes, (p) => {
+    const key = p.map((v) => roundEven(v / 1e-5)).join(',');
+    if (seen.has(key)) return false;
+    seen.add(key);
+    for (let a = 0; a < 3; a++) {
+      min[a] = Math.min(min[a], p[a]);
+      max[a] = Math.max(max[a], p[a]);
+    }
+    return seen.size >= 4 && min.every((v, a) => max[a] - v >= 1e-4);
+  });
 }
+
 /**
  * Subtract a convex region C (halfspaces c_k.x <= e_k) from every primitive P: P - C is the union of the convex pieces
  * P & {c_k.x >= e_k} & {c_j.x <= e_j, j < k}. The pieces touch flush, so their shared faces get no chamfer (the flush
