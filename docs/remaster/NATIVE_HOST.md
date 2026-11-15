@@ -55,7 +55,8 @@ Native agents also wrap `BinkDoFrame`, `BinkGoto` and `BinkCopyToBuffer`: a trac
 decoded a frame (`agent/movie-copy.h`, `INPUT_STATE.undecodedMovieCopiesSkipped`). YR copies a new menu panel clip
 (632x570) one to three times right after `BinkOpen` and before its first decode; the empty YUV buffers became a flat
 green left panel (RGB565 0x04C0) for 30-90 ms on each 上一页 (Back) into the single-player menu (Build 13, YR 1.001,
-2026-11-14). The surface keeps the game's previous picture; decoding, clip timing and films are unchanged.
+2026-11-14). The surface keeps the game's previous picture; decoding, clip timing and films are unchanged. The skip
+ends 500 ms after the open even without a decode (`INPUT_STATE.undecodedMovieCopiesLate`), so no clip can stay blank.
 Films completed before attachment have no page button; the retained counters measure those completed lifetimes.
 
 ### Free Wine and first-run setup

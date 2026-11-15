@@ -43,11 +43,12 @@ nh_bink_close_proc nh_real_bink_close;
 nh_bink_do_frame_proc nh_real_bink_do_frame;
 nh_bink_goto_proc nh_real_bink_goto;
 nh_bink_copy_proc nh_real_bink_copy;
-/* decoded: the handle has decoded a frame since its open (see movie-copy.h). */
-struct movie_playback { void *handle; LARGE_INTEGER opened_at; int film, decoded; struct movie_playback *next; };
+/* copy: whether the handle has decoded a frame since its open (see movie-copy.h). */
+struct movie_playback { void *handle; LARGE_INTEGER opened_at; int film; struct nh_movie_copy_track copy;
+    struct movie_playback *next; };
 static struct movie_playback *movies;
 static uint32_t movie_opens, movie_active, movie_tracking_failures, clip_opens, clip_active;
-static uint32_t undecoded_copies_skipped;
+static uint32_t undecoded_copies_skipped, undecoded_copies_late;
 static uint64_t movie_total_us;
 
 static void initialize(void)
@@ -93,7 +94,7 @@ void *WINAPI nh_movie_open(const char *name, uint32_t flags)
         entry->handle = handle;
         entry->opened_at = opened_at;
         entry->film = film;
-        entry->decoded = 0;
+        nh_movie_copy_opened(&entry->copy);
         entry->next = movies;
         movies = entry;
         if (film) movie_active++;
@@ -131,21 +132,24 @@ void WINAPI nh_movie_close(void *movie)
     if (closed) HeapFree(GetProcessHeap(), 0, closed);
 }
 
-/* Whether the tracked handle has decoded a frame: -1 untracked (also before the agent is configured). */
-static int movie_decoded(void *movie)
+/* The copy decision for a handle (movie-copy.h): untracked handles, also before the agent is configured, copy. */
+static enum nh_movie_copy_decision movie_copy_decision(void *movie)
 {
-    if (!movie || !nh_agent_configured()) return -1;
+    if (!movie || !nh_agent_configured()) return NH_MOVIE_COPY;
     initialize();
-    int decoded = -1;
+    int tracked = 0, decoded = 0;
+    LARGE_INTEGER opened_at = { 0 };
     EnterCriticalSection(&input_lock);
     for (struct movie_playback *entry = movies; entry; entry = entry->next)
     {
         if (entry->handle != movie) continue;
-        decoded = entry->decoded;
+        tracked = 1;
+        decoded = entry->copy.decoded;
+        opened_at = entry->opened_at;
         break;
     }
     LeaveCriticalSection(&input_lock);
-    return decoded;
+    return nh_movie_copy_decide(tracked, decoded, tracked && !decoded ? elapsed_us(opened_at) : 0);
 }
 
 static void movie_mark_decoded(void *movie)
@@ -156,7 +160,7 @@ static void movie_mark_decoded(void *movie)
     for (struct movie_playback *entry = movies; entry; entry = entry->next)
     {
         if (entry->handle != movie) continue;
-        entry->decoded = 1;
+        nh_movie_copy_decoded(&entry->copy);
         break;
     }
     LeaveCriticalSection(&input_lock);
@@ -188,13 +192,14 @@ int32_t WINAPI nh_movie_copy(void *movie, void *dest, int32_t pitch, uint32_t he
     if (!original)
         original = (nh_bink_copy_proc)real_GetProcAddress(GetModuleHandleA("BINKW32.DLL"), "_BinkCopyToBuffer@28");
     if (!original) return 0;
-    int decoded = movie_decoded(movie);
-    if (nh_movie_copy_skipped(decoded >= 0, decoded > 0))
+    enum nh_movie_copy_decision decision = movie_copy_decision(movie);
+    if (decision == NH_MOVIE_COPY_SKIP)
     {
         /* Not copied: the result the game saw for these copies (live: 0). */
         InterlockedIncrement((LONG *)&undecoded_copies_skipped);
         return 0;
     }
+    if (decision == NH_MOVIE_COPY_LATE) InterlockedIncrement((LONG *)&undecoded_copies_late);
     return original(movie, dest, pitch, height, x, y, flags);
 }
 
@@ -845,7 +850,7 @@ static void input_state(uint32_t id, int skip_controls)
         "\"lastMessage\":%u,\"lastKeyMessage\":%u,\"lastKeyVirtualKey\":%u,\"injectedKeyReads\":%ld,"
         "\"lastInjectedKey\":%ld,\"cursorLastReadX\":%ld,\"cursorLastReadY\":%ld,\"modal\":%s,"
         "\"moviePlaying\":%s,\"movieOpens\":%u,\"movieTotalMs\":%llu,\"movieTrackingFailures\":%u,"
-        "\"clipOpens\":%u,\"clipActive\":%u,\"undecodedMovieCopiesSkipped\":%u,\"dialogMessages\":%u,\"lastTargetHwnd\":%u,\"lastTargetId\":%u,\"dialogHwnd\":%u,"
+        "\"clipOpens\":%u,\"clipActive\":%u,\"undecodedMovieCopiesSkipped\":%u,\"undecodedMovieCopiesLate\":%u,\"dialogMessages\":%u,\"lastTargetHwnd\":%u,\"lastTargetId\":%u,\"dialogHwnd\":%u,"
         "\"focusHwnd\":%u,\"gameCaptureHwnd\":%u,\"redirectedCapturedReleases\":%u,"
         "\"consumedCapturedReleases\":%u,\"lastDeliveryQueueUs\":%llu,\"maxDeliveryQueueUs\":%llu,"
         "\"lastHandlerUs\":%llu,\"maxHandlerUs\":%llu,\"ownerDrawnWheels\":%u,\"ownerDrawnWheelFallbacks\":%u,"
@@ -860,6 +865,7 @@ static void input_state(uint32_t id, int skip_controls)
         movie_tracking_failures ? "null" : movie_active ? "true" : "false", movie_opens,
         (unsigned long long)(movie_total_us / 1000), movie_tracking_failures, clip_opens, clip_active,
         (uint32_t)InterlockedCompareExchange((LONG *)&undecoded_copies_skipped, 0, 0),
+        (uint32_t)InterlockedCompareExchange((LONG *)&undecoded_copies_late, 0, 0),
         dialog_messages, last_target, last_target_id, (uint32_t)(uintptr_t)(modal ? target : NULL),
         (uint32_t)(uintptr_t)nh_input_get_focus(), (uint32_t)(uintptr_t)nh_hidden_get_capture(),
         redirected_captured_releases, consumed_captured_releases,
