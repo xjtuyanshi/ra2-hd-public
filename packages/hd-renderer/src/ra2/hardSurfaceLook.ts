@@ -1,5 +1,8 @@
 import { DEFAULT_PAINTED_STEEL_MATERIALS, type HardSurfaceLookParameters, type LookVector } from '../hardSurfaceLook';
 
+/** Chroma/brightness bounds are independent of the explicitly selected player colour. */
+export const RA2_CAD_HOUSE_LIMITS = { peak: 0.72, trough: 0.17 } as const;
+
 /** Vehicle look policy for offline reconstruction; geometry and fitted specs remain external. */
 export const RA2_HARD_SURFACE_LOOK: HardSurfaceLookParameters = {
   cream: [0.64, 0.615, 0.565],

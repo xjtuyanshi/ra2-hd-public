@@ -17,6 +17,7 @@ import type { HardSurfaceSpec } from '../src/hardSurfaceMesh';
 import type { LookVolume } from '../src/hardSurfaceLookVolume';
 import type { VoxelModel } from '../../ra2-assets/src/manifest';
 import { syntheticSection } from './fixtures/syntheticVoxels';
+import { RA2_HARD_SURFACE_LOOK } from '../src/ra2/hardSurfaceLook';
 const palette = new Uint8Array(768);
 const volume = (): LookVolume => ({
   origin: [-1, -1, -1],
@@ -60,11 +61,13 @@ describe('CAD lookup and shared material', () => {
     expect(bytes[(256 + 66) * 4 + 2]).toBe(CAD_CLASS.bareSteel);
   });
   it('retains player hue while bounding chroma and levelling the house ramp', () => {
+    expect(RA2_HARD_SURFACE_LOOK.houseTone).toEqual([0.6, 0.6, 0.6]);
     const red = cadHouseTone([1, 0, 0]),
       blue = cadHouseTone([0, 0, 1]);
     expect(red[0]).toBeCloseTo(0.72);
     expect(red[1]).toBeCloseTo(0.17);
     expect(blue).toEqual([red[2], red[1], red[0]]);
+    expect(cadHouseTone([0.6, 0.6, 0.6])).toEqual([0.72, 0.72, 0.72]);
     const p = palette.slice();
     p.set([255, 0, 0], 16 * 3);
     const h = cadPaletteEntry(p, 16);

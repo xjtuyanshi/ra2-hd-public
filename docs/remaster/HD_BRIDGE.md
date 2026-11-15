@@ -1451,7 +1451,9 @@ outline through `withSilhouette`; water colour reflections follow the CAD source
 Other vehicles keep their existing look and projection behaviour.
 
 The CAD material folds palette glints into levelled cream, separates bare/dark steel from rubber, retains
-player-remapped house hue with limited chroma, and overrides coded barrels with neutral gunmetal. Wheel tyre,
+player-remapped house hue with limited chroma, and overrides coded barrels with neutral gunmetal.
+The RA2 `RA2_CAD_HOUSE_LIMITS` policy bounds hue-normalised peak/trough independently of the selected
+`houseTone`; the neutral offline default must not force live player colours to grey. Wheel tyre,
 disc and hub, drum hoops and hatch roof rings come from expanded cylinder metadata. Generic straight-run
 vectorisation consumes exposed line features from `analyseVoxelPaint`; combing and slope rejection prevent
 voxel staircase shading from becoming plate joints. A surface-rasterised RGBA8 lattice volume carries groove

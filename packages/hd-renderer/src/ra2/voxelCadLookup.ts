@@ -1,20 +1,17 @@
 import { classifyPaintRegion, levelledPaint, type LookVector } from '../hardSurfaceLook';
-import { RA2_HARD_SURFACE_LOOK as policy } from './hardSurfaceLook';
+import { RA2_HARD_SURFACE_LOOK as policy, RA2_CAD_HOUSE_LIMITS as houseLimits } from './hardSurfaceLook';
 import { ra2VoxelClass } from './voxelClasses';
 
 export const CAD_CLASS = { paint: 0, house: 1, darkMetal: 2, track: 3, bareSteel: 4, barrelSteel: 5 } as const;
 export type CadClass = keyof typeof CAD_CLASS;
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
-/** Hue is kept, while chroma is bounded by the reference red's peak-to-trough ratio. */
+/** Hue is kept; a neutral default player colour must not collapse every live player hue to grey. */
 export function cadHouseTone(colour: LookVector): LookVector {
   const peak = Math.max(...colour, 1e-6),
     rgb = colour.map((v) => v / peak),
     low = Math.min(...rgb);
-  const saturation = Math.min(
-    1,
-    (1 - Math.min(...policy.houseTone) / Math.max(...policy.houseTone)) / Math.max(1e-6, 1 - low),
-  );
-  return rgb.map((v) => (1 + (v - 1) * saturation) * Math.max(...policy.houseTone)) as [number, number, number];
+  const saturation = Math.min(1, (1 - houseLimits.trough / houseLimits.peak) / Math.max(1e-6, 1 - low));
+  return rgb.map((v) => (1 + (v - 1) * saturation) * houseLimits.peak) as [number, number, number];
 }
 export function cadPaletteEntry(palette: Uint8Array, index: number, steel = false) {
   const rgb = Array.from(palette.subarray(index * 3, index * 3 + 3), (v) => v / 255) as [number, number, number];
