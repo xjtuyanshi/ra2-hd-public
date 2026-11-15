@@ -209,8 +209,11 @@ describe('optional CAD library', () => {
       [500, null, false],
       [200, spec, true],
     ] as const) {
-      const fetch = vi.fn(
-        async () => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } }),
+      // Detail sidecars are absent here; only spec requests count.
+      const fetch = vi.fn(async (url: string) =>
+        url.includes('.detail/')
+          ? new Response(null, { status: 404 })
+          : new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } }),
       );
       vi.stubGlobal('fetch', fetch);
       const builder = vi.fn(async () => {
@@ -221,16 +224,57 @@ describe('optional CAD library', () => {
         before = warn.mock.calls.length;
       expect(await lib.load(model, new Uint8Array(768))).toBeNull();
       expect(await lib.load(model, new Uint8Array(768))).toBeNull();
-      expect(fetch).toHaveBeenCalledTimes(1);
+      expect(fetch.mock.calls.filter(([url]) => !url.includes('.detail/'))).toHaveLength(1);
       expect(warn.mock.calls.length - before).toBe(status === 404 ? 0 : 1);
       lib.dispose();
     }
+  });
+  it('threads optional baked detail charts into the look mesh only for parts that have them', async () => {
+    const { model, spec } = fixture();
+    const table = { res: 4, size: [32, 16], faces: { '0': [2, 3, 10, 10, -0.25, -0.25, 2, 1, 0, 0, 0, 1, 0] } };
+    const fetch = vi.fn(async (url: string) =>
+      url.endsWith('/SYNTHETIC.detail/body.json')
+        ? new Response(JSON.stringify(table), { headers: { 'content-type': 'application/json' } })
+        : url.includes('.detail/')
+          ? new Response(null, { status: 404 })
+          : new Response(JSON.stringify(spec), { headers: { 'content-type': 'application/json' } }),
+    );
+    vi.stubGlobal('fetch', fetch);
+    const builder = vi.fn(async (...args: Parameters<typeof buildCadModel>) => buildCadModel(...args));
+    const lib = new VoxelCadLibrary('/cad', (m, s, p, detail) => builder(m, s, p, undefined, detail));
+    const meshes = (await lib.load(model, new Uint8Array(768)))!;
+    expect(builder.mock.calls[0][4]).toEqual({ body: table });
+    const [body, turret] = meshes;
+    expect(body.detailSize).toEqual([32, 16]);
+    expect(turret.detailSize).toBeNull();
+    expect(turret.detailUv.every((v) => v === -1)).toBe(true);
+    // Top-face vertices land in the chart (texels 3..11 x 4..12); every other face stays neutral.
+    let mapped = 0;
+    for (let v = 0; v < body.detailUv.length / 2; v++) {
+      const [x, y] = [body.detailUv[v * 2], body.detailUv[v * 2 + 1]];
+      if (x < 0) continue;
+      mapped++;
+      expect(body.vpos[v * 3 + 2]).toBeCloseTo(2);
+      expect(x).toBeGreaterThanOrEqual(3 - 1e-4);
+      expect(x).toBeLessThanOrEqual(11 + 1e-4);
+      expect(y).toBeGreaterThanOrEqual(4 - 1e-4);
+    }
+    expect(mapped).toBeGreaterThan(0);
+    expect(body.detailUv.length / 2).toBe(body.vpos.length / 3);
+    // Node has no image decoder: coordinates stay, the atlas is absent and the image is never fetched.
+    expect(body.detailImage).toBeNull();
+    expect(fetch.mock.calls.some(([url]) => url.endsWith('.png'))).toBe(false);
+    lib.dispose();
   });
   it('uses the same mesh implementation in a Worker, terminates it and cancels outstanding work', async () => {
     const { model, spec } = fixture();
     vi.stubGlobal(
       'fetch',
-      vi.fn(async () => new Response(JSON.stringify(spec), { headers: { 'content-type': 'application/json' } })),
+      vi.fn(async (url: string) =>
+        url.includes('.detail/')
+          ? new Response(null, { status: 404 })
+          : new Response(JSON.stringify(spec), { headers: { 'content-type': 'application/json' } }),
+      ),
     );
     class FakeWorker {
       static instances: FakeWorker[] = [];

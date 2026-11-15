@@ -3,6 +3,7 @@ import { buildHardSurfaceLiveMesh, hardSurfacePaintSampler, type VoxelPaint } fr
 import { foldHardSurfaceFacePaint, type FacePaintFoldStats } from '../hardSurfaceFacePaint';
 import { buildPart, type HardSurfaceSpec, type PartSpec } from '../hardSurfaceMesh';
 import { bakeLookVolume, vectoriseSeams, type LookCylinder, type LookVolume } from '../hardSurfaceLookVolume';
+import { assignDetailCharts, expandVertexAttribute, type DetailChartTable } from '../hardSurfaceDetailAtlas';
 import { analyseVoxelPaint } from '../voxelPaint';
 import { voxelPaintInputFor } from './voxelCleanModel';
 import { ra2VoxelPaintPolicy } from './voxelPaintPolicy';
@@ -18,6 +19,17 @@ export interface CadMeshData extends SmoothMeshData {
   /** Folded host paint for the look material; pbr retains the exact legacy attributes and topology. */
   lookIndex: Float32Array;
   lookVolume: LookVolume;
+  /** Baked detail atlas coordinates in texels, (-1, -1) where no chart applies (every vertex when no atlas). */
+  detailUv: Float32Array;
+  /** Atlas size in texels; null when the part has no detail table. */
+  detailSize: [number, number] | null;
+  /** Decoded atlas, attached on the presenting thread after the build (never crosses the Worker boundary). */
+  detailImage?: ImageBitmap | null;
+}
+
+export interface CadDetailStats {
+  triangles: number;
+  matched: number;
 }
 
 /** Pure CPU adapter; both the Worker and offline measurements run this exact implementation. */
@@ -28,6 +40,8 @@ export function buildCadSection(
   maxEdge = 0.5,
   res = 4,
   reportFold?: (stats: FacePaintFoldStats) => void,
+  detail?: DetailChartTable,
+  reportDetail?: (stats: CadDetailStats) => void,
 ): CadMeshData {
   const bytes = Uint8Array.from(atob(section.voxels), (c) => c.charCodeAt(0));
   const count = section.size.reduce((a, b) => a * b, 1);
@@ -100,7 +114,6 @@ export function buildCadSection(
     },
   );
   if (reportFold) reportFold(fold.measure(legacy));
-  const vertices = mesh.chamfer.length;
   const seams = vectoriseSeams(
     Array.from(input.x, (x, i) => ({
       position: [x, input.y[i], input.z[i]] as const,
@@ -134,7 +147,27 @@ export function buildCadSection(
     lines: RA2_HARD_SURFACE_LOOK.lines,
     comb: RA2_HARD_SURFACE_LOOK.seams,
   });
+  // Baked detail charts are matched on the folded look mesh only; the legacy PBR twin keeps its exact topology.
+  let detailUv: Float32Array;
+  if (detail) {
+    const assigned = assignDetailCharts(mesh.lattice, mesh.indices, detail);
+    reportDetail?.({ triangles: assigned.triangles, matched: assigned.matched });
+    if (assigned.source.length !== mesh.chamfer.length) {
+      const src = assigned.source;
+      mesh.normals = expandVertexAttribute(mesh.normals, 3, src);
+      mesh.lattice = expandVertexAttribute(mesh.lattice, 3, src);
+      mesh.pindex = expandVertexAttribute(mesh.pindex, 1, src);
+      mesh.pshade = expandVertexAttribute(mesh.pshade, 1, src);
+      mesh.occlusion = expandVertexAttribute(mesh.occlusion, 1, src);
+      mesh.chamfer = expandVertexAttribute(mesh.chamfer, 1, src);
+      mesh.lookCode = expandVertexAttribute(mesh.lookCode, 1, src);
+    }
+    mesh.indices = assigned.indices;
+    detailUv = assigned.uv;
+  } else detailUv = new Float32Array(mesh.chamfer.length * 2).fill(-1);
   const out: CadMeshData = {
+    detailUv,
+    detailSize: detail ? [detail.size[0], detail.size[1]] : null,
     lookCode: mesh.lookCode,
     lookIndex: mesh.pindex,
     pbr: {
@@ -148,7 +181,7 @@ export function buildCadSection(
       indices: legacy.indices,
     },
     lookVolume,
-    position: new Float32Array(vertices * 3),
+    position: new Float32Array(mesh.chamfer.length * 3),
     normal: mesh.normals.slice(),
     vpos: mesh.lattice,
     pindex: mesh.pindex,
@@ -181,6 +214,8 @@ export function buildCadModel(
   spec: HardSurfaceSpec,
   palette: Uint8Array,
   reportFold?: (part: string, stats: FacePaintFoldStats) => void,
+  detail?: Readonly<Record<string, DetailChartTable>>,
+  reportDetail?: (part: string, stats: CadDetailStats) => void,
 ): CadMeshData[] {
   if (Object.keys(spec.parts).some((role) => !model.parts.some((part) => part.role === role)))
     throw new Error('CAD part has no source part');
@@ -204,6 +239,15 @@ export function buildCadModel(
     const section = part.sections[0],
       ps = spec.parts[part.role];
     if (!section || !ps) throw new Error(`Missing CAD part: ${part.role}`);
-    return buildCadSection(section, ps, palette, 0.5, res, reportFold && ((stats) => reportFold(part.role, stats)));
+    return buildCadSection(
+      section,
+      ps,
+      palette,
+      0.5,
+      res,
+      reportFold && ((stats) => reportFold(part.role, stats)),
+      detail?.[part.role],
+      reportDetail && ((stats) => reportDetail(part.role, stats)),
+    );
   });
 }

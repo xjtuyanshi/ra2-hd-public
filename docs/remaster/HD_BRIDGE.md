@@ -1419,6 +1419,22 @@ two million triangles, independently of merging.
 Curvature marks chamfers (`chamfer * 2`). Subvoxel paint boundaries remain approximations. A caller-supplied
 paint-code table produces `lookCode`; the generic geometry does not interpret game paint names.
 
+Optional baked detail sits beside the spec: `<MODEL_ID>.detail/<role>.json` (chart table) and `<role>.png`
+(RGBA8 atlas), both in the external HD cache. The table is `{res, size: [w, h], faces: {id: [ox, oy, w, h,
+origin xyz, u xyz, v xyz]}}`: one chart per planar face in its own plane, `res` texels per lattice unit, `v = n x u`.
+Texels hold the detail normal along u/v in R/G (`x * 0.5 + 0.5`), cavity AO in B and signed grime (< 0) / wear
+(> 0) in A. `hardSurfaceDetailAtlas.ts` matches the look mesh's triangles to charts geometrically (same plane
+within 0.06 lattice units and cos 0.995, all three vertices inside the chart rectangle), splits vertices shared
+across charts and emits a `detailUv` attribute in texels; unmatched triangles get (-1, -1) and render neutral, and
+the legacy PBR twin is untouched. The Worker receives only the tables; the presenting thread decodes the PNG with
+`premultiplyAlpha: 'none'` and no colour conversion (the channels are data) and the material samples it with
+mipmaps (1:1 is heavy minification). Missing sidecars are silent; a malformed table or an atlas whose size
+differs from its table warns once and drops that part's detail. Node tooling has no image decoder: coordinates
+are still built, the atlas is not fetched. The CAD material applies the AO to its lighting gain, grime/wear to
+the albedo (wear on paint only) and the relief through a cotangent frame from the texel coordinates, after the
+volume's groove bump. Knobs `detailNormal`, `detailAo`, `detailGrime` and `detailWear` (sandbox `cadk=`, live
+`__hdBridge.vehicleCad.set`) scale each term; 0 disables it.
+
 The RA2 adapter shares the bounds/HVA/model transform with the voxel paths, preserves role order and TurretOffset,
 and exchanges geometry and material in place, retaining the unit root, turret yaw, pose, tint, opacity and native
 depth. CAD defaults to its own painted-steel material with scene sun/sky lighting, even alongside engine-look

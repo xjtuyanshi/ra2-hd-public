@@ -1,5 +1,6 @@
 import type { VoxelModel } from '../../../ra2-assets/src/manifest';
 import type { HardSurfaceSpec } from '../hardSurfaceMesh';
+import type { DetailChartTable } from '../hardSurfaceDetailAtlas';
 import { buildCadModel, type CadMeshData } from './voxelCadMesh';
 
 export interface CadRequest {
@@ -7,12 +8,14 @@ export interface CadRequest {
   spec: HardSurfaceSpec;
   /** Unit RGB palette; cloned, never transferred from the shared palette cache. */
   palette: Uint8Array;
+  /** Optional baked detail chart tables by part role. */
+  detail?: Record<string, DetailChartTable>;
 }
 export type CadReply = { meshes: CadMeshData[] } | { error: string };
 /** One build per short-lived Worker. The owning library terminates it on completion, error or disposal. */
 export function answerCadRequest(request: CadRequest): CadReply {
   try {
-    return { meshes: buildCadModel(request.model, request.spec, request.palette) };
+    return { meshes: buildCadModel(request.model, request.spec, request.palette, undefined, request.detail) };
   } catch (error) {
     return { error: String(error) };
   }
@@ -22,7 +25,7 @@ export function cadReplyTransfers(reply: CadReply): ArrayBuffer[] {
   return 'meshes' in reply
     ? [
         ...new Set(
-          reply.meshes.flatMap(({ lookVolume, pbr, ...mesh }) => [
+          reply.meshes.flatMap(({ lookVolume, pbr, detailSize: _size, detailImage: _image, ...mesh }) => [
             ...[...Object.values(mesh), ...Object.values(pbr)].map((array) => array.buffer as ArrayBuffer),
             lookVolume.data.buffer as ArrayBuffer,
           ]),

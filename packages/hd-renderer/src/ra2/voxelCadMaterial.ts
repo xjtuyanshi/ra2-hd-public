@@ -5,7 +5,9 @@ import {
   MeshStandardNodeMaterial,
   PhysicalLightingModel,
   LinearFilter,
+  LinearMipmapLinearFilter,
   NearestFilter,
+  Texture,
   ClampToEdgeWrapping,
   NoColorSpace,
   RGBAFormat,
@@ -77,6 +79,11 @@ export const VOXEL_CAD_DEFAULTS = Object.freeze({
   wallOcclusion: policy.wallOcclusion,
   wallGrime: policy.wallGrime,
   aoStrength: 1,
+  /** Baked donor detail (see hardSurfaceDetailAtlas.ts): normal relief, cavity AO, signed grime (<0) / wear (>0). */
+  detailNormal: 1,
+  detailAo: 1,
+  detailGrime: 4,
+  detailWear: 3,
 });
 export const CAD_PAINT_SPECULAR_LIMITS = Object.freeze({ direct: 0.04, environment: 0.02 });
 export type VoxelCadKnob = keyof typeof VOXEL_CAD_DEFAULTS;
@@ -88,6 +95,9 @@ interface CadGraph {
   scale: ShaderNode;
   bounds: ShaderNode;
   flags: ShaderNode;
+  detail: ShaderNode;
+  detailSize: ShaderNode;
+  detailNeutral: Texture;
 }
 export class VoxelCadLookState {
   readonly knobs = Object.fromEntries(Object.entries(VOXEL_CAD_DEFAULTS).map(([k, v]) => [k, uniform(v)])) as Record<
@@ -98,6 +108,7 @@ export class VoxelCadLookState {
   readonly byPalette = new WeakMap<Uint8Array, Map<LookVolume, MeshStandardNodeMaterial>>();
   readonly lookups = new WeakMap<Uint8Array, DataTexture>();
   readonly volumes = new WeakMap<LookVolume, Data3DTexture>();
+  readonly details = new WeakMap<object, Texture>();
   set(knob: string, value: number): void {
     if (!Object.hasOwn(VOXEL_CAD_DEFAULTS, knob) || !Number.isFinite(value))
       throw new Error(`Invalid CAD knob: ${knob}`);
@@ -112,6 +123,29 @@ export function voxelCadLookFor(nodes: AtmosphereNodes = DEFAULT_ATMOSPHERE_NODE
   let state = states.get(nodes);
   if (!state) states.set(nodes, (state = new VoxelCadLookState()));
   return state;
+}
+/** Detail atlases hold data channels: linear, unpremultiplied, top row first, mipmapped against 1:1 aliasing. */
+export function cadDetailTexture(image: TexImageSource): Texture {
+  const t = new Texture(image as HTMLImageElement);
+  t.flipY = false;
+  t.premultiplyAlpha = false;
+  t.colorSpace = NoColorSpace;
+  t.minFilter = LinearMipmapLinearFilter;
+  t.magFilter = LinearFilter;
+  t.wrapS = t.wrapT = ClampToEdgeWrapping;
+  t.generateMipmaps = true;
+  t.anisotropy = 4;
+  t.needsUpdate = true;
+  return t;
+}
+/** A neutral detail texel: flat normal, no occlusion, no grime. */
+function neutralDetailTexture(): DataTexture {
+  const t = new DataTexture(new Uint8Array([128, 128, 255, 128]), 1, 1, RGBAFormat, UnsignedByteType);
+  t.colorSpace = NoColorSpace;
+  t.minFilter = t.magFilter = LinearFilter;
+  t.generateMipmaps = false;
+  t.needsUpdate = true;
+  return t;
 }
 export function cadVolumeTexture(volume: LookVolume): Data3DTexture {
   const t = new Data3DTexture(volume.data, ...volume.size);
@@ -204,6 +238,9 @@ function createGraph(grade: MapLightGrade | null, nodes: AtmosphereNodes): CadGr
     scale = uniform(new Vector3(1, 1, 1)),
     bounds = uniform(new Vector2(0, 1)),
     flags = uniform(new Vector2(0, 0));
+  const detailNeutral = nodes.own(neutralDetailTexture()),
+    detail = textureSlot(detailNeutral),
+    detailSize = uniform(new Vector2(1, 1));
   const pos: ShaderNode = attribute('vpos', 'vec3'),
     code: ShaderNode = attribute('lookCode', 'float'),
     pi: ShaderNode = attribute('lookIndex', 'float');
@@ -241,7 +278,14 @@ function createGraph(grade: MapLightGrade | null, nodes: AtmosphereNodes): CadGr
   const wall = float(1).sub(normalWorld.y.abs().mul(1.5).clamp());
   const skyOcclusion = float(1).sub(wall.mul(float(1).sub(heightFrac).pow(1.5)).mul(k.wallOcclusion));
   const grime = float(1).sub(wall.mul(float(1).sub(heightFrac).pow(1.2)).mul(k.wallGrime));
-  material.ao = float(1).sub(attribute('occlusion', 'float').mul(k.aoStrength)).clamp().mul(skyOcclusion);
+  // Baked detail: texel coordinates (x < 0 = no chart on this triangle) into the part's atlas.
+  const detailUv: ShaderNode = attribute('detailUv', 'vec2'),
+    hasDetail = step(0, detailUv.x),
+    detailTexel: ShaderNode = texture(detail, detailUv.max(0).div(detailSize)),
+    detailRelief: ShaderNode = detailTexel.rg.mul(2).sub(1).mul(hasDetail).mul(k.detailNormal),
+    detailAo: ShaderNode = mix(float(1), detailTexel.b, hasDetail.mul(k.detailAo.min(1))),
+    detailGrime: ShaderNode = detailTexel.a.mul(2).sub(1).mul(hasDetail);
+  material.ao = float(1).sub(attribute('occlusion', 'float').mul(k.aoStrength)).clamp().mul(skyOcclusion).mul(detailAo);
   const track = cls(CAD_CLASS.track)
     .mul(flags.y)
     .mul(float(1).sub(step(3.5, localHeight)))
@@ -257,7 +301,9 @@ function createGraph(grade: MapLightGrade | null, nodes: AtmosphereNodes): CadGr
     .mul(paint)
     .mul(k.wear)
     .clamp();
-  let albedo: ShaderNode = mix(base, linear([0.8, 0.78, 0.72]).mul(0.75), wear);
+  const detailWear = detailGrime.max(0).mul(k.detailWear).mul(paint).clamp();
+  let albedo: ShaderNode = mix(base, linear([0.8, 0.78, 0.72]).mul(0.75), wear.max(detailWear));
+  albedo = albedo.mul(float(1).sub(detailGrime.negate().max(0).mul(k.detailGrime).clamp(0, 0.6)));
   albedo = albedo.mul(float(1).add(noise(pos.div(8)).sub(0.5).mul(0.12).mul(paint)));
   albedo = albedo.mul(mix(1, links, track));
   const low = float(1)
@@ -280,9 +326,23 @@ function createGraph(grade: MapLightGrade | null, nodes: AtmosphereNodes): CadGr
     det: ShaderNode = positionView.dFdx().dot(r1);
   const bumpHeight: ShaderNode = sampled.r.negate().mul(k.bump).add(ridge.sub(gap).mul(track).mul(0.08));
   const gradient = r1.mul(bumpHeight.dFdx()).add(r2.mul(bumpHeight.dFdy()));
-  material.normalNode = normalView
+  const bumped: ShaderNode = normalView
     .mul(det.abs().max(1e-12))
     .sub(gradient.mul(det.sign()).mul(VOXEL_TO_WORLD))
+    .normalize();
+  // Cotangent frame from the chart coordinates (texels share one scale on both axes); chart seams inside a pixel
+  // quad give huge derivatives, which shrink the perturbation there rather than inventing one.
+  const dp1: ShaderNode = positionView.dFdx(),
+    dp2: ShaderNode = positionView.dFdy(),
+    duv1: ShaderNode = detailUv.dFdx(),
+    duv2: ShaderNode = detailUv.dFdy();
+  const p2: ShaderNode = dp2.cross(bumped),
+    p1: ShaderNode = bumped.cross(dp1);
+  const tangent: ShaderNode = p2.mul(duv1.x).add(p1.mul(duv2.x)),
+    bitangent: ShaderNode = p2.mul(duv1.y).add(p1.mul(duv2.y));
+  const frameScale: ShaderNode = tangent.dot(tangent).max(bitangent.dot(bitangent)).max(1e-30).inverseSqrt();
+  material.normalNode = bumped
+    .add(tangent.mul(detailRelief.x).add(bitangent.mul(detailRelief.y)).mul(frameScale))
     .normalize();
   let rough: ShaderNode = mix(params.r, 0.3, is(5).max(steel));
   rough = mix(rough, 0.42, hatch);
@@ -339,7 +399,7 @@ function createGraph(grade: MapLightGrade | null, nodes: AtmosphereNodes): CadGr
       voxelLightingFor(nodes),
     );
   });
-  return { prototype: material, lookup, volume, origin, scale, bounds, flags };
+  return { prototype: material, lookup, volume, origin, scale, bounds, flags, detail, detailSize, detailNeutral };
 }
 export interface CadMaterialPart {
   volume: LookVolume;
@@ -347,6 +407,8 @@ export interface CadMaterialPart {
   height: number;
   body: boolean;
   steel: boolean;
+  /** Optional baked detail atlas and its size in texels. */
+  detail?: { image: TexImageSource; size: readonly [number, number] } | null;
 }
 export function voxelCadMaterialFor(
   palette: Uint8Array,
@@ -372,9 +434,16 @@ export function voxelCadMaterialFor(
   }
   let volume = state.volumes.get(part.volume);
   if (!volume) state.volumes.set(part.volume, (volume = nodes.own(cadVolumeTexture(part.volume))));
+  let detailTex: Texture | undefined;
+  if (part.detail) {
+    detailTex = state.details.get(part.detail.image);
+    if (!detailTex) state.details.set(part.detail.image, (detailTex = nodes.own(cadDetailTexture(part.detail.image))));
+  }
   const slots = graph,
     lookup = lut,
-    tex = volume;
+    tex = volume,
+    neutral = graph.detailNeutral,
+    detailSize = part.detail?.size ?? [1, 1];
   material = nodes.own(
     slotMaterial(graph.prototype, () => {
       slots.lookup.value = lookup;
@@ -383,6 +452,8 @@ export function voxelCadMaterialFor(
       slots.scale.value.set(...part.volume.size.map((v) => part.volume.res / v));
       slots.bounds.value.set(part.ground, part.height);
       slots.flags.value.set(part.steel ? 1 : 0, part.body ? 1 : 0);
+      slots.detail.value = detailTex ?? neutral;
+      slots.detailSize.value.set(detailSize[0], detailSize[1]);
     }),
   );
   registerVoxelReflectionVariant(material, graph.prototype);
