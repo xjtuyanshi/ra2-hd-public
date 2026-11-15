@@ -2073,6 +2073,24 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
   // Console handle for A/B checks: __hdBridge.toggle() switches between the HD view and the original picture.
   let activeWaterLook = parseWaterStyle(params.get('hd-water'));
   const handle = {
+    ...(import.meta.env.DEV && params.get('hd-veh') === 'cad'
+      ? {
+          vehicleCad: {
+            mode(m?: 'look' | 'pbr' | 'off'): string {
+              if (stopped || !live) throw new Error('HD view is not ready');
+              return live.vehicleCadMode(m);
+            },
+            set(knob: string, value: number): void {
+              if (stopped || !live) throw new Error('HD view is not ready');
+              live.vehicleCadSet(knob, value);
+            },
+            get(): Record<string, number> {
+              if (stopped || !live) throw new Error('HD view is not ready');
+              return live.vehicleCadGet();
+            },
+          },
+        }
+      : {}),
     ...(import.meta.env.DEV
       ? {
           water: {

@@ -32,6 +32,8 @@ import { projectionParts, voxelProjectionLibrary, type VoxelProjectionLibrary } 
 import { setShadowContact } from '../ra2/voxelShadow';
 import type { VoxelCardTies } from '../ra2/voxelNativeDepth';
 import { VoxelCadLibrary, cadVoxelGeometry, adoptCadVoxel } from '../ra2/voxelCad';
+import type { CadMeshData } from '../ra2/voxelCadMesh';
+import { voxelCadLookFor } from '../ra2/voxelCadMaterial';
 import { selectedVoxelTurretIndex } from '../ra2/voxelTurrets';
 
 export interface VoxelUnitsOptions {
@@ -40,11 +42,21 @@ export interface VoxelUnitsOptions {
   voxelProjection?: string;
   /** Optional external hard-surface spec directory; absent leaves every vehicle unchanged. */
   voxelCad?: string;
+  cadLook?: 'look' | 'pbr';
   /**
    * Where the remaster look's smooth meshes are built. Default: a pool of Workers when the host has Workers, else
    * (and with null) on the calling thread at the first instance of a model.
    */
   smoothBuilder?: (SmoothSectionBuilder & { dispose?(): void }) | null;
+}
+
+export type VehicleCadMode = 'look' | 'pbr' | 'off';
+interface CadRecord {
+  palette: Uint8Array;
+  units: Set<VoxelUnit>;
+  original?: VoxelGeometry[];
+  look?: VoxelGeometry[];
+  pbr?: VoxelGeometry[];
 }
 
 const LEPTONS_PER_CELL = 256;
@@ -99,11 +111,11 @@ export class VoxelUnits {
   private readonly cad?: VoxelCadLibrary;
   private readonly cadLoading = new Set<VoxelModel>();
   private readonly cadGeometry = new Map<VoxelModel, BufferGeometry[]>();
+  private readonly cadPbrGeometry = new Map<VoxelModel, BufferGeometry[]>();
+  private readonly cadMeshes = new Map<VoxelModel, CadMeshData[]>();
+  private cadMode: VehicleCadMode = 'look';
   private readonly cadParts = new Set<VoxelGeometry[]>();
-  private readonly cadRecords = new Map<
-    VoxelModel,
-    Map<VoxelGeometry[], { palette: Uint8Array; units: Set<VoxelUnit> }>
-  >();
+  private readonly cadRecords = new Map<VoxelModel, Map<VoxelGeometry[], CadRecord>>();
   private disposed = false;
   /** Changes when a mesh or a redraw projection asked for earlier has arrived: what waited for it can draw now. */
   revision = 0;
@@ -122,6 +134,7 @@ export class VoxelUnits {
     if (this.voxelLook === 'remaster') hd.settings.voxelLook = 'remaster';
     this.material = createVoxelMaterial(hd.nodes);
     const cadBase = options.voxelCad ?? world.voxelCad;
+    this.cadMode = options.cadLook ?? world.cadLook ?? 'look';
     if (cadBase) this.cad = new VoxelCadLibrary(cadBase);
     this.smoothBuilder =
       this.voxelLook !== 'remaster'
@@ -210,6 +223,11 @@ export class VoxelUnits {
       const { anchor, bonus, enabled } = root.nativeDepth;
       updateVoxelNativeDepth(root, anchor, bonus, enabled !== 0);
     }
+    for (const [parts, record] of this.cadRecords.get(model) ?? []) {
+      if (this.standInOf.get(parts) === standIn) this.standInOf.delete(parts);
+      if (this.cadMode === 'off' && record.original)
+        for (let i = 0; i < parts.length; i++) Object.assign(parts[i], record.original[i]);
+    }
     for (const geometry of standIn.geometries) geometry.dispose();
   }
 
@@ -222,14 +240,20 @@ export class VoxelUnits {
       this.cadRecords.set(model, records);
       this.cadLoading.add(model);
       void this.cad
-        .load(model)
+        .load(model, this.cache.paletteRgb.get(model.palette) ?? palette)
         .then((meshes) => {
           this.cadLoading.delete(model);
           if (this.disposed || !meshes) return;
           const built = cadVoxelGeometry(model, meshes, palette, this.hd.nodes);
+          const pbr = cadVoxelGeometry(model, meshes, palette, this.hd.nodes, 'pbr');
+          this.cadMeshes.set(model, meshes);
           this.cadGeometry.set(
             model,
             built.map((part) => part.geometry),
+          );
+          this.cadPbrGeometry.set(
+            model,
+            pbr.map((part) => part.geometry),
           );
           for (const [target, record] of records!) this.adoptCad(model, target, record);
           this.revision++;
@@ -244,26 +268,59 @@ export class VoxelUnits {
     if (this.cadGeometry.has(model)) this.adoptCad(model, parts, record);
   }
 
-  private adoptCad(
-    model: VoxelModel,
-    parts: VoxelGeometry[],
-    record: { palette: Uint8Array; units: Set<VoxelUnit> },
-  ): void {
-    const material = voxelPbrMaterialFor(record.palette, this.hd.nodes);
-    const next = model.parts.map((part, i) => ({
-      role: part.role,
-      turretOffset: (model.turretOffset ?? 0) / 256,
-      geometry: this.cadGeometry.get(model)![i]!,
-      material,
-    }));
+  /** Development A/B switch: no rebuild, no new unit, and no change to articulation or per-object state. */
+  vehicleCadMode(mode?: VehicleCadMode): string {
+    if (mode !== undefined) {
+      if (!['look', 'pbr', 'off'].includes(mode)) throw new Error('Invalid CAD mode');
+      if (mode !== this.cadMode) {
+        this.cadMode = mode;
+        for (const [model, records] of this.cadRecords)
+          if (this.cadGeometry.has(model)) for (const [parts, record] of records) this.adoptCad(model, parts, record);
+        this.revision++;
+      }
+    }
+    return this.cadMode;
+  }
+  vehicleCadSet(knob: string, value: number): void {
+    voxelCadLookFor(this.hd.nodes).set(knob, value);
+  }
+  vehicleCadGet(): Record<string, number> {
+    return voxelCadLookFor(this.hd.nodes).get();
+  }
+
+  private adoptCad(model: VoxelModel, parts: VoxelGeometry[], record: CadRecord): void {
     const standIn = this.standInOf.get(parts);
-    standIn?.sets.delete(parts);
-    this.standInOf.delete(parts);
+    if (!record.original) {
+      record.original = parts.map((p) => ({ ...p }));
+      // The retained pre-CAD set still follows a pending smooth build, even while CAD is visible.
+      if (standIn) {
+        standIn.sets.delete(parts);
+        standIn.sets.add(record.original);
+      }
+      record.look = cadVoxelGeometry(
+        model,
+        this.cadMeshes.get(model)!,
+        record.palette,
+        this.hd.nodes,
+        'look',
+        this.cadGeometry.get(model),
+      );
+      record.pbr = cadVoxelGeometry(
+        model,
+        this.cadMeshes.get(model)!,
+        record.palette,
+        this.hd.nodes,
+        'pbr',
+        this.cadPbrGeometry.get(model),
+      );
+    }
+    const next = this.cadMode === 'off' ? record.original : this.cadMode === 'pbr' ? record.pbr! : record.look!;
     for (const unit of record.units) {
-      standIn?.units.delete(unit.root);
+      if (this.cadMode === 'off') standIn?.units.add(unit.root);
+      else standIn?.units.delete(unit.root);
       if (unit.root instanceof VoxelRoot) adoptCadVoxel(unit.root, parts, next);
     }
-    for (let i = 0; i < parts.length; i++) Object.assign(parts[i]!, next[i]);
+    for (let i = 0; i < parts.length; i++) Object.assign(parts[i], next[i]);
     this.cadParts.add(parts);
   }
 
@@ -297,30 +354,27 @@ export class VoxelUnits {
     let parts = this.geometries.get(cacheKey);
     if (parts) return parts;
     const palette = this.cache.paletteRgb.get(paletteKey)!;
-    const cadGeometry = this.cadGeometry.get(model);
-    parts = cadGeometry
-      ? model.parts.map((part, i) => ({
-          role: part.role,
-          geometry: cadGeometry[i]!,
-          turretOffset: (model.turretOffset ?? 0) / 256,
-          material: voxelPbrMaterialFor(palette, this.hd.nodes),
-        }))
-      : this.voxelLook !== 'remaster'
+    parts =
+      this.voxelLook !== 'remaster'
         ? buildVoxelGeometry(model, palette, this.hd.nodes)
         : this.geometryReady(model)
           ? buildSmoothVoxelGeometry(model, palette, this.hd.nodes, this.smoothVoxel)
           : this.standInParts(model, palette);
     this.geometries.set(cacheKey, parts);
-    this.requestCad(model, parts, palette);
+    const publish = (): VoxelGeometry[] => {
+      // Capture the complete pre-CAD set, including an already cached redraw projection, before adoption.
+      this.requestCad(model, parts!, palette);
+      return parts!;
+    };
     const projection = this.projections;
-    if (!projection || this.cadParts.has(parts)) return parts;
+    if (!projection || this.cadParts.has(parts)) return publish();
     // Alternate native turrets have different silhouettes: retain the HD hull, but never paint the default gun
     // over a repair arm or another passenger's turret. Those parts keep their own palette/smooth material.
     const projected = selectedVoxelTurretIndex(model) ? parts.filter((part) => part.role === 'body') : parts;
-    if (!projected.length) return parts;
+    if (!projected.length) return publish();
     const required = projectionParts(projected);
     if (projectVoxelMaterials(projected, palette, projection.get(model.id, required, variant), this.hd.nodes))
-      return parts;
+      return publish();
     const waiting = new Set<VoxelUnit>();
     const target = parts;
     this.pending.set(target, waiting);
@@ -351,7 +405,7 @@ export class VoxelUnits {
       this.pending.delete(target);
       this.revision++;
     });
-    return parts;
+    return publish();
   }
 
   /** Whether a geometry set (and its materials) already exists for `cacheKey`: an instance of it builds no shader. */
@@ -391,7 +445,7 @@ export class VoxelUnits {
     const parts = this.partsFor(model, paletteKey, cacheKey, variant);
     const unit = instantiateVoxel(parts, this.material, this.hd.nodes);
     this.pending.get(parts)?.add(unit);
-    this.standInOf.get(parts)?.units.add(unit.root);
+    if (!this.cadParts.has(parts) || this.cadMode === 'off') this.standInOf.get(parts)?.units.add(unit.root);
     this.cadRecords.get(model)?.get(parts)?.units.add(unit);
     return unit;
   }
@@ -477,6 +531,9 @@ export class VoxelUnits {
     this.cad?.dispose();
     for (const geometries of this.cadGeometry.values()) for (const geometry of geometries) geometry.dispose();
     this.cadGeometry.clear();
+    for (const geometries of this.cadPbrGeometry.values()) for (const geometry of geometries) geometry.dispose();
+    this.cadPbrGeometry.clear();
+    this.cadMeshes.clear();
     this.cadRecords.clear();
     this.cadParts.clear();
     this.cadLoading.clear();

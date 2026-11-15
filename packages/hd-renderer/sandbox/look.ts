@@ -2,6 +2,7 @@ import type GUI from 'three/addons/libs/lil-gui.module.min.js';
 import { applyLookPreset, LOOK_PRESETS, type HdRenderer, type HdSettings, type LookPreset } from '../src/HdRenderer';
 import type { RenderState } from '../src/contract';
 import { smoothVoxelOptions, DEFAULT_SMOOTH_VOXEL, type SmoothVoxelOptions } from '../src/ra2/voxelSmooth';
+import { voxelCadLookFor } from '../src/ra2/voxelCadMaterial';
 import { VOXEL_PBR_DEFAULTS, voxelPbrFor, type VoxelPbrKnob } from '../src/ra2/voxelPbr';
 import { voxelProjectionFor } from '../src/ra2/voxelProjection';
 
@@ -32,6 +33,7 @@ export function voxelLookParams(params: URLSearchParams): {
   smoothVoxel: Readonly<SmoothVoxelOptions>;
   voxelProjection?: string;
   voxelCad?: string;
+  cadLook?: 'look' | 'pbr';
 } {
   const options: Partial<SmoothVoxelOptions> = {};
   for (const entry of (params.get('vsmooth') ?? '').split(',')) {
@@ -50,6 +52,7 @@ export function voxelLookParams(params: URLSearchParams): {
     ?.trim()
     .replace(/^\/+|\/+$/g, '');
   return {
+    cadLook: params.get('cadlook') === 'pbr' ? 'pbr' : 'look',
     voxelCad:
       params.get('veh') === 'cad'
         ? cadDir && !/\.\.|[\\:]/.test(cadDir)
@@ -76,6 +79,17 @@ export function voxelLookParams(params: URLSearchParams): {
  */
 export function applyLookParams(hd: HdRenderer, params: URLSearchParams, state: RenderState): void {
   hd.settings.voxelLook = params.get('vlook') === 'remaster' ? 'remaster' : 'engine';
+  if (params.get('veh') === 'cad') {
+    const cad = voxelCadLookFor(hd.nodes);
+    for (const [key] of Object.entries(cad.get())) {
+      const value = params.get(key);
+      if (value?.trim() && Number.isFinite(Number(value))) cad.set(key, Number(value));
+    }
+    for (const entry of (params.get('cadk') ?? '').split(',')) {
+      const [key, value] = entry.split(':');
+      if (Object.hasOwn(cad.get(), key) && value?.trim() && Number.isFinite(Number(value))) cad.set(key, Number(value));
+    }
+  }
   const pbr = voxelPbrFor(hd.nodes);
   for (const entry of (params.get('vk') ?? '').split(',')) {
     const [key, value] = entry.split(':');

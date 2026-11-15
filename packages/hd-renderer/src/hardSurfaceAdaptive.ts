@@ -5,7 +5,7 @@ export interface SurfacePaint {
   index: number;
   shade: number;
 }
-export type SurfaceSampler = (p: readonly number[], n: readonly number[]) => SurfacePaint;
+export type SurfaceSampler = (p: readonly number[], n: readonly number[], face: number) => SurfacePaint;
 const SHADE_ERROR = 0.5;
 const AO_ERROR = 1 / 8;
 const TRIANGLE_BUDGET = 2_000_000;
@@ -107,7 +107,7 @@ export function adaptiveHardSurfaceMesh(
       p.n = p.n.map((x) => x / len) as Vec3;
       const fp = p.p.map(Math.fround) as Vec3,
         fn = p.n.map(Math.fround) as Vec3;
-      p.paint = paint(fp, fn);
+      p.paint = paint(fp, fn, mesh.face[start]);
       p.ao = occlusion(fp, fn);
       samples.set(key, p);
       return p;
@@ -221,7 +221,7 @@ export function adaptiveHardSurfaceMesh(
               centre[a] += Math.fround(p.p[a]) / 3;
               normal[a] += Math.fround(p.n[a]) / 3;
             }
-          const owner = paint(centre, normal),
+          const owner = paint(centre, normal, mesh.face[start]),
             ramp = Math.floor(owner.index / 16) * 16;
           const shade = vertices.map((p) =>
             Math.floor(p.paint!.index / 16) * 16 === ramp
