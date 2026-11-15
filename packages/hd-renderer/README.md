@@ -413,12 +413,12 @@ __hdBridge.light.look({ smokeWisp: 0.5, beamFlicker: 0.1 });
 
 Shared uniforms live on `hd.nodes.smokeLook` (round 7b defaults): smoke `smokeVolume=1`, `smokeWisp=0.75`,
 `smokeWarp=0.8`, `smokeStretch=0.35`, `smokeDetail=2`, `smokeEdge=0.22` (width of the density ramp: smaller is
-crisper wisps), `smokeRidge=0.6` (share of ridged noise: filaments); lasers `beamLight=1`, `beamCore=0.35` (core
-radius share), `beamCoreGain=1.6` (core radiance; above the night bloom threshold so the core blooms), `beamGlow=1.2`
-(glow radius), `beamTail=0.45` (exponential tail share), `beamSpread=1.6` (laser quad width factor, so the tail
-reaches zero inside it), `beamFlicker=0.12`, `beamImpact=0.9` (hit-point bloom); sources `chronoPool=0`,
-`flashWarm=1`, `flashNeutral=0.9`, `flashSat=0.55` (warm flash saturation at constant luminance),
-`flashSize=0.7` (flash pool falloff and reach factor), `wreckGlow=1`. Master switches `smokeVolume=0` and
+crisper wisps), `smokeRidge=0.6` (share of ridged noise: filaments); lasers `beamLight=1`, `beamCore=0.2` (core
+radius share), `beamCoreGain=1.15` (core radiance; at the night bloom threshold so the core blooms), `beamGlow=2.4`
+(glow radius), `beamTail=0.5` (exponential tail share), `beamSpread=2` (laser quad width factor, so the tail
+reaches zero inside it), `beamFlicker=0.12`, `beamImpact=0.7` (hit-point bloom); sources `chronoPool=0`,
+`flashWarm=1`, `flashNeutral=0.9`, `flashSat=0.85` (warm flash saturation at constant luminance),
+`flashSize=0.55` (flash pool falloff and reach factor), `wreckGlow=1`. Master switches `smokeVolume=0` and
 `beamLight=0` restore their old profiles; `chronoPool=1`, `flashWarm=0` and `wreckGlow=0` restore old source
 policies, and `look('cur')` restores all of them. Detail, glow, spread, core gain and impact accept 0..4; other
 controls accept 0..1. These controls have no visual effect without the opted-in, enabled physical path.
@@ -430,7 +430,7 @@ the body thins as the erosion threshold rises. Card smoke takes two taps per eli
 premultiplied grey luminance are bounded within 4% per texel. Frame rectangles, grey colour, emission timing, depth
 and particle budgets are retained. Native straight lasers alone use a widened quad with a Gaussian white-hot core
 (20% source hue), a house-colour glow that is a Gaussian plus an exponential tail windowed to zero at the quad edge
-(no clamp plateau), 23 Hz seeded flicker and a bloom at the hit point of the beam's last segment. Bolts and
+(no clamp plateau; the source budget scales the glow before its soft saturation, so a budgeted beam keeps its house-colour body), 23 Hz seeded flicker and a bloom at the hit point of the beam's last segment. Bolts and
 auxiliary beams retain their profiles. Chrono emission to ground defaults to zero. Flash luminance in the existing
 ground-footprint alpha selects neutral graded ground albedo only for the flash share; isolated beam ground lighting
 is unchanged. Wrecks retain their 0.45-cell radius with four times the old energy and calm 2–3 Hz flicker.

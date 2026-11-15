@@ -118,7 +118,7 @@ export function laserLightProfile(
   const window = Math.max(0, Math.min(1, 1 - (r / reach) ** 2)) ** 2;
   const g = Math.max(1e-4, look.beamGlow);
   const raw = (1 - look.beamTail) * Math.exp(-1.6 * (r / g) ** 2) + look.beamTail * Math.exp((-1.3 * Math.abs(r)) / g);
-  const glow = 0.85 * (1 - Math.exp(-2 * raw)) * window;
+  const glow = 0.85 * (1 - Math.exp(-4 * raw)) * window;
   const peak = Math.max(...colour, 1e-8);
   return colour.map(
     (c) => (0.8 + (0.2 * c) / peak) * look.beamCoreGain * core + (c / peak) * glow * (1 - 0.6 * core),
@@ -235,8 +235,10 @@ export class RealEmissiveLayer {
     const reach = float(EMISSIVE_BUDGET.outerWidth).mul(spread);
     const window = float(1).sub(r.div(reach).pow(2)).clamp(0, 1).pow(2);
     const rawGlow = mix(exp(r.div(glowR).pow(2).mul(-1.6)), exp(r.div(glowR).mul(-1.3)), this.look.beamTail);
+    // The source budget scales the glow before the soft saturation, so a budgeted beam keeps a full house-colour body
+    // near the core and only its faint tail shrinks (live round 7b: a long single beam read pink-white, not red).
     const laserGlow = float(1)
-      .sub(exp(rawGlow.mul(-2)))
+      .sub(exp(rawGlow.mul(colour.w).mul(-4)))
       .mul(0.85)
       .mul(window);
     const seed = phase.x.mul(1 / 65536).fract();
@@ -254,7 +256,7 @@ export class RealEmissiveLayer {
       .mul(extra.z)
       .mul(window);
     const tint = colour.rgb.div(peak.max(1e-8));
-    const glowRgb = tint.mul(laserGlow).mul(flicker).mul(shimmer).mul(colour.w);
+    const glowRgb = tint.mul(laserGlow).mul(flicker).mul(shimmer);
     // The core and the impact take 20%/45% of the source hue so violet stays violet-white, never pink.
     const hotTint = mix(vec3(1), tint, 0.2).mul(this.look.beamCoreGain);
     const lightRgb = hotTint
