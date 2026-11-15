@@ -1050,7 +1050,7 @@ export class EffectsLayer {
         const p = uv().sub(0.5).mul(2);
         const n = mx_noise_float(vec3(p.mul(1.8), seed.mul(20).add(t.mul(1.5)))).mul(0.3);
         const oldMask = smoothstep(1.0, 0.2, length(p).add(n));
-        const volume = this.nodes.realLight
+        const volume = this.nodes.smokeVolume
           ? smokeVolume(p, age, t, seed, this.nodes, this.cameraRight, this.cameraUp, [0.15, 0, 0.9, 0.35])
           : undefined;
         const mask = volume
@@ -1454,7 +1454,7 @@ export class EffectsLayer {
           .add(rim)
           .mul(mix(e.underside, 1, smoothstep(...e.undersideRange, nrm.y)))
           .mul(shadow);
-        const volume = this.nodes.realLight
+        const volume = this.nodes.smokeVolume
           ? smokeVolume(p, age, t, seed, this.nodes, this.cameraRight, this.cameraUp)
           : undefined;
         const volumeWeight = this.nodes.realLight
@@ -1767,7 +1767,7 @@ export class EffectsLayer {
         const { density, normal: nrm, shadow } = smokeLobes(p, seed, angle, edge, fine, broad, bump, e);
         const sun = dot(nrm, vec3(-0.5, 0.68, 0.53)).max(0);
         const rim = pow(float(1).sub(nrm.z), 3).mul(0.3);
-        const volume = this.nodes.realLight
+        const volume = this.nodes.smokeVolume
           ? smokeVolume(p, age, t, seed, this.nodes, this.cameraRight, this.cameraUp)
           : undefined;
         const volumeWeight = this.nodes.realLight

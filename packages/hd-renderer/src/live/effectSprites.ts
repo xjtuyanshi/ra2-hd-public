@@ -295,9 +295,9 @@ interface PageGroup {
  *   - colour lit by the scene light like other original art, fire-coloured pixels self-lit and FX_GLOW brighter.
  */
 export class EffectSpriteLayer {
-  /** Absent on legacy contexts: no noise samplers or new shader expressions in the hd-light-off graph. */
+  /** Absent on legacy contexts and in hd-light=beam: no noise samplers or new shader expressions in those graphs. */
   get smokeNodes(): AtmosphereNodes | undefined {
-    return this.cache.nodes?.realLight ? this.cache.nodes : undefined;
+    return this.cache.nodes?.realLight && this.cache.nodes.smokeVolume ? this.cache.nodes : undefined;
   }
   readonly root = new Group();
   /** Native Top art composites after the visibility mask, in the renderer's transparent top pass. */

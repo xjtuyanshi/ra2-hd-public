@@ -24,7 +24,7 @@ import {
   uniform,
   vec3,
 } from 'three/tsl';
-import { createLightLook } from './lightLook';
+import { createLightLook, type LightLook, type LightLookPreset } from './lightLook';
 import type { AtmosphereProfile } from './contract';
 import type { EmitterLayer } from './emitters';
 import type { RealLightField } from './realLight';
@@ -73,12 +73,16 @@ export class AtmosphereNodes extends SceneLightingUniforms {
   /** Shared smoke/laser/light presentation uniforms. Owned by this context; no shader rebuild on edits.
    * smokeVolume/beamLight gate the new profiles; all changes are gated again by realLight.enabled.
    * See lightLook.ts for numeric defaults and the exact 1697702 preset. */
-  readonly smokeLook = createLightLook();
+  readonly smokeLook: LightLook;
   readonly smokeWind = uniform(new Vector2());
   readonly realLight?: RealLightNodes;
+  /** Whether the round-7 smoke volume graphs exist. False for hd-light=beam: smoke shading is then Build 13's. */
+  readonly smokeVolume: boolean;
 
-  constructor(options: { realLight?: boolean } = {}) {
+  constructor(options: { realLight?: boolean; lightPreset?: LightLookPreset } = {}) {
     super();
+    this.smokeLook = createLightLook(options.lightPreset);
+    this.smokeVolume = !!options.realLight && options.lightPreset !== 'beam';
     if (options.realLight) this.realLight = new RealLightNodes(this.smokeLook);
     this.black.needsUpdate = true;
     this.noSurface.needsUpdate = true;

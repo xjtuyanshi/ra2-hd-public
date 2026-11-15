@@ -1,4 +1,5 @@
 import { voxelAmbientContact } from './voxelShadow';
+import type { LightLookPreset } from '../lightLook';
 import { spriteContactFootprint } from './nightObjects';
 import type { AmbientContact } from '../ambientContact';
 import { DataTexture, LinearFilter, Object3D, RGFormat, UnsignedByteType, Vector3 } from 'three/webgpu';
@@ -104,6 +105,8 @@ export async function loadRa2World(
   base: string,
   options: {
     realLight?: boolean;
+    /** Initial real-light look preset (hd-light=1 is 'new', hd-light=beam is 'beam'). */
+    realLightPreset?: LightLookPreset;
     extraObjects?: (manifest: Ra2Cache['manifest']) => MapObject[];
     /** Immutable per-world voxel refinement; defaults are captured before asynchronous resource loading starts. */
     voxelShape?: Readonly<VoxelShape>;
@@ -122,7 +125,7 @@ export async function loadRa2World(
     extraHouses?: Record<string, Hsv>;
   } & Ra2CacheOptions = {},
 ): Promise<HdWorld> {
-  const nodes = options.nodes ?? new AtmosphereNodes({ realLight: options.realLight });
+  const nodes = options.nodes ?? new AtmosphereNodes({ realLight: options.realLight, lightPreset: options.realLightPreset });
   const voxelLook = options.voxelLook ?? 'engine';
   const smoothVoxel = smoothVoxelOptions(options.smoothVoxel);
   const projections = options.voxelProjection ? voxelProjectionLibrary(options.voxelProjection, nodes) : undefined;

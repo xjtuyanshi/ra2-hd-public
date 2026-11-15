@@ -9,6 +9,10 @@ import {
   Vector3,
 } from 'three/webgpu';
 import {
+  abs,
+  cameraFar,
+  cameraNear,
+  depth,
   dot,
   exp,
   float,
@@ -20,7 +24,9 @@ import {
   mrt,
   mx_noise_float,
   positionGeometry,
+  pow,
   smoothstep,
+  sqrt,
   uniform,
   uv,
   vec2,
@@ -111,18 +117,36 @@ export function laserLightProfile(
   r: number,
   colour: Rgb,
   coreWidth = 1.4,
-  look: Pick<LightLookValues, 'beamCore' | 'beamGlow' | 'beamTail' | 'beamCoreGain' | 'beamSpread'> = LIGHT_LOOK_NEW,
+  look: Pick<
+    LightLookValues,
+    'beamCore' | 'beamGlow' | 'beamTail' | 'beamCoreGain' | 'beamSpread' | 'beamOverbright' | 'beamKnee'
+  > = LIGHT_LOOK_NEW,
+  gain = 1,
 ): Rgb {
   const core = Math.exp(-2.2 * (r / Math.max(1e-4, coreWidth * look.beamCore)) ** 2);
   const reach = EMISSIVE_BUDGET.outerWidth * look.beamSpread;
   const window = Math.max(0, Math.min(1, 1 - (r / reach) ** 2)) ** 2;
   const g = Math.max(1e-4, look.beamGlow);
   const raw = (1 - look.beamTail) * Math.exp(-1.6 * (r / g) ** 2) + look.beamTail * Math.exp((-1.3 * Math.abs(r)) / g);
-  const glow = 0.85 * (1 - Math.exp(-4 * raw)) * window;
-  const peak = Math.max(...colour, 1e-8);
-  return colour.map(
-    (c) => (0.8 + (0.2 * c) / peak) * look.beamCoreGain * core + (c / peak) * glow * (1 - 0.6 * core),
+  const profile = 1 - Math.exp(-4 * raw * gain);
+  const amplitude = (1 - Math.exp(-4 * gain)) * raw;
+  const glow = 0.85 * (profile + (amplitude - profile) * look.beamKnee) * window;
+  const tint = laserGlowTint(colour, look.beamOverbright);
+  return tint.map(
+    (t) => (0.8 + 0.2 * t) * look.beamCoreGain * core + t * glow * (1 - 0.6 * core),
   ) as [number, number, number];
+}
+/** Display gamma used for the overbright emulation (the original adds colours in display space). */
+const DISPLAY_GAMMA = 2.2;
+/**
+ * CPU twin of the laser glow's linear tint (peak channel 1): the source colour as the original shows it at the beam
+ * centre, i.e. the absolute display colour scaled by `overbright` per channel and clipped there (a channel that clips
+ * stops growing while the others still rise). overbright = 1 is exactly colour / peak for colours within range.
+ */
+export function laserGlowTint(colour: Rgb, overbright = 1): [number, number, number] {
+  const display = colour.map((c) => Math.min(1, Math.max(0, c) ** (1 / DISPLAY_GAMMA) * overbright));
+  const top = Math.max(...display, 1e-8);
+  return display.map((d) => (d / top) ** DISPLAY_GAMMA) as [number, number, number];
 }
 /** CPU twin of the non-core luminance limit, applied after flicker and source gain. */
 export function emissiveSheathColour(colour: Rgb, gain: number): [number, number, number] {
@@ -237,10 +261,11 @@ export class RealEmissiveLayer {
     const rawGlow = mix(exp(r.div(glowR).pow(2).mul(-1.6)), exp(r.div(glowR).mul(-1.3)), this.look.beamTail);
     // The source budget scales the glow before the soft saturation, so a budgeted beam keeps a full house-colour body
     // near the core and only its faint tail shrinks (live round 7b: a long single beam read pink-white, not red).
-    const laserGlow = float(1)
-      .sub(exp(rawGlow.mul(colour.w).mul(-4)))
-      .mul(0.85)
-      .mul(window);
+    // beamKnee (hd-light=beam): saturate the amplitude only, keeping the radial falloff of a budgeted beam for a
+    // full-gain one; the profile saturation grew a flat plateau ~16 px wide on the violet tower beam (round-7 review).
+    const profileGlow = float(1).sub(exp(rawGlow.mul(colour.w).mul(-4)));
+    const amplitudeGlow = float(1).sub(exp(colour.w.mul(-4))).mul(rawGlow);
+    const laserGlow = mix(profileGlow, amplitudeGlow, this.look.beamKnee).mul(0.85).mul(window);
     const seed = phase.x.mul(1 / 65536).fract();
     const tick = this.now.mul(23).add(seed.mul(13));
     const flicker = mx_noise_float(vec3(tick, seed.mul(71), 0))
@@ -255,7 +280,14 @@ export class RealEmissiveLayer {
       .mul(this.look.beamImpact)
       .mul(extra.z)
       .mul(window);
-    const tint = colour.rgb.div(peak.max(1e-8));
+    // Glow hue as the original shows it at the beam centre (beamOverbright; exactly colour / peak at 1).
+    const display = pow(colour.rgb.max(0), vec3(1 / DISPLAY_GAMMA))
+      .mul(this.look.beamOverbright)
+      .min(1);
+    const tint = pow(
+      display.div(max(display.r, max(display.g, display.b)).max(1e-8)),
+      vec3(DISPLAY_GAMMA),
+    );
     const glowRgb = tint.mul(laserGlow).mul(flicker).mul(shimmer);
     // The core and the impact take 20%/45% of the source hue so violet stays violet-white, never pink.
     const hotTint = mix(vec3(1), tint, 0.2).mul(this.look.beamCoreGain);
@@ -266,6 +298,17 @@ export class RealEmissiveLayer {
       .add(glowRgb.mul(float(1).sub(laserCore.mul(0.6))))
       .add(mix(vec3(1), tint, 0.45).mul(impact).mul(flicker).mul(colour.w));
     const rgb = mix(legacy, lightRgb, phase.w.greaterThan(1.5).select(this.look.beamLight, float(0)));
+    // beamDepthLift (hd-light=beam): the glow is depth-tested as if lifted towards the camera by the height its
+    // screen-vertical offset would need above the ground (offset x cot(elevation)). A low near-horizontal beam's glow
+    // below the core otherwise falls behind the very terrain it is drawn over and ends in a hard edge within 2 px
+    // (round-7 review, live SOV07TMD frame 222), while the glow above survives. The core (offset ~0) keeps its depth.
+    const offset = side.mul(uv().y.sub(0.5).mul(width));
+    const elevation = this.toCamera.y.max(0.05);
+    const cotangent = sqrt(float(1).sub(elevation.mul(elevation)).max(0)).div(elevation);
+    const lift = abs(dot(offset, this.up))
+      .mul(cotangent)
+      .mul(phase.w.greaterThan(1.5).select(this.look.beamDepthLift.mul(this.look.beamLight), float(0)));
+    m.depthNode = depth.sub(lift.div(cameraFar.sub(cameraNear)));
     // Budget only these new primitives, preserving legacy static overlays that share the attachment.
     m.colorNode = vec4(0);
     m.mrtNode = mrt({ output: vec4(0), emissive: vec4(rgb.mul(this.frameGain), 0) });

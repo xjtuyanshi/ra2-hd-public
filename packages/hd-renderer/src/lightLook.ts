@@ -23,6 +23,9 @@ export const LIGHT_LOOK_CURRENT = {
   smokeEdge: 0.4,
   smokeRidge: 0,
   wreckGlow: 0,
+  beamOverbright: 1,
+  beamKnee: 0,
+  beamDepthLift: 0,
 } as const;
 export const LIGHT_LOOK_NEW = {
   smokeVolume: 1,
@@ -46,19 +49,54 @@ export const LIGHT_LOOK_NEW = {
   smokeEdge: 0.22,
   smokeRidge: 0.6,
   wreckGlow: 1,
+  beamOverbright: 1,
+  beamKnee: 0,
+  beamDepthLift: 0,
 } as const;
+/**
+ * hd-light=beam (round 8, the default-on candidate): round 7's laser light, chrono and warm-flash fixes with the smoke
+ * left exactly as Build 13 draws it (the smoke graphs are not even built in this preset; see AtmosphereNodes).
+ * Three laser fixes on top of round 7:
+ * - beamOverbright: the glow takes the hue the ORIGINAL shows at the beam centre. The original adds the house colour
+ *   over the scene, so its two-channel colours overbright: a live SOV07TMD Prism beam with the inner colour
+ *   (137, 0, 197) displayed (225, 43, 255), i.e. about 1.64x per display channel, clipped at white. Round 7 used the
+ *   inner colour's own linear ratios, which showed ~272 deg instead of the original's ~291 deg (violet read blue).
+ *   Single-channel colours (the red house) are unchanged by this.
+ * - beamKnee: the soft saturation acts on the glow's amplitude, not on its radial profile, so a full-gain beam keeps
+ *   the same falloff as a budgeted one instead of growing a flat saturated plateau (the "neon tube").
+ * - beamDepthLift: glow fragments are depth-tested as if lifted towards the camera by the height their screen offset
+ *   would need above the ground, so a glow below a low, near-horizontal beam is not cut off by the terrain it covers.
+ */
+export const LIGHT_LOOK_BEAM = {
+  ...LIGHT_LOOK_NEW,
+  smokeVolume: LIGHT_LOOK_CURRENT.smokeVolume,
+  smokeWisp: LIGHT_LOOK_CURRENT.smokeWisp,
+  smokeWarp: LIGHT_LOOK_CURRENT.smokeWarp,
+  smokeStretch: LIGHT_LOOK_CURRENT.smokeStretch,
+  smokeDetail: LIGHT_LOOK_CURRENT.smokeDetail,
+  smokeEdge: LIGHT_LOOK_CURRENT.smokeEdge,
+  smokeRidge: LIGHT_LOOK_CURRENT.smokeRidge,
+  beamGlow: 1.3,
+  beamTail: 0.15,
+  beamOverbright: 1.64,
+  beamKnee: 1,
+  beamDepthLift: 1,
+} as const;
+export type LightLookPreset = 'new' | 'beam';
 /** Parameters that are gains or widths rather than 0..1 shares. */
-const WIDE = new Set<string>(['smokeDetail', 'beamGlow', 'beamSpread', 'beamCoreGain', 'beamImpact']);
+const WIDE = new Set<string>(['smokeDetail', 'beamGlow', 'beamSpread', 'beamCoreGain', 'beamImpact', 'beamOverbright']);
 export type LightLookValues = { [K in keyof typeof LIGHT_LOOK_NEW]: number };
 const lookUniform = (v: number) => uniform(v);
 export type LightLook = { [K in keyof LightLookValues]: ReturnType<typeof lookUniform> };
-export type LightLookArgument = 'cur' | 'new' | Partial<LightLookValues>;
-export function createLightLook(): LightLook {
-  return Object.fromEntries(Object.entries(LIGHT_LOOK_NEW).map(([k, v]) => [k, uniform(v as number)])) as LightLook;
+export type LightLookArgument = 'cur' | 'new' | 'beam' | Partial<LightLookValues>;
+export function createLightLook(preset: LightLookPreset = 'new'): LightLook {
+  const values: LightLookValues = preset === 'beam' ? LIGHT_LOOK_BEAM : LIGHT_LOOK_NEW;
+  return Object.fromEntries(Object.entries(values).map(([k, v]) => [k, uniform(v)])) as LightLook;
 }
 /** Mutate existing uniforms, never graphs. Readback is a detached numeric snapshot for the development bridge. */
 export function lightLook(look: LightLook, arg?: LightLookArgument): LightLookValues {
-  const values = arg === 'cur' ? LIGHT_LOOK_CURRENT : arg === 'new' ? LIGHT_LOOK_NEW : arg;
+  const values =
+    arg === 'cur' ? LIGHT_LOOK_CURRENT : arg === 'new' ? LIGHT_LOOK_NEW : arg === 'beam' ? LIGHT_LOOK_BEAM : arg;
   if (values)
     for (const [key, value] of Object.entries(values)) {
       if (!Object.hasOwn(LIGHT_LOOK_NEW, key) || !Number.isFinite(value))

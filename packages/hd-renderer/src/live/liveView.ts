@@ -1,4 +1,4 @@
-import { lightLook, type LightLookArgument } from '../lightLook';
+import { lightLook, type LightLookArgument, type LightLookPreset } from '../lightLook';
 import { spriteContactFootprint } from '../ra2/nightObjects';
 import type { AmbientContact } from '../ambientContact';
 import { type EmissivePrimitive } from '../realEmissive';
@@ -307,6 +307,8 @@ export interface LiveViewOptions extends VoxelUnitsOptions {
   trackTimestamp?: boolean;
   /** Opt-in physical lighting graphs and resources. */
   realLight?: boolean;
+  /** Initial real-light look: 'new' (hd-light=1, round 7) or 'beam' (hd-light=beam: laser light, Build 13 smoke). */
+  realLightPreset?: LightLookPreset;
   /** URL of the map's HD cache directory (manifest.json inside). */
   mapBase: string;
   /** URL of the type library root (holding <theater>/library.json and common/effects/), for players' art. */
@@ -1396,6 +1398,7 @@ export class LiveView {
     const [world, requiredLimits] = await Promise.all([
       loadRa2World(options.mapBase, {
         realLight: options.realLight,
+        realLightPreset: options.realLightPreset,
         includeObject: (object) => object.kind === 'tree',
         voxelLook: options.voxelLook,
         smoothVoxel: options.smoothVoxel,

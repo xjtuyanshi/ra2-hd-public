@@ -1409,7 +1409,10 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
           ...parseWeatherParams(params, { weather: 'hd-weather', intensity: 'hd-weather-intensity' }),
           // hd-fx=enhanced: the remaster's modern effects around the engine's own anims (default: faithful).
           effects: params.get('hd-fx') === 'enhanced' ? 'enhanced' : 'faithful',
-          realLight: params.get('hd-light') === '1',
+          // hd-light=1: round-7 real light (smoke volume included); hd-light=beam: the default-on candidate, laser light
+          // and warm flashes with Build 13's smoke.
+          realLight: params.get('hd-light') === '1' || params.get('hd-light') === 'beam',
+          realLightPreset: params.get('hd-light') === 'beam' ? 'beam' : 'new',
           nativeDetail: params.get('hd-native-detail') === 'mirror' ? 'mirror' : 'ignore',
           // Development opt-in: retain the default effect cards unless explicitly selected.
           volumetricEffects: params.get('hd-fxvol') === 'ray' ? 'ray' : 'off',
