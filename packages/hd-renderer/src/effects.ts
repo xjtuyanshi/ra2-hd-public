@@ -2503,6 +2503,8 @@ export interface BeamSpec {
   seed: number;
   /** False for decorative beams whose owning source already provides the light; also skips impact garnish. */
   flash?: boolean;
+  /** Share of a fading native laser's life already passed (0 fresh .. 1 gone); absent for beams that do not fade. */
+  age?: number;
 }
 
 /** Bolt segment length and sideways/vertical jitter (world units = cells). */
@@ -2691,6 +2693,7 @@ export class BeamLayer {
               preserveHue: !beam.bolt,
               laserLight: !beam.bolt,
               impactEnd: !beam.bolt && i === end - 1,
+              ...(beam.age ? { age: beam.age } : {}),
               colour: beam.colour.toArray() as [number, number, number],
               hot: beam.bolt
                 ? emissiveCoreTint(beam.colour.toArray() as [number, number, number])

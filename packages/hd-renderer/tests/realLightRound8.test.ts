@@ -1,6 +1,8 @@
-import { describe, expect, it } from 'vitest';
-import { DataTexture, Mesh, Vector3 } from 'three/webgpu';
-import { AtmosphereNodes } from '../src/atmosphere';
+import { describe, expect, it, vi } from 'vitest';
+import { DataTexture, Mesh, Vector3, type WebGPURenderer } from 'three/webgpu';
+import { AtmosphereNodes, smokeLight } from '../src/atmosphere';
+import { LightField } from '../src/lightField';
+import { float, vec2, vec3 } from 'three/tsl';
 import {
   createLightLook,
   lightLook,
@@ -13,6 +15,7 @@ import { laserGlowTint, laserLightProfile, RealEmissiveLayer } from '../src/real
 import { EffectsLayer } from '../src/effects';
 import { EffectSpriteLayer, type EffectInstance } from '../src/live/effectSprites';
 import { beamColor } from '../src/live/beams';
+import { laserAge, laserRemaining } from '../src/live/effects';
 import type { Rgb } from '../src/realLight';
 import { receiverScene, shaderBytes } from './fixtures/realLightScene';
 
@@ -44,7 +47,9 @@ describe('round 8: hd-light=beam preset', () => {
       expect(preset.beamOverbright).toBe(1);
       expect(preset.beamKnee).toBe(0);
       expect(preset.beamDepthLift).toBe(0);
+      expect(preset.beamFade).toBe(0);
     }
+    expect(LIGHT_LOOK_BEAM.beamFade).toBe(1);
     const look = createLightLook('beam');
     expect(lightLook(look)).toEqual(LIGHT_LOOK_BEAM);
     expect(lightLook(look, 'new')).toEqual(LIGHT_LOOK_NEW);
@@ -156,5 +161,81 @@ describe('round 8: hd-light=beam preset', () => {
     layer.setInstances([], Infinity);
     texture.dispose();
     scene.dispose();
+  });
+
+  it('lights smoke from a Build 13 mirror of the light field while real light mutes the legacy event lights', () => {
+    const nodes = new AtmosphereNodes({ realLight: true, lightPreset: 'beam' });
+    const field = new LightField(8, 8, { nodes, smokeMirror: true });
+    const draws: { target: unknown; count: number }[] = [];
+    let target: unknown = null;
+    const dyn = (field as unknown as { dynamics: { mesh: { count: number } } }).dynamics;
+    const r = {
+      getRenderTarget: () => null,
+      getClearAlpha: () => 1,
+      setClearAlpha: vi.fn(),
+      setRenderTarget: (t: unknown) => (target = t),
+      render: () => draws.push({ target, count: dyn.mesh.count }),
+    } as unknown as WebGPURenderer;
+    expect(field.smokeTarget).toBeDefined();
+    expect(nodes.smokeFieldTexture.value).toBe(field.smokeTarget!.texture);
+    field.source('window', 0, { x: 2, z: 2, radius: 2, colour: [0.5, 0.3, 0.1] });
+    field.pulse(0, new Vector3(1, 0, 1), [1, 0.7, 0.4], 2, 1, 0.3, 0, 'explosion');
+    field.pulse(0, new Vector3(1, 0, 1), [0.4, 0.4, 1], 1, 1, 0.2, 0, 'flash');
+    field.keep('fire-system', 0, new Vector3(1, 0, 1), [1, 0.6, 0.3], 2, 1, 0, 0.6);
+    field.update(0.1, r, 1);
+    // The shared field keeps only the source (the physical field owns the events); the smoke mirror has all four.
+    expect(draws).toEqual([
+      { target: field.target, count: 1 },
+      { target: field.smokeTarget, count: 4 },
+    ]);
+    // Once everything is over both are drawn once more (to clear them), then not again until something changes.
+    draws.length = 0;
+    field.update(5, r, 1);
+    field.update(5.1, r, 1);
+    expect(draws).toEqual([
+      { target: field.target, count: 0 },
+      { target: field.smokeTarget, count: 0 },
+    ]);
+    // Real light off: the shared field is Build 13's again and no mirror is drawn.
+    nodes.realLight!.enabled.value = 0;
+    draws.length = 0;
+    field.pulse(6, new Vector3(1, 0, 1), [1, 0.7, 0.4], 2, 1, 0.3, 0, 'explosion');
+    field.update(6.1, r, 1);
+    expect(draws).toEqual([{ target: field.target, count: 1 }]);
+    // Without the option (hd-light=1, no real light) smoke samples the shared field.
+    const plain = new LightField(8, 8, { nodes: new AtmosphereNodes({ realLight: true }) });
+    expect(plain.smokeTarget).toBeUndefined();
+    field.dispose();
+    plain.dispose();
+    nodes.dispose();
+  });
+
+  it('builds the Build 13 smoke-light expression in the beam preset, gated by real light', () => {
+    const build = (n: AtmosphereNodes) => smokeLight(vec2(1, 1), n, float(0.5), vec3(0, 0, 1));
+    const beam = new AtmosphereNodes({ realLight: true, lightPreset: 'beam' });
+    expect(build(beam)).toBeDefined();
+    expect(build(new AtmosphereNodes())).toBeDefined();
+    beam.dispose();
+  });
+
+  it('dims a fading native laser over its life like the original, only with beamFade', () => {
+    const look = createLightLook('beam');
+    const laser = (progress: number, fades = true) =>
+      ({ kind: 'laser', fades, duration: 20, progress }) as Parameters<typeof laserRemaining>[0];
+    expect(laserAge(laser(0))).toBe(0);
+    expect(laserAge(laser(5))).toBeCloseTo(0.25);
+    expect(laserAge(laser(30))).toBe(1);
+    expect(laserAge(laser(10, false))).toBe(0);
+    expect(laserAge({ fades: true })).toBe(0);
+    expect(laserRemaining(laser(5), look)).toBeCloseTo(0.75);
+    expect(laserRemaining({ ...laser(5), kind: 'bolt' }, look)).toBe(1);
+    lightLook(look, 'new');
+    expect(laserRemaining(laser(5), look)).toBe(1);
+    // The emissive graph reads the age from the instance data; switching the look only changes a uniform.
+    const layer = new RealEmissiveLayer(4, createLightLook('beam'));
+    const code = shaderBytes(layer.mesh).replace(/NodeBuffer_\d+/g, 'NodeBuffer');
+    lightLook(layer.look, 'cur');
+    expect(shaderBytes(layer.mesh).replace(/NodeBuffer_\d+/g, 'NodeBuffer')).toBe(code);
+    layer.dispose();
   });
 });

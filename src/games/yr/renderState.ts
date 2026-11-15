@@ -682,10 +682,13 @@ function projectEffects(effects: YrEffects): GameRenderEffects {
       owner,
       ...(firersPalette ? { ownerPalette: true } : {}),
     })),
-    lasers: effects.lasers.map(({ source, target, innerColor }) => ({
+    lasers: effects.lasers.map(({ source, target, innerColor, duration, progress, fades }) => ({
       source: point(source),
       target: point(target),
       innerColor,
+      duration,
+      progress,
+      fades,
     })),
     radBeams: effects.radBeams?.map((beam) => ({
       ...beam,

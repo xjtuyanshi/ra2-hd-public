@@ -51,6 +51,8 @@ export interface EmissivePrimitive {
   laserLight?: boolean;
   /** Last segment of a native laser: the hit point carries the small impact bloom. */
   impactEnd?: boolean;
+  /** Share of a fading native laser's life already passed (0..1); dims its light by beamFade. */
+  age?: number;
   colour: Rgb;
   hot?: Rgb;
   gain: number;
@@ -297,7 +299,10 @@ export class RealEmissiveLayer {
       .mul(shimmer)
       .add(glowRgb.mul(float(1).sub(laserCore.mul(0.6))))
       .add(mix(vec3(1), tint, 0.45).mul(impact).mul(flicker).mul(colour.w));
-    const rgb = mix(legacy, lightRgb, phase.w.greaterThan(1.5).select(this.look.beamLight, float(0)));
+    // beamFade (hd-light=beam): a fading native laser dims over its life like the original (b.w: share of the life
+    // passed). The original's aged Prism beam is a darker, thinner violet; a fresh-looking glow there read pale and pink.
+    const remaining = float(1).sub(b.w.clamp(0, 1).mul(this.look.beamFade));
+    const rgb = mix(legacy, lightRgb.mul(remaining), phase.w.greaterThan(1.5).select(this.look.beamLight, float(0)));
     // beamDepthLift (hd-light=beam, a gain): the glow is depth-tested as if lifted towards the camera by the height
     // its screen-vertical offset would need above the ground (offset x cot(elevation)). A low near-horizontal beam's glow
     // below the core otherwise falls behind the very terrain it is drawn over and ends in a hard edge within 2 px
@@ -353,7 +358,7 @@ export class RealEmissiveLayer {
           p.to.x,
           p.to.y,
           p.to.z,
-          0,
+          p.age ?? 0,
           ...p.colour,
           p.gain * (budget.scales.get(p.source) ?? 1),
           ...(p.hot ?? [1, 1, 1]),

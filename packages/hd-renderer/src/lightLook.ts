@@ -26,6 +26,7 @@ export const LIGHT_LOOK_CURRENT = {
   beamOverbright: 1,
   beamKnee: 0,
   beamDepthLift: 0,
+  beamFade: 0,
 } as const;
 export const LIGHT_LOOK_NEW = {
   smokeVolume: 1,
@@ -52,6 +53,7 @@ export const LIGHT_LOOK_NEW = {
   beamOverbright: 1,
   beamKnee: 0,
   beamDepthLift: 0,
+  beamFade: 0,
 } as const;
 /**
  * hd-light=beam (round 8, the default-on candidate): round 7's laser light, chrono and warm-flash fixes with the smoke
@@ -84,6 +86,7 @@ export const LIGHT_LOOK_BEAM = {
   beamOverbright: 1.64,
   beamKnee: 1,
   beamDepthLift: 2.5,
+  beamFade: 1,
 } as const;
 export type LightLookPreset = 'new' | 'beam';
 /** Parameters that are gains or widths rather than 0..1 shares. */

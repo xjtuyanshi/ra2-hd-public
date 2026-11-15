@@ -323,6 +323,10 @@ export interface GameRenderLaser {
   target: GameRenderPoint;
   /** sRGB 0..255. */
   innerColor: [number, number, number];
+  /** Lifetime in logic frames and the progress towards it; with `fades` the game dims the laser over that life. */
+  duration?: number;
+  progress?: number;
+  fades?: boolean;
 }
 
 export interface GameRenderElectricBolt {

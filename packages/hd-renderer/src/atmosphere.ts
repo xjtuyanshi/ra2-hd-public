@@ -58,6 +58,10 @@ export class AtmosphereNodes extends SceneLightingUniforms {
   private readonly black = new DataTexture(new Float32Array(4), 1, 1, RGBAFormat, FloatType);
   private readonly noSurface = new DataTexture(new Uint8Array(2), 1, 1, RGFormat, UnsignedByteType);
   readonly lightFieldTexture = texture(this.black);
+  /** The light field as Build 13 draws it, for smoke under hd-light=beam (LightField.smokeTarget); else the field. */
+  readonly smokeFieldTexture = texture(this.black);
+  /** Development A/B only (same-frame review): 0 lights hd-light=beam smoke from the shared field instead. */
+  readonly smokeFieldMix = uniform(1);
   readonly lightFieldSize = uniform(new Vector2(1, 1));
   readonly lightFieldScale = uniform(1);
   readonly surfaceTexture = texture(this.noSurface);
@@ -104,6 +108,8 @@ export class AtmosphereNodes extends SceneLightingUniforms {
     this.weatherSunShare.value = source.weatherSunShare.value;
     this.referenceLevel.value = source.referenceLevel.value;
     this.lightFieldTexture.value = source.lightFieldTexture.value;
+    this.smokeFieldTexture.value = source.smokeFieldTexture.value;
+    this.smokeFieldMix.value = source.smokeFieldMix.value;
     this.lightFieldSize.value.copy(source.lightFieldSize.value);
     this.lightFieldScale.value = source.lightFieldScale.value;
     this.surfaceTexture.value = source.surfaceTexture.value;
@@ -372,6 +378,17 @@ export function objectLight(
 export function smokeLight(xz: ShaderNode, nodes: AtmosphereNodes, height: ShaderNode, normal: ShaderNode): ShaderNode {
   const legacy = objectLight(xz, nodes, height);
   if (!nodes.realLight) return legacy;
+  if (!nodes.smokeVolume) {
+    // hd-light=beam: Build 13's smoke light, objectLight of the legacy field including the explosion and fire lights
+    // that real light mutes in the shared field (LightField.smokeTarget). Off, the shared field already holds them.
+    const lf: ShaderNode = mix(
+      legacyLightField(xz, nodes),
+      texture(nodes.smokeFieldTexture, xz.div(nodes.lightFieldSize)).rgb.mul(nodes.lightFieldScale),
+      nodes.realLight.enabled.mul(nodes.smokeFieldMix),
+    );
+    const l: ShaderNode = luminance(lf);
+    return mix(vec3(l, l, l), lf, float(OBJECT_TINT));
+  }
   const e = physicalSurfaceLight(nodes, xz, height, normal, OBJECT_KNEE).div(nodes.referenceLevel);
   const peak = max(e.r, max(e.g, e.b));
   const neutral = mix(vec3(peak), e, 0.1);

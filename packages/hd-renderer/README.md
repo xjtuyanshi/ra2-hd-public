@@ -428,7 +428,13 @@ controls accept 0..1. These controls have no visual effect without the opted-in,
 `?hd=1&hd-light=beam` selects the same physical light path with the `beam` preset (`look('beam')`, round 8): the
 round-7 laser light, `chronoPool=0` and the warm, smaller flashes, but smoke exactly as Build 13 draws it. The
 preset sets `AtmosphereNodes.smokeVolume` to false, so the smoke volume and smoke-card noise graphs are not even
-built (physical light still lights the smoke). Three laser controls (all inert, i.e. `1/0/0`, in `cur` and `new`):
+built. Smoke is also lit as Build 13 lights it: real light mutes the legacy explosion, flash and fire lights in the
+shared light field (the physical field owns them), so the preset's `LightField` renders a second target,
+`smokeTarget`, with those muted lights added back, and `smokeLight` reads it while real light is on (off, the shared
+field already holds them). Without it a young plume beside a fireball lost the fireball's light and drew as a dark,
+hard-edged silhouette over the fire (live SOV07TMD, frame 225). The extra render runs only while such lights are
+alive. `nodes.smokeFieldMix` (development A/B, default 1) switches the smoke back to the shared field.
+Four laser controls (all inert, i.e. `1/0/0/0`, in `cur` and `new`):
 
 - `beamOverbright=1.64`: the glow takes the hue the original shows at the beam centre. The original adds the house
   colour over the scene, so a two-channel colour overbrights: a live SOV07TMD Prism beam with the inner colour
@@ -441,7 +447,13 @@ built (physical light still lights the smoke). Three laser controls (all inert, 
 - `beamDepthLift=2.5` (a gain, 0..4): laser glow fragments are depth-tested as if lifted towards the camera by their
   screen-vertical offset (plus 0.15 of the quad width at the core) times the cotangent of the camera elevation, the
   height that offset would need above flat ground. The glow below a low, near-horizontal beam is then no longer cut
-  off by the terrain it is drawn over; the original draws its lasers over the scene.
+  off by the terrain it is drawn over; the original draws its lasers over the scene (live SOV07TMD original: a Prism
+  beam crosses the smoke of the explosion it hits).
+- `beamFade=1`: a native laser the game fades (LaserDrawClass `Fades`) dims over its life, `1 - progress / duration`
+  on its core, glow, hit bloom and ground light, as the original dims it. The YR reader's duration, progress and
+  fades now reach the HD snapshot (`GameRenderLaser`, `LiveBeam`). Live SOV07TMD originals show a fresh Prism beam
+  core of (204, 56, 221) and the same beams a few frames later at (115..132, 42..44, 167..196), thinner and bluer; a
+  glow kept at full strength there read paler and pinker than the original's deep violet.
 
 Procedural smoke density uses the existing noise texture (four additional taps per puff: a domain-warped coarse
 octave, a ridged fine octave, a finer octave and an overhead tap for self-shadow), in a frame aligned with the puff's

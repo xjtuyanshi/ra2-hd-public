@@ -28,6 +28,7 @@ import {
 import { EFFECT_TABLE, SMOKE_SYSTEMS, type EffectTableRow, type SmokeSystemRow } from './effectTable';
 import { heldPulseEnvelope } from '../lightField';
 import { mergeNearbyLights, type PhysicalLight } from '../realLight';
+import type { LightLook } from '../lightLook';
 import type { Ra2SceneLighting } from '../ra2/sceneLighting';
 
 import {
@@ -640,7 +641,7 @@ export class LiveEffectsDriver {
     for (let i = 0; i < (effects.beams?.length ?? 0); i++) {
       const beam = effects.beams![i]!;
       if (this.hidden(beam.target.x, beam.target.y, beam.target.z)) continue;
-      field.put('flash', `beam:${i}`, now, nativeBeamLight(beam), 0, 0.08, 0.08);
+      field.put('flash', `beam:${i}`, now, fadedLight(nativeBeamLight(beam), laserRemaining(beam, field.nodes.look)), 0, 0.08, 0.08);
       const impact = nativeBoltImpactLight(beam);
       if (impact) field.put('flash', `beam-impact:${i}`, now, impact, 0, 0.12, 0.12);
     }
@@ -681,6 +682,7 @@ export class LiveEffectsDriver {
         colour: new Vector3(Math.pow(srgb[0] / 255, 2.2), Math.pow(srgb[1] / 255, 2.2), Math.pow(srgb[2] / 255, 2.2)),
         bolt,
         outerColour: beam.outerColor ? new Vector3(...beam.outerColor.map((c) => Math.pow(c / 255, 2.2))) : undefined,
+        ...(!bolt && beam.fades && beam.duration ? { age: laserAge(beam) } : {}),
         // Bolts retain their captured path seed. A laser's intensity seed stays stable for its source/target pair.
         seed: bolt
           ? (Math.floor(this.logicFrame / 2) * 7919 + Math.round(beam.target.x + beam.target.y * 3)) >>> 0
@@ -1272,4 +1274,35 @@ function world(p: { x: number; y: number; z: number }, out: Vector3): Vector3 {
 /** World units of an engine pixel width along a card. */
 export function pixelsToWorld(px: number): number {
   return px / PX_PER_UNIT;
+}
+
+/**
+ * Share of a native laser's life already passed, for lasers the game fades (LaserDrawClass Fades): progress / duration
+ * clamped to 0..1; 0 for lasers that do not fade or carry no life. The original dims a fading laser's colour over that
+ * life, so a Prism beam a few frames old is a darker, thinner violet than a fresh one (live SOV07TMD originals: fresh
+ * core (204, 56, 221), aged (115..132, 42..44, 167..196)).
+ */
+export function laserAge(beam: Pick<LiveBeam, 'fades' | 'duration' | 'progress'>): number {
+  if (!beam.fades || !beam.duration || beam.duration <= 0) return 0;
+  return Math.min(1, Math.max(0, (beam.progress ?? 0) / beam.duration));
+}
+
+/** Remaining light of a native laser under a light look: 1 - age x beamFade (beamFade 0 keeps every beam fresh). */
+export function laserRemaining(
+  beam: Pick<LiveBeam, 'kind' | 'fades' | 'duration' | 'progress'>,
+  look: Pick<LightLook, 'beamFade'>,
+): number {
+  return beam.kind === 'laser' ? 1 - laserAge(beam) * look.beamFade.value : 1;
+}
+
+function fadedLight(light: PhysicalLight, remaining: number): PhysicalLight {
+  if (remaining >= 1) return light;
+  const k = Math.max(0, remaining);
+  const scale = (c?: readonly number[]) => c?.map((v) => v * k) as [number, number, number] | undefined;
+  return {
+    ...light,
+    intensity: scale(light.intensity)!,
+    ...(light.initialIntensity ? { initialIntensity: scale(light.initialIntensity) } : {}),
+    ...(light.warmIntensity ? { warmIntensity: scale(light.warmIntensity) } : {}),
+  };
 }

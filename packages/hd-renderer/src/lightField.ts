@@ -218,6 +218,14 @@ export class LightField {
   }
 
   readonly target: RenderTarget;
+  /**
+   * hd-light=beam only (options.smokeMirror): the field exactly as Build 13 draws it, i.e. with the legacy explosion,
+   * flash and fire lights that real light mutes in `target` (the physical field owns them there). Smoke reads it so its
+   * light stays Build 13's: without it, a young plume beside a fireball lost the fireball's light and drew as a dark,
+   * hard-edged silhouette over the fire (live SOV07TMD frame 225). Rendered only while real light is on.
+   */
+  readonly smokeTarget?: RenderTarget;
+  private lastMirrored = 0;
   readonly texelsPerCell: number;
   /** Values are stored divided by this (8-bit fallback targets). */
   readonly encodeScale: number;
@@ -251,22 +259,27 @@ export class LightField {
   private staticFlicker = false;
   /** Renders so far (diagnostics). */
   renders = 0;
+  /** Smoke-mirror renders so far (diagnostics; hd-light=beam). */
+  mirrorRenders = 0;
 
   constructor(
     readonly width: number,
     readonly height: number,
-    options: { halfFloat?: boolean; nodes?: AtmosphereNodes } = {},
+    options: { halfFloat?: boolean; nodes?: AtmosphereNodes; smokeMirror?: boolean } = {},
   ) {
     this.texelsPerCell = Math.max(1, Math.min(8, Math.floor(2048 / Math.max(width, height))));
     const halfFloat = options.halfFloat ?? true;
     this.encodeScale = halfFloat ? 1 : 8;
-    this.target = new RenderTarget(width * this.texelsPerCell, height * this.texelsPerCell, {
-      type: halfFloat ? HalfFloatType : UnsignedByteType,
-      depthBuffer: false,
-      generateMipmaps: false,
-      minFilter: LinearFilter,
-      magFilter: LinearFilter,
-    });
+    const fieldTarget = () =>
+      new RenderTarget(width * this.texelsPerCell, height * this.texelsPerCell, {
+        type: halfFloat ? HalfFloatType : UnsignedByteType,
+        depthBuffer: false,
+        generateMipmaps: false,
+        minFilter: LinearFilter,
+        magFilter: LinearFilter,
+      });
+    this.target = fieldTarget();
+    if (options.smokeMirror) this.smokeTarget = fieldTarget();
     // three samples render targets with uv (0, 0) at the top of the rendered image on both backends (WebGPU natively,
     // WebGL through TextureNode's runtime flip of render-target textures), while consumers address the field with
     // uv = world xz / size. So world z = 0 must be rendered at the top: top = 0, bottom = height. With the usual
@@ -298,6 +311,7 @@ export class LightField {
 
     const nodes = (this.nodes = options.nodes ?? DEFAULT_ATMOSPHERE_NODES);
     nodes.lightFieldTexture.value = this.target.texture;
+    nodes.smokeFieldTexture.value = (this.smokeTarget ?? this.target).texture;
     nodes.lightFieldSize.value.set(width, height);
     nodes.lightFieldScale.value = this.encodeScale;
   }
@@ -617,23 +631,52 @@ export class LightField {
       baseGain !== this.lastBase ||
       (this.staticFlicker && staticGain > 0);
     this.lastDynamic = n;
-    if (!needs) return false;
-    this.dirty = false;
-    this.lastGain = staticGain;
-    this.lastBase = baseGain;
-    if (n > 0) this.commit(dyn, n);
-    dyn.mesh.count = n;
-    dyn.mesh.visible = n > 0;
+    // The smoke mirror adds the muted legacy lights after the ones drawn above (same instances, same order).
+    let m = n;
+    if (this.smokeTarget && physical) {
+      for (const pool of ['explosion', 'flash'] as const)
+        for (const p of this.mutedPulses[pool]) {
+          const k = LightField.pulseIntensity(p, now);
+          if (k > 0) this.writeLight(dyn, m++, p.x, p.z, p.radius, SHAPE_POOL, p.colour, k, 0, 0);
+        }
+      for (const f of this.mutedKept.values()) {
+        if (now - f.seen > f.ttl) {
+          this.mutedKept.delete(f.key);
+          continue;
+        }
+        const k = f.peak * LightField.keptFade(f, now);
+        this.writeLight(dyn, m++, f.x, f.z, f.radius, SHAPE_POOL, f.colour, k, f.flicker, f.seed);
+      }
+    }
+    const mirror = !!this.smokeTarget && physical && (needs || m > n || this.lastMirrored > 0);
+    this.lastMirrored = mirror ? m - n : 0;
+    if (!needs && !mirror) return false;
     const previous = renderer.getRenderTarget();
     // Alpha accumulates the ground-only share from zero (the renderer's own clear alpha is 1); colour is unchanged.
     const clearAlpha = renderer.getClearAlpha();
     renderer.setClearAlpha(0);
-    renderer.setRenderTarget(this.target);
-    renderer.render(this.scene, this.camera);
+    if (needs) {
+      this.dirty = false;
+      this.lastGain = staticGain;
+      this.lastBase = baseGain;
+      if (n > 0) this.commit(dyn, n);
+      dyn.mesh.count = n;
+      dyn.mesh.visible = n > 0;
+      renderer.setRenderTarget(this.target);
+      renderer.render(this.scene, this.camera);
+      this.renders++;
+    }
+    if (mirror) {
+      if (m > 0) this.commit(dyn, m);
+      dyn.mesh.count = m;
+      dyn.mesh.visible = m > 0;
+      renderer.setRenderTarget(this.smokeTarget!);
+      renderer.render(this.scene, this.camera);
+      this.mirrorRenders++;
+    }
     renderer.setRenderTarget(previous);
     renderer.setClearAlpha(clearAlpha);
-    this.renders++;
-    return true;
+    return needs;
   }
 
   /** Kept/source fade-in defaults to 0.25 s; fade-out occupies the second half of TTL after the last refresh. */
@@ -704,6 +747,7 @@ export class LightField {
 
   dispose(): void {
     this.target.dispose();
+    this.smokeTarget?.dispose();
     this.baseTexture.dispose();
     this.scene.traverse((object) => {
       if (object instanceof Mesh) {

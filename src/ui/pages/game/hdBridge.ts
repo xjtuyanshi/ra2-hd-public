@@ -2325,11 +2325,12 @@ function toSnapshot(state: GameRenderState): LiveSnapshot {
           ...(ownerPalette ? { ownerPalette } : {}),
         })),
       beams: [
-        ...state.effects.lasers.map(({ source, target, innerColor }) => ({
+        ...state.effects.lasers.map(({ source, target, innerColor, duration, progress, fades }) => ({
           source,
           target,
           kind: 'laser' as const,
           colour: innerColor,
+          ...(duration !== undefined ? { duration, progress, fades } : {}),
         })),
         // YR draws psychic/magnetron bolts in its alternate (purple) colours, Tesla bolts in blue-white.
         ...state.effects.electricBolts.map(({ source, target, alternateColor }) => ({
