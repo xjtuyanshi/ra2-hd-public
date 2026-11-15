@@ -266,7 +266,9 @@ it('the actual RA2 controller restores URL clouds and no-tone settings, preservi
   vi.stubGlobal('window', win);
   vi.stubGlobal('document', { createElement: (tag: string) => new ElementDouble(tag) });
   const readStorage = vi.fn((key: string) =>
-    key.startsWith('hd-lush2-v1:') ? JSON.stringify({ depth: 0.01, drift: 0.01 }) : null,
+    key.startsWith('hd-lush2-v1:') || key.startsWith('hd-lush2-v4:')
+      ? JSON.stringify({ ...lush2Defaults('temperate'), grassChroma: 1.2, shadeChroma: 1.25 })
+      : null,
   );
   vi.stubGlobal('localStorage', { getItem: readStorage, setItem: () => {} });
   const url = { ...ALIVE_DEFAULTS, clouds: true, preset: 'deep' as const, cloud: 0.3, speed: 0.2 };
@@ -302,7 +304,7 @@ it('the actual RA2 controller restores URL clouds and no-tone settings, preservi
     () => nativeTyping,
   );
   try {
-    expect(readStorage).toHaveBeenCalledWith('hd-lush2-v4:temperate');
+    expect(readStorage).toHaveBeenCalledWith('hd-lush2-v5:temperate');
     expect(panel.get()).toEqual(lush2Defaults('temperate'));
     const backquote = () => {
       const event = Object.assign(new Event('keydown', { cancelable: true }), { code: 'Backquote' });

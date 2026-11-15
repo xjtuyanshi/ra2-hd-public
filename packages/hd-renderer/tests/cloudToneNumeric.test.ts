@@ -7,10 +7,13 @@ import {
   CloudToneUniforms,
   cloudToneNode,
   cloudToneRgb,
+  cloudTreeToneRgb,
+  cloudTreeToneNode,
 } from '../src/cloudTone';
 import type { CloudToneParams } from '../src/cloudTone';
 import { lush2Defaults, lush2Mapping } from '../src/ra2/lush2Tone';
-import { objectCloudFactor } from '../src/objectCloudTone';
+import { treeToneEligible, treeToneEligibleNode } from '../src/ra2/livingTrees';
+import { objectCloudFactor, surfaceCloudFactor, surfaceFollowingCloudFactor } from '../src/objectCloudTone';
 import { analyticCloudCoverage, linearCloudFactor, shadeCloudColour } from '../src/livingWorldNodes';
 import { ALIVE_CLOUD_SHAPES, cloudCoverage } from '../src/livingWorld';
 import type { AtmosphereNodes } from '../src/atmosphere';
@@ -87,6 +90,9 @@ const { N, n, vector } = vi.hoisted(() => {
     }
     greaterThan(v: Input) {
       return this.op(v, (a, b) => Number(a > b));
+    }
+    lessThan(v: Input) {
+      return this.op(v, (a, b) => Number(a < b));
     }
     lessThanEqual(v: Input) {
       return this.op(v, (a, b) => Number(a <= b));
@@ -434,4 +440,104 @@ it('snow objects: cool bright snow is neutralised and lifted like the ground, wa
         (cloudToneNode(vector(...rgb), vector(...rgb), n(0.3), uu, n(night), true) as unknown as N)
           .data()
           .forEach((v, i) => expect(v).toBeCloseTo(cloudToneRgb(rgb, 0.3, pp, night, rgb, true)[i]!, 9));
+});
+
+it('production reference-grass foliage TSL equals the CPU twin for r3, partial integration, contact and night', () => {
+  for (const theater of ['temperate', 'snow'])
+    for (const treeBlend of [0, 0.5, 1]) {
+      const params = { ...lush2Mapping(lush2Defaults(theater), theater).tone, treeBlend };
+      const p = new CloudToneUniforms();
+      p.set(params);
+      for (const rgb of [
+        [0.2, 0.3, 0.05],
+        [0.02, 0.04, 0.008],
+        [0.1, 0.1, 0.085],
+        [0.3, 0.15, 0.06],
+        [0.2, 0.02, 0.01],
+        [0.01, 0.01, 0.01],
+        [0, 0, 0],
+      ] as const)
+        for (const shade of [0, 0.5, 1])
+          for (const night of [0, 0.5, 1])
+            for (const height of [0, 0.125, 0.25, 1]) {
+              const source = vector(...rgb);
+              const object = cloudToneNode(source, source, n(shade), p, n(night), true, n(0), n(height));
+              const actual = cloudTreeToneNode(source, object, n(shade), p, n(night), n(height)) as unknown as N;
+              actual
+                .data()
+                .forEach((v, i) => expect(v).toBeCloseTo(cloudTreeToneRgb(rgb, shade, params, night, height)[i]!, 9));
+            }
+    }
+});
+
+it('production wet arithmetic equals the CPU twin across replacement, sheen, depth and wet-slider gates', () => {
+  for (const wetSand of [0, 0.5, 1])
+    for (const wetSheen of [0, 0.5, 1])
+      for (const wetSandDepth of [0, 0.7, 1])
+        for (const wetAmount of [0, 1, 1.25]) {
+          const params = {
+            ...lush2Mapping(lush2Defaults('temperate'), 'temperate').tone,
+            wetSand,
+            wetSheen,
+            wetSandDepth,
+            wet: wetAmount,
+          };
+          const p = new CloudToneUniforms();
+          p.set(params);
+          for (const rgb of [
+            [0.1, 0.15, 0.02],
+            [0.5, 0.4, 0.2],
+          ] as const)
+            for (const wet of [0, 0.1, 0.3, 0.7, 0.85, 1])
+              for (const night of [0, 0.5, 1]) {
+                const source = vector(...rgb);
+                const actual = cloudToneNode(source, source, n(0.3), p, n(night), false, n(wet)) as unknown as N;
+                actual
+                  .data()
+                  .forEach((v, i) =>
+                    expect(v).toBeCloseTo(cloudToneRgb(rgb, 0.3, params, night, rgb, false, wet)[i]!, 9),
+                  );
+              }
+        }
+});
+
+it('production tree eligibility equals the CPU policy for every wind/flat/exempt/none/converter/paint combination', () => {
+  for (let bits = 0; bits < 64; bits++) {
+    const flags = [0, 1, 2, 3, 4, 5].map((i) => Boolean(bits & (1 << i))) as [
+      boolean,
+      boolean,
+      boolean,
+      boolean,
+      boolean,
+      boolean,
+    ];
+    const expected = treeToneEligible(...flags);
+    const nodes = flags.map((v) => n(Number(v))) as [N, N, N, N, N, N];
+    const actual = treeToneEligibleNode(...nodes) as unknown as N;
+    expect(Boolean(actual.data()[0])).toBe(expected);
+    expect(expected).toBe(bits === 1);
+  }
+});
+
+it('tree lighting follows the full surface cloud factor, retaining exact r3 and ineligible factors', () => {
+  const params = lush2Mapping(lush2Defaults('temperate'), 'temperate').tone;
+  const p = new CloudToneUniforms();
+  p.set(params);
+  const nodes = {
+    cloudTone: p,
+    alive: { cloudStrength: n(0.3), colourFromCoverage: (coverage: N) => vector(1, 1, 1).sub(coverage.mul(0.3)) },
+  } as unknown as AtmosphereNodes;
+  for (const coverage of [0, 0.5, 1]) {
+    const ground = surfaceCloudFactor(nodes, n(coverage));
+    const object = objectCloudFactor(nodes, n(coverage), ground);
+    for (const blend of [0, 0.5, 1])
+      for (const eligible of [false, true]) {
+        const factor = surfaceFollowingCloudFactor(object, ground, n(blend), n(Number(eligible))) as unknown as N;
+        const g = (ground as unknown as N).data(),
+          o = (object as unknown as N).data();
+        if (!eligible || blend === 0) expect(factor.data()).toEqual(o);
+        if (eligible && blend === 1) factor.data().forEach((v, i) => expect(v).toBeCloseTo(g[i]!, 12));
+        factor.data().forEach((v, i) => expect(v).toBeCloseTo(eligible ? o[i]! + (g[i]! - o[i]!) * blend : o[i]!, 12));
+      }
+  }
 });

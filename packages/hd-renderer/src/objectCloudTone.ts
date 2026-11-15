@@ -13,11 +13,24 @@ export function surfaceCloudFactor(nodes: AtmosphereNodes, coverage: ShaderNode)
 }
 
 /** Objects retain paint brightness and borrow only their configured share of ground cloud attenuation. */
-export function objectCloudFactor(nodes: AtmosphereNodes, coverage: ShaderNode): ShaderNode {
-  const ground = surfaceCloudFactor(nodes, coverage);
+export function objectCloudFactor(
+  nodes: AtmosphereNodes,
+  coverage: ShaderNode,
+  ground: ShaderNode = surfaceCloudFactor(nodes, coverage),
+): ShaderNode {
   return nodes.cloudTone.strength
     .greaterThan(0)
     .select(mix(vec3(1), ground, nodes.cloudTone.objectShare).max(nodes.cloudTone.objectFloor), ground);
+}
+
+/** Reuse an already computed surface factor when an instance opts into more ground light. */
+export function surfaceFollowingCloudFactor(
+  object: ShaderNode,
+  ground: ShaderNode,
+  share: ShaderNode,
+  enabled: ShaderNode,
+): ShaderNode {
+  return enabled.select(mix(object, ground, share), object);
 }
 
 /** Reuses one foot coverage and factor across all lighting terms of a material. Legacy sampling stays unchanged. */

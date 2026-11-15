@@ -1,6 +1,7 @@
+import { treeToneEligibleNode } from './livingTrees';
 import { linearCloudFactor } from '../livingWorldNodes';
-import { objectCloudFactor } from '../objectCloudTone';
-import { cloudToneNode } from '../cloudTone';
+import { objectCloudFactor, surfaceCloudFactor, surfaceFollowingCloudFactor } from '../objectCloudTone';
+import { cloudToneNode, cloudTreeToneNode } from '../cloudTone';
 import type { TerrainDepth } from '../terrainDepth';
 import { NOT_CAPTURED_CODE } from '../objectDepth';
 import { DirtyAttribute } from '../dirtyAttribute';
@@ -759,7 +760,30 @@ class SpriteGraph {
     const footCoverage = nodes.alive
       .coverageAt(mix(positionWorld.xz, aAnchor.xz, nodes.cloudTone.strength.greaterThan(0).select(1, 0)))
       .toVar('aliveCloudCoverage');
-    const footShadow = objectCloudFactor(nodes, footCoverage).toVar('aliveCloudFactor');
+    // Eligibility is constant per instance. TIBTRE ore trees are lighting 'none' (extract.ts); converter instances
+    // are also excluded so no authored house ramp can enter the foliage grade.
+    const treeEligible = treeToneEligibleNode(
+      treeWind,
+      aFlat,
+      aGradeExempt,
+      isNone,
+      houseConverter,
+      indexedHousePaint,
+    ).toVar('spriteTreeToneEligible');
+    const treeOn: ShaderNode = treeEligible
+      .and(nodes.cloudTone.strength.greaterThan(0))
+      .and(nodes.cloudTone.treeBlend.greaterThan(0))
+      .toVar('spriteTreeToneEnabled');
+    // surfaceCloudFactor was already needed by objectCloudFactor. Reuse it; selecting the light share adds no
+    // texture reads and the expensive foliage grade below lives in a single instance-uniform If.
+    const groundFootShadow = surfaceCloudFactor(nodes, footCoverage).toVar();
+    const objectFootShadow = objectCloudFactor(nodes, footCoverage, groundFootShadow).toVar();
+    const footShadow = surfaceFollowingCloudFactor(
+      objectFootShadow,
+      groundFootShadow,
+      nodes.cloudTone.treeBlend,
+      treeOn,
+    ).toVar('aliveCloudFactor');
     const linearFootShadow = linearCloudFactor(footShadow).toVar();
     const shadeSurface = (colour: ShaderNode) => nodes.alive.shadeAt(colour, linearFootShadow);
     // One colour graph per material (the main pass and the enhanced look's ground passes below).
@@ -767,6 +791,10 @@ class SpriteGraph {
       Fn(() => {
         // Declare once before lit/unlit/relight siblings; a factor first used inside select's lit branch is unsafe.
         footCoverage.toStack();
+        treeEligible.toStack();
+        treeOn.toStack();
+        groundFootShadow.toStack();
+        objectFootShadow.toStack();
         footShadow.toStack();
         linearFootShadow.toStack();
         const texel = vec2(aRect.x.add(u.mul(aRect.z)), aRect.y.add(v.mul(aRect.w))).toVar();
@@ -1193,6 +1221,7 @@ class SpriteGraph {
         const finished = mix(tintedLit, tintedUnlit, unlitShare).toVar();
         // Flat kinds are ground decals, shadows and reflections, not upright object pictures.
         If(aFlat.lessThan(0.5), () => {
+          const source = finished.toVar();
           finished.assign(
             cloudToneNode(
               finished,
@@ -1205,6 +1234,18 @@ class SpriteGraph {
               positionWorld.y.sub(aAnchor.y).max(0),
             ),
           );
+          If(treeOn, () => {
+            finished.assign(
+              cloudTreeToneNode(
+                source,
+                finished,
+                nodes.alive.gradeCoverage(footCoverage),
+                nodes.cloudTone,
+                nodes.night,
+                positionWorld.y.sub(aAnchor.y).max(0),
+              ),
+            );
+          });
         });
         return vec4(finished, result.a.mul(bodyOpacity));
       })();

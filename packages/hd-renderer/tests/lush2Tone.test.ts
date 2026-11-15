@@ -32,6 +32,7 @@ import {
   applyLush2,
   LUSH2_CONTACT,
   LUSH2_MEAN,
+  LUSH2_R3_TEMPERATE,
 } from '../src/ra2/lush2Tone';
 import { AtmosphereNodes } from '../src/atmosphere';
 import {
@@ -91,13 +92,13 @@ describe('lush2 colour reference', () => {
       luma(cloudToneRgb(rgb, 0, p)),
     );
   });
-  it('uses only the shared mean for grade and bounds luminance contrast by the requested detail exponent', () => {
+  it('keeps r3 mean/detail luminance and saturation contrast bounds at the r3 overrides', () => {
     const grass = decode([150, 160, 60]),
       stripe = decode([190, 190, 110]);
     const mean = grass.map((v, i) => (v + stripe[i]!) / 2) as [number, number, number];
     for (const detail of [0.4, 0.75, 1, 1.2])
       for (const shade of [0, 0.5, 1]) {
-        const p = { ...recommended(), detail, gold: 0 };
+        const p = { ...recommended(), ...LUSH2_R3_TEMPERATE, detail, gold: 0 };
         const a = cloudToneRgb(grass, shade, p, 0, mean),
           b = cloudToneRgb(stripe, shade, p, 0, mean);
         const ratio = luma(b) / luma(a),
@@ -112,7 +113,7 @@ describe('lush2 colour reference', () => {
           expect(a[0] / a[1] / (grass[0] / grass[1])).toBeCloseTo(b[0] / b[1] / (stripe[0] / stripe[1]), 5);
       }
   });
-  it('does not amplify diagonal-stripe display-luma RMS and supports optional detail reduction', () => {
+  it('keeps r3 diagonal-stripe RMS bounds and optional detail reduction at the r3 overrides', () => {
     const grass = decode([150, 160, 60]),
       stripe = decode([190, 190, 110]);
     const source = Array.from({ length: 64 * 64 }, (_, i) =>
@@ -176,7 +177,9 @@ describe('lush2 colour reference', () => {
     };
     const input = rms(source);
     for (const detail of [1, 0.75]) {
-      const out = source.map((pixel, i) => cloudToneRgb(pixel, 0, { ...recommended(), detail }, 0, means[i]!));
+      const out = source.map((pixel, i) =>
+        cloudToneRgb(pixel, 0, { ...recommended(), ...LUSH2_R3_TEMPERATE, detail }, 0, means[i]!),
+      );
       expect(rms(out) / input).toBeLessThanOrEqual(detail === 1 ? 1 : 0.8);
       if (detail === 0.75) {
         const average = (pixels: readonly (readonly number[])[]) =>
@@ -280,10 +283,10 @@ describe('lush2 colour reference', () => {
       edge = cloudToneRgb(rgb, 0, p, 0, rgb, false, 1e-6);
     dry.forEach((v, i) => expect(edge[i]).toBeCloseTo(v, 6));
   });
-  it('uses one warm wet multiplier and own-luma chroma for sand, surf and grass', () => {
+  it('retains the r3 warm wet multiplier and own-luma chroma when replacement is off', () => {
     const contaminated = decode([120, 170, 160]);
     for (const theater of ['temperate', 'desert']) {
-      const p = recommended(theater);
+      const p = { ...recommended(theater), wetSand: 0, wetSheen: 0 };
       for (const pixel of [
         [215, 185, 130],
         [170, 165, 140],
@@ -795,7 +798,7 @@ it('keeps gain within 12% over a six-mean-radius dirt patch in lawn and preserve
     else expect(Math.min(...gains)).toBeGreaterThanOrEqual(0.95);
   }
 });
-it('gives neighbouring sand and surf identical pre-chroma gains, independent of mean and source hue', () => {
+it('keeps r3 neighbouring sand and surf identical pre-chroma gains, independent of mean and source hue', () => {
   const pixels = [
     [215, 185, 130],
     [150, 170, 150],
@@ -804,12 +807,20 @@ it('gives neighbouring sand and surf identical pre-chroma gains, independent of 
     for (const wet of [0.3, 0.5, 1]) {
       const { tone: p } = lush2Mapping({ ...lush2Defaults('temperate'), wet: slider }, 'temperate');
       const gains = pixels.map((rgb) => {
-        const out = cloudToneRgb(rgb, 0, { ...p, wetChroma: 1 }, 0, decode([120, 170, 160]), false, wet);
+        const out = cloudToneRgb(
+          rgb,
+          0,
+          { ...p, wetChroma: 1, wetSand: 0, wetSheen: 0 },
+          0,
+          decode([120, 170, 160]),
+          false,
+          wet,
+        );
         return out.map((v, i) => v / rgb[i]!);
       });
       gains[0]!.forEach((v, i) => expect(gains[1]![i]).toBeCloseTo(v, 12));
     }
-  const p = recommended();
+  const p = { ...recommended(), wetSand: 0, wetSheen: 0 };
   for (const mean of [decode([120, 170, 160]), decode([150, 160, 60]), decode([215, 185, 130])]) {
     const sand = cloudToneRgb(pixels[0]!, 0, p, 0, mean, false, 1, 0, mean);
     expect(hue(encode(sand))).toBeGreaterThanOrEqual(25);

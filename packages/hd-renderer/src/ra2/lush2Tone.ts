@@ -23,6 +23,10 @@ export interface Lush2Values {
   objectShare: number;
   contact: number;
   wet: number;
+  wetSand: number;
+  wetSandDepth: number;
+  wetSheen: number;
+  treeBlend: number;
   snowBlue: number;
   shadeDepth: number;
 }
@@ -45,6 +49,10 @@ export const LUSH2_SCHEMA: readonly TuningField<keyof Lush2Values>[] = [
   { key: 'objectFloor', label: '单位最暗 [objectFloor]', min: 0.5, max: 1, step: 0.01 },
   { key: 'contact', label: '接触阴影 [contact]', min: 0, max: 1, step: 0.01 },
   { key: 'wet', label: '岸边湿润 [wet]', min: 0, max: 1, step: 0.01 },
+  { key: 'wetSand', label: '湿沙暖色 [wetSand]', min: 0, max: 1, step: 0.01 },
+  { key: 'wetSheen', label: '湿沙光泽 [wetSheen]', min: 0, max: 1, step: 0.01 },
+  { key: 'wetSandDepth', label: '湿沙深浅 [wetSandDepth]', min: 0, max: 1, step: 0.01 },
+  { key: 'treeBlend', label: '树木融合 [treeBlend]', min: 0, max: 1, step: 0.01 },
   { key: 'snowBlue', label: '雪地蓝 [snowBlue]', min: 0, max: 1, step: 0.01 },
   { key: 'snowLift', label: '雪地提亮 [snowLift]', min: 1, max: 2, step: 0.01 },
 ];
@@ -52,8 +60,8 @@ const temperate: Readonly<Lush2Values> = Object.freeze({
   strength: 1,
   grassLight: 0.9,
   grassHue: 10,
-  grassChroma: 1.2,
-  shadeChroma: 1.25,
+  grassChroma: 1,
+  shadeChroma: 1.2,
   snowLift: 1.05,
   objectFloor: 0.8,
   detail: 1,
@@ -67,6 +75,10 @@ const temperate: Readonly<Lush2Values> = Object.freeze({
   objectShare: 0.5,
   contact: 1,
   wet: 0.8,
+  wetSand: 1,
+  wetSandDepth: 0.7,
+  wetSheen: 0.5,
+  treeBlend: 1,
   snowBlue: 1,
   shadeDepth: 0.3,
 });
@@ -77,6 +89,7 @@ export const LUSH2_DEFAULTS: Readonly<Record<Theater, Readonly<Lush2Values>>> = 
     grassLight: 0.98,
     grassHue: 5,
     grassChroma: 1.04,
+    shadeChroma: 1.25,
     cover: 0.4,
     shadeDepth: 0.26,
   }),
@@ -85,12 +98,16 @@ export const LUSH2_DEFAULTS: Readonly<Record<Theater, Readonly<Lush2Values>>> = 
     grassLight: 0.98,
     grassHue: 5,
     grassChroma: 1.04,
+    shadeChroma: 1.25,
     cover: 0.4,
     shadeDepth: 0.26,
   }),
   snow: Object.freeze({
     ...temperate,
     snowLift: 1.8,
+    wetSand: 0,
+    wetSheen: 0,
+    treeBlend: 0,
     snowBlue: 0.5,
     grassLight: 1,
     grassHue: 0,
@@ -106,11 +123,32 @@ export const LUSH2_DEFAULTS: Readonly<Record<Theater, Readonly<Lush2Values>>> = 
     grassLight: 1,
     grassHue: 3,
     grassChroma: 1.02,
+    shadeChroma: 1.25,
     gold: 0.1,
     cover: 0.35,
     shadeDepth: 0.24,
   }),
-  lunar: Object.freeze({ ...temperate, strength: 0, gold: 0, contact: 0, wet: 0, shadeDepth: 0 }),
+  lunar: Object.freeze({
+    ...temperate,
+    grassChroma: 1.2,
+    shadeChroma: 1.25,
+    strength: 0,
+    gold: 0,
+    contact: 0,
+    wet: 0,
+    wetSand: 0,
+    wetSheen: 0,
+    treeBlend: 0,
+    shadeDepth: 0,
+  }),
+});
+/** Same-build f2542b5 temperate A/B; dormant policy parameters need no reset. */
+export const LUSH2_R3_TEMPERATE: Readonly<Partial<CloudToneParams>> = Object.freeze({
+  grassChroma: 1.2,
+  shadeChroma: 1.25,
+  wetSand: 0,
+  wetSheen: 0,
+  treeBlend: 0,
 });
 /** RA2 hull policy; generic grading and UI modules contain no game-specific values. */
 export const LUSH2_CONTACT = Object.freeze({ radiusScale: 1.6, falloff: 1.5, opacity: 0.9, opacityCap: 0.9 });
@@ -169,6 +207,19 @@ export function lush2Mapping(
       moonTint: [0.96, 1, 1.04],
       grassSunTint: [0.96, 1, 0.7],
       snowShadeTint: [0.93, 0.97, 1.08],
+      wetSand: values.wetSand,
+      wetSandTint: [0.5161, 0.267, 0.0458],
+      wetSandDepth: values.wetSandDepth,
+      // L* 52 in linear Rec.709; retain source texture above the floor instead of multiplying into black.
+      wetSandFloor: ((52 + 16) / 116) ** 3,
+      wetSheen: values.wetSheen,
+      wetSheenGain: 0.04,
+      wetSheenStart: 0.7,
+      treeBlend: values.treeBlend,
+      // Measured temperate grass albedo; shared by other theatres until separately calibrated.
+      treeReference: [0.356, 0.372, 0.0884],
+      treeContact: 0.25,
+      treeContactHeight: 0.25,
       wetDepth: 0.4,
       wetChroma: 1.3,
       highlightGate: [0, 0, 1.12 - 0.14 * values.goldReach, 1.32 - 0.12 * values.goldReach],
@@ -212,6 +263,10 @@ export function lush2FromMapping(tone: CloudToneParams, alive: AliveOptions): Lu
     drift: alive.speed * ALIVE.drift,
     contact: tone.contact,
     wet: tone.wet * 0.8,
+    wetSand: tone.wetSand,
+    wetSandDepth: tone.wetSandDepth,
+    wetSheen: tone.wetSheen,
+    treeBlend: tone.treeBlend,
     snowBlue: tone.snowBlue,
     shadeDepth: alive.shape!.darkening,
   };

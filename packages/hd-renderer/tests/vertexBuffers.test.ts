@@ -312,6 +312,12 @@ describe('r186 vertex and uniform binding budget', () => {
       // Eligibility/hash/phase/gust stay behind the uniform gate, so clouds-only skips all sway work.
       expect(vertexMain.indexOf('sin(')).toBeGreaterThan(windBranch);
       expect(off.fragmentShader).toContain('aliveCloudStrength');
+      const treeGuard = off.fragmentShader.match(/^.*spriteTreeToneEligible =.*$/m)?.[0] ?? '';
+      for (const bit of ['spriteTreeWind', 'spriteGradeExempt', 'spriteHouseConverter', 'spriteIndexedHousePaint'])
+        expect(treeGuard).toContain(bit);
+      expect(off.fragmentShader).toContain('spriteTreeToneEnabled');
+      // The same shader/bindings serve normal objects, excluded ore/paint trees and live treeBlend=0 A/B.
+
       alive.set(true);
       alive.update(10, 0.6, 0, 0, false);
       const on = assertLimits(layer.mesh);

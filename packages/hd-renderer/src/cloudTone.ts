@@ -59,6 +59,17 @@ export interface CloudToneParams {
   snowShadeTint: [number, number, number];
   wetDepth: number;
   wetChroma: number;
+  wetSand: number;
+  wetSandTint: [number, number, number];
+  wetSandDepth: number;
+  wetSandFloor: number;
+  wetSheen: number;
+  wetSheenGain: number;
+  wetSheenStart: number;
+  treeBlend: number;
+  treeReference: [number, number, number];
+  treeContact: number;
+  treeContactHeight: number;
   highlightGate: [number, number, number, number];
 }
 export class CloudToneUniforms {
@@ -102,6 +113,17 @@ export class CloudToneUniforms {
   readonly snowShadeTint = uniform(new Vector3(1, 1, 1));
   readonly wetDepth = uniform(0);
   readonly wetChroma = uniform(1);
+  readonly wetSand = uniform(0);
+  readonly wetSandTint = uniform(new Vector3(1, 1, 1));
+  readonly wetSandDepth = uniform(0);
+  readonly wetSandFloor = uniform(0);
+  readonly wetSheen = uniform(0);
+  readonly wetSheenGain = uniform(0);
+  readonly wetSheenStart = uniform(0);
+  readonly treeBlend = uniform(0);
+  readonly treeReference = uniform(new Vector3(1, 1, 1));
+  readonly treeContact = uniform(0);
+  readonly treeContactHeight = uniform(1);
   readonly highlightGate = uniform(new Vector4());
   set(p: CloudToneParams | null): void {
     if (!p) {
@@ -266,13 +288,34 @@ export function cloudToneRgb(
   const wetGate = smooth(0, 0.3, wet);
   const wetShare = p.wet * wet * (1 - night);
   const tintY = Math.max(luma(p.wetTint), 1e-6);
-  detailed.forEach((v, i) => {
-    detailed[i] = blend(v, rgb[i]!, wetGate) * blend(1, (p.wetTint[i]! * (1 - p.wetDepth)) / tintY, wetShare);
+  const bandSource = detailed.map((v, i) => blend(v, rgb[i]!, wetGate));
+  detailed.forEach((_, i) => {
+    detailed[i] = bandSource[i]! * blend(1, (p.wetTint[i]! * (1 - p.wetDepth)) / tintY, wetShare);
   });
   const wetY = luma(detailed);
   detailed.forEach((v, i) => {
     detailed[i] = wetY + (v - wetY) * blend(1, p.wetChroma, wetShare);
   });
+  if (p.wetSand > 0 && wet > 0) {
+    const ramp = smooth(0, 1, wet);
+    const share = ramp * Math.min(1, p.wet) * (1 - night);
+    // Contract distance from a luminance floor: dim rim art cannot be multiplied into an olive-black strip.
+    const targetY = p.wetSandFloor + Math.max(0, y - p.wetSandFloor) * (1 - p.wetSandDepth);
+    const sandY = blend(y, targetY, ramp);
+    const sandTintY = Math.max(luma(p.wetSandTint), 1e-6);
+    detailed.forEach((v, i) => {
+      // The new path starts before the r3 chroma expansion: partial replacement never boosts source green.
+      const sand = blend(bandSource[i]!, (sandY * p.wetSandTint[i]!) / sandTintY, share);
+      detailed[i] = blend(v, sand, p.wetSand);
+    });
+  }
+  if (p.wetSheen > 0 && wet > 0) {
+    const sheen =
+      1 + p.wetSheenGain * p.wetSheen * smooth(p.wetSheenStart, 1, wet) * Math.min(1, p.wet) * (1 - night) * lit;
+    detailed.forEach((v, i) => {
+      detailed[i] = v * sheen;
+    });
+  }
   const gold =
     p.gold *
     materialGreen *
@@ -319,7 +362,9 @@ export function cloudToneNode(
             .mul(float(1).sub(night))
             .toVar();
           const sy = y.max(1e-6);
-          const lifted = sy.mul(mix(float(1).add(p.snowLift.sub(1).mul(p.objectShare).mul(0.5)), p.snowLift, w)).toVar();
+          const lifted = sy
+            .mul(mix(float(1).add(p.snowLift.sub(1).mul(p.objectShare).mul(0.5)), p.snowLift, w))
+            .toVar();
           const excess = lifted.sub(p.neutralGradeLuma).max(0);
           const scale = lifted.sub(excess.pow(2).div(float(1).sub(p.neutralGradeLuma).add(excess))).div(sy);
           src.assign(mix(source, vec3(y), w.mul(p.snowWhite)).mul(mix(float(1), scale, float(1).sub(night))));
@@ -636,13 +681,33 @@ export function cloudToneMappedNode(
       const wetGate = smoothstep(0, 0.3, wet),
         wetShare = p.wet.mul(wet).mul(float(1).sub(night));
       If(wet.greaterThan(0), () => {
+        const bandSource = mix(detailed, source, wetGate).toVar();
         detailed.assign(
-          mix(detailed, source, wetGate).mul(
+          bandSource.mul(
             mix(vec3(1), p.wetTint.mul(float(1).sub(p.wetDepth)).div(dot(p.wetTint, vec3(...W)).max(1e-6)), wetShare),
           ),
         );
         const wy = dot(detailed, vec3(...W)).toVar();
         detailed.assign(vec3(wy).add(detailed.sub(wy).mul(mix(float(1), p.wetChroma, wetShare))));
+        If(p.wetSand.greaterThan(0), () => {
+          const ramp = smoothstep(0, 1, wet);
+          const share = ramp.mul(p.wet.min(1)).mul(float(1).sub(night));
+          const targetY = p.wetSandFloor.add(y.sub(p.wetSandFloor).max(0).mul(float(1).sub(p.wetSandDepth)));
+          const sandY = mix(y, targetY, ramp);
+          const sand = p.wetSandTint.mul(sandY.div(dot(p.wetSandTint, vec3(...W)).max(1e-6)));
+          detailed.assign(mix(detailed, mix(bandSource, sand, share), p.wetSand));
+        });
+        If(p.wetSheen.greaterThan(0), () => {
+          const sheen = float(1).add(
+            p.wetSheen
+              .mul(p.wetSheenGain)
+              .mul(smoothstep(p.wetSheenStart, 1, wet))
+              .mul(p.wet.min(1))
+              .mul(float(1).sub(night))
+              .mul(float(1).sub(shade)),
+          );
+          detailed.mulAssign(sheen);
+        });
       });
       If(p.gold.greaterThan(0), () => {
         const gold = p.gold
@@ -674,4 +739,48 @@ export function cloudToneGainNode(
     cloudToneEndpointGainNode(mean, context, float(1), p, night),
     shade,
   );
+}
+
+/** CPU foliage twin: reference-grass gain, neutral on non-green pixels; contact is separate from the grade. */
+export function cloudTreeToneRgb(
+  rgb: readonly [number, number, number],
+  shade: number,
+  p: CloudToneParams,
+  night = 0,
+  height = 0,
+  eligible = true,
+): [number, number, number] {
+  const object = cloudToneRgb(rgb, shade, p, night, rgb, true, 0, height);
+  if (!eligible || p.treeBlend === 0 || p.strength === 0) return object;
+  const ref = p.treeReference;
+  const gain = cloudToneGain(ref, ref, shade, p, night);
+  const green = cloudGreenness(rgb, p);
+  const lum = luma(ref.map((v, i) => v * gain[i]!)) / Math.max(luma(ref), 1e-6);
+  const amount = p.strength * blend(1, p.nightKeep, night);
+  const contact = 1 - p.treeContact * (1 - smooth(0, p.treeContactHeight, height)) * (1 - 0.5 * night);
+  return object.map((v, i) =>
+    blend(v, Math.max(0, blend(rgb[i]!, rgb[i]! * blend(lum, gain[i]!, green), amount)) * contact, p.treeBlend),
+  ) as [number, number, number];
+}
+
+/** Caller owns the tree-only instance branch; this endpoint introduces no texture reads. */
+export function cloudTreeToneNode(
+  source: ShaderNode,
+  object: ShaderNode,
+  shade: ShaderNode,
+  p: CloudToneUniforms,
+  night: ShaderNode,
+  height: ShaderNode,
+): ShaderNode {
+  // Reference grading depends only on uniforms and the instance's foot shade, never the source pixel.
+  const ref = p.treeReference;
+  const gain = cloudToneGainNode(ref, ref, shade, p, night).toVar();
+  const green = cloudGreennessNode(source, p);
+  const lum = dot(ref.mul(gain), vec3(...W)).div(dot(ref, vec3(...W)).max(1e-6));
+  const treeGain = mix(vec3(lum), gain, green);
+  const ground = mix(source, source.mul(treeGain), p.strength.mul(mix(float(1), p.nightKeep, night))).max(0);
+  const contact = float(1).sub(
+    p.treeContact.mul(float(1).sub(smoothstep(0, p.treeContactHeight, height))).mul(float(1).sub(night.mul(0.5))),
+  );
+  return mix(object, ground.mul(contact), p.treeBlend);
 }
