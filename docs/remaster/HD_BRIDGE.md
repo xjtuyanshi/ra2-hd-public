@@ -819,6 +819,24 @@ overrides the tactical rectangle (default: the frame minus YR's 168 px sidebar a
 choice of rate, and `hd-pipelines=sync` switches the asynchronous pipeline compiles off (see "Frame rate" and
 "Match start").
 
+### Experimental refined vehicle mesh
+
+`hd-veh=mesh` opts vehicle bodies and their articulated turret/barrel into the independent refined VXL geometry
+and physical material path. Building voxel turrets, infantry, aircraft, projectiles and mineral overlays are
+excluded. The absent/unknown flag retains the existing look and projection defaults. This option is independent
+of `hd-vlook` / `hd-vproj`, which remain the baseline restored by A/B.
+
+In development, `await window.__hd.vehMesh(true|false)` switches existing vehicle roots without reloading the
+view; `window.__hdBridge.vehMesh` is also available. `window.__hd.vehMeshKnobs` exposes uniform nodes named
+`bevel`, `seam`, `wear`, `spec`, `gain` and `sat` (edit `.value`). First use builds meshes in the existing Worker pool
+pattern; warm toggles reuse CPU arrays and preserve turret pose, native depth, selection/capture data, tint and
+opacity. Off releases the refined GPU buffers/materials; removal discards orphaned results and view disposal cancels pending work.
+
+This path reads no projected redraw pages for shading. Shape evidence comes from the asset-free tests and the
+read-only cache silhouette tool documented in [the renderer guide](../../packages/hd-renderer/README.md#refined-vehicle-geometry-experimental).
+Displayed quality, building brightness/saturation matching, live interactions and same-scene GPU timing require
+separate acceptance; successful type checks or shader generation do not establish those results.
+
 ## Display scale
 
 The view choice controls framing independently of HD rendering resolution. **经典** (`resolution=classic`) uses

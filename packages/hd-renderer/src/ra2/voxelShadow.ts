@@ -561,6 +561,16 @@ export function voxelWaterMaterial(
     if (!material) {
       material = createSurfaceMaterial(nodes, layer, sourceMaterial);
       materials.set(sourceMaterial, material);
+      // A derived colour graph must not keep GPU resources alive after its source is released (runtime looks
+      // can replace and dispose a source before the atmosphere itself ends).
+      const source = sourceMaterial;
+      const reflected = material;
+      const release = () => reflected.dispose();
+      source.addEventListener('dispose', release);
+      reflected.addEventListener('dispose', () => {
+        source.removeEventListener('dispose', release);
+        materials!.delete(source);
+      });
     }
     return material;
   }
@@ -669,7 +679,19 @@ function createSurfaceMaterial(
       .sub(plane.w)
       .mul(SHADOW_DEPTH_STEPS),
   ).div(SHADOW_DEPTH_STEPS);
-  nodes.own(material);
+  if (sourceMaterial) {
+    // Source disposal may release this graph before world disposal. The atmosphere's owner must not dispose it
+    // twice, and its source listener removes itself when this happens in the opposite order.
+    let released = false;
+    material.addEventListener('dispose', () => {
+      released = true;
+    });
+    nodes.own({
+      dispose: () => {
+        if (!released) material.dispose();
+      },
+    });
+  } else nodes.own(material);
   return material;
 }
 

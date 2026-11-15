@@ -1446,6 +1446,7 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
           ...(params.has('hd-sparkle') && Number.isFinite(Number(params.get('hd-sparkle')))
             ? { crystalSparkle: Number(params.get('hd-sparkle')) }
             : {}),
+          ...(params.get('hd-veh') === 'mesh' ? { vehicleMesh: true } : {}),
           ...(params.get('hd-vlook') === 'remaster' ? { voxelLook: 'remaster' } : {}),
           ...(projectionDir && !/\.\.|[\\:]/.test(projectionDir)
             ? { voxelProjection: `/hd-cache/${projectionDir}` }
@@ -2063,6 +2064,10 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
   // Console handle for A/B checks: __hdBridge.toggle() switches between the HD view and the original picture.
   let activeWaterLook = parseWaterStyle(params.get('hd-water'));
   const handle = {
+    vehMesh: (enabled: boolean) => live?.vehMesh(enabled),
+    get vehMeshKnobs() {
+      return live?.vehMeshKnobs;
+    },
     ...(import.meta.env.DEV
       ? {
           water: {
@@ -2159,6 +2164,18 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
   };
   const globals = window as unknown as { __hdBridge?: typeof handle };
   globals.__hdBridge = handle;
+  const meshGlobals = window as unknown as {
+    __hd?: { vehMesh: typeof handle.vehMesh; readonly vehMeshKnobs: typeof handle.vehMeshKnobs };
+  };
+  const previousMeshHandle = meshGlobals.__hd;
+  const meshHandle = {
+    ...previousMeshHandle,
+    vehMesh: handle.vehMesh,
+    get vehMeshKnobs() {
+      return handle.vehMeshKnobs;
+    },
+  };
+  if (import.meta.env.DEV) meshGlobals.__hd = meshHandle;
 
   const stop = () => {
     if (stopped) return;
@@ -2202,6 +2219,10 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
     host.screen.style.position = screenStyle.position;
     host.screen.style.zIndex = screenStyle.zIndex;
     if (globals.__hdBridge === handle) delete globals.__hdBridge;
+    if (meshGlobals.__hd === meshHandle) {
+      if (previousMeshHandle) meshGlobals.__hd = previousMeshHandle;
+      else delete meshGlobals.__hd;
+    }
   };
   const scene = (): HdBridgeScene | null => {
     const hdShown = !!live && !!hole;

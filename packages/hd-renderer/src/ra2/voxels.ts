@@ -717,6 +717,22 @@ export class VoxelUnit extends Group {
     return changed;
   }
 
+  /** Replace only the sources; articulated parents, capture data and surface twins retain their owners. */
+  replaceParts(parts: readonly VoxelGeometry[]): void {
+    if (parts.length !== this.partMeshes.length) throw new Error('Voxel part count changed');
+    this.disposeOpacityMaterials();
+    this.partMeshes.forEach((mesh, index) => {
+      const part = parts[index]!;
+      mesh.geometry = part.geometry;
+      if (part.material) {
+        if (!part.material.depthNode) part.material.depthNode = voxelNativeDepthNode();
+        mesh.material = part.material;
+      }
+    });
+    this.updateCaptureRadius();
+    setVoxelNativePass(this, this.nativeDepth.enabled !== 0);
+  }
+
   setPainterBias(bias: number): void {
     this.painterDepth.bias = VOXEL_CLEARANCE + bias;
   }

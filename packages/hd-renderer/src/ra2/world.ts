@@ -1,3 +1,4 @@
+import { VehicleMeshController } from './vehicleMeshController';
 import { DataTexture, LinearFilter, Object3D, RGFormat, UnsignedByteType, Vector3 } from 'three/webgpu';
 import { SURFACE, surfaceFromLandType } from '../../../ra2-assets/src/lights';
 import type { MapObject } from '../../../ra2-assets/src/manifest';
@@ -38,6 +39,8 @@ import { isLivingTree } from './livingTrees';
 export interface HdWorld {
   nodes?: AtmosphereNodes;
   /** Load-time geometry choice, also inherited by units created later in live matches. */
+  vehicleMesh?: boolean;
+  vehicleMeshes?: VehicleMeshController;
   voxelLook?: 'engine' | 'remaster';
   smoothVoxel?: Readonly<SmoothVoxelOptions>;
   voxelProjection?: string;
@@ -104,6 +107,7 @@ export async function loadRa2World(
     extraObjects?: (manifest: Ra2Cache['manifest']) => MapObject[];
     /** Immutable per-world voxel refinement; defaults are captured before asynchronous resource loading starts. */
     voxelShape?: Readonly<VoxelShape>;
+    vehicleMesh?: boolean;
     voxelLook?: 'engine' | 'remaster';
     smoothVoxel?: Partial<SmoothVoxelOptions>;
     /** Optional base URL of view-dependent vehicle redraw atlases; absent/failed types keep their current look. */
@@ -159,6 +163,7 @@ export async function loadRa2World(
   // Geometry is shared per model/refinement; each owner gets its palette material.
   const voxelMaterial = createVoxelMaterial(nodes);
   const geometries = new Map<string, VoxelGeometry[]>();
+  const vehicleMeshes = nodes.own(new VehicleMeshController(nodes, options.vehicleMesh));
   const sprites: SpriteInstance[] = [];
   const terrainObjectCards = new TerrainObjectCards();
   const weatherFoundations: WeatherFoundation[] = [];
@@ -199,7 +204,10 @@ export async function loadRa2World(
         );
         geometries.set(cacheKey, parts);
       }
-      const { root: vehicle } = instantiateVoxel(parts, voxelMaterial, nodes);
+      const { root: vehicle, turret } = instantiateVoxel(parts, voxelMaterial, nodes);
+      vehicle.userData.vehicleFacing = object.facing ?? 0;
+      vehicle.userData.vehicleTurret = turret;
+      if (object.kind === 'vehicle') vehicleMeshes.register(vehicle, model, cache.paletteRgb.get(paletteKey)!, parts);
       vehicle.position.copy(anchor);
       vehicle.position.y = Math.max(anchor.y, ground);
       // Engine facing 0 = north (world -z), clockwise; the model's nose is local +x.
@@ -362,6 +370,8 @@ export async function loadRa2World(
     : new Vector3(manifest.grid.width / 2, 0, manifest.grid.height / 2);
   return {
     nodes,
+    vehicleMesh: options.vehicleMesh,
+    vehicleMeshes,
     voxelLook,
     smoothVoxel,
     voxelProjection: options.voxelProjection,

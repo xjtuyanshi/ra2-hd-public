@@ -54,6 +54,9 @@ export interface SmoothMeshData {
   curvature: Float32Array;
   vpos: Float32Array;
   indices: Uint16Array | Uint32Array;
+  bevelDistance?: Float32Array;
+  seamDistance?: Float32Array;
+  materialClass?: Float32Array;
 }
 
 /** Validate before allocating: malformed review parameters must not silently select another geometry variant. */

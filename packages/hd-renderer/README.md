@@ -1657,6 +1657,76 @@ The synthetic tests check geometry topology, thin features, palette boundaries, 
 determinism, cache isolation, shadows, depth compatibility and CPU shader generation. These checks and the
 build benchmark do not establish GPU rendering, visual quality, noon pixel matching or live-match FPS.
 
+### Refined vehicle geometry (experimental)
+
+`?veh=mesh` selects a separate original-VXL geometry/material path in the sandbox; the live bridge uses
+`hd-veh=mesh`. It applies only to vehicle roots, including their articulated turret and barrel; building turrets,
+infantry, aircraft, projectiles, buildings and mineral overlays keep their existing paths. Without the flag, the
+existing engine/remaster/projection choices and defaults are retained.
+
+`ra2/vehicleMesh.ts` builds a supersample-3 surface-net hull using the existing signed-distance band checks with
+zero inward/outward field displacement. Connected artist regions within a palette/material class and an approximately
+20-degree normal cone receive a least-squares plate fit. Fits reject narrow lines, curved regions and planes inconsistent
+with the source normals. Other regions retain the 2.5-voxel, 35-degree bilateral artist-normal filter. Shading uses these
+normals throughout, including the top-face grade, so the hull's staircase gradients do not reappear in the finish.
+Weighted median palette shading only removes isolated exposed voxels with a dominant local shade (at least 75% of
+the compatible sample weight). Connected pairs, diagonal lines and repeated shades within three voxels are protected;
+interior fill does not count as painted area. The original
+face palette owner and every house index stay unchanged. Welded surface edges supply signed convex/concave feature
+classification and geodesic distance to bevels and seams, including within-ramp shade breaks. No vertex moves in this attribute refinement. The original
+section order, bounds, HVA transforms and turret offsets remain the inputs; no new parts or glass ramps are inferred.
+
+`vehicleMeshMaterial.ts` reuses the PBR physical lighting model, scene sun/hemisphere, map level, cloud shadow,
+local lights, native depth and object tint. Its own lighting model controls the sun/sky balance without modifying the
+legacy PBR path. A derivative-sized convex edge band redirects shadowed direct light into a bright narrow edge and
+receives a faint sky rim; it cannot emit light in darkness. GGX supplies the plate sheen. Stronger cavity AO,
+thin dark seams and light wear use only original voxel attributes. It reads no projected pages or baked facings.
+House paint is excluded from saturation adjustments and wear. Defaults are experimental and require displayed-pixel
+review alongside buildings; CPU shader tests do not establish concept-art quality or matched brightness.
+
+```js
+await window.__hd.vehMesh(true); // First use waits for Worker builds; warm changes adopt before the next frame.
+await window.__hd.vehMesh(false); // Restore the current baseline part geometry/material sets on the same roots.
+window.__hd.vehMeshKnobs.bevel.value = 1.1;
+// Defaults: seam=0.42, wear=0.06, spec=1.15, gain=0.9, sat=1.18, formLight=1.1, ao=1.25, level=0.86.
+```
+
+`bevel` (0–2) scales edge light; `seam` (0–0.9) is the dark-line amount; `wear` (0–1) affects raised non-house metal;
+`spec` (0–2 for review) scales GGX. `formLight` (0–2) raises direct light from 0.55 to 1.75 and reduces sky fill from
+0.7 to about 0.167; 1.1 gives direct 1.21 and fill 0.254 before the shared vehicle sun gain. `ao` (0–2 for review)
+controls exponential cavity depth, with 0 disabling it. `gain` (0–1.5 for review) scales palette-domain albedo and
+`level` (0–1.5 for review) scales the final lit colour in sRGB before object tint; 0 blacks out that contribution.
+`sat` (0–2 for review) scales non-house chroma; house indices and saturation remain intact. All are live uniforms
+shared by palette, opacity and native-depth variants, and survive off/on library reconstruction. These ranges are
+review guidance except where a clamp is stated in the implementation.
+
+With `veh=mesh`, the sandbox quality folder also exposes the same runtime switch as `车辆精修网格` (leave out `nogui` to see it).
+
+The view owns Workers and refined GPU geometries. Off disposes their GPU buffers, shader materials and palette
+lookups; CPU mesh arrays remain only while their model has registered vehicle roots, enabling warm same-frame A/B.
+Removing the last instance releases that model's arrays/geometries; view destruction cancels pending work. Baseline
+geometry and materials retain their existing model/world ownership. Failed builds log and keep the baseline.
+
+Reproducible map boards use `?ugrid=1&utypes=HTNK,MTNK&ufacings=32,96,160,224` with one `uowner` per type.
+`uturret=32` is a clockwise facing offset relative to the body (256 per turn); `uturretspin=16` adds 16 facing units
+per second. `tfixed=2` freezes the sandbox presentation clock, so the same URL reproduces a mid-turn pose.
+`time=0` stages night. `ucount=20&ucols=5` places 20 units per requested type in a compact grid: two types give
+40 tanks; `uonly=1` excludes the map's pre-placed vehicles. `perf=1` retains the existing GPU timestamp/back-to-back benchmark; warm both looks, use the same camera,
+resolution and frozen scene, then compare `window.__hd.stats().gpuTimestampMs` and `frameMs` over repeated A/B samples.
+
+The shape tool reads extracted VXL/HVA JSON through the existing cache contract, without writing any derived art:
+
+```bash
+pnpm exec tsx packages/hd-renderer/scripts/checkVehicleMesh.ts "$HD_CACHE/SOV07TMD/voxels/HTNK.json" "$HD_CACHE/SOV07TMD/voxels/MTNK.json"
+pnpm exec vitest run packages/hd-renderer/tests/vehicleMesh.test.ts
+```
+
+It compares every original exposed voxel cube against the refined part set at 16 body facings, including the turret
+pivot offset. It reports section/part identity, majority-coverage engine-pixel IoU, 8x coverage IoU, and directional
+coverage deviation in engine pixels at 0.125-pixel raster precision, failing above 0.5. This is a hull comparison,
+not a comparison with the executable's voxel splatter rasterizer. Arbitrary independent turret angles and gameplay
+occlusion need separate acceptance. The synthetic fixtures do not require private game files.
+
 ### Projected vehicle redraws
 
 For pre-lit image-model redraws on those meshes, use `?vlook=remaster&vproj=vehicles-hd` (recommended), or

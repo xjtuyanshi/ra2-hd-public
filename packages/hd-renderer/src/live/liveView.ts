@@ -959,6 +959,13 @@ export class LiveView {
   private effectArtRevision = -1;
   private readonly root = new Group();
   private readonly voxelUnits: VoxelUnits;
+  /** Development A/B, retaining poses, selection, native-depth cards and tint on the same roots. */
+  vehMesh(enabled: boolean): Promise<boolean> {
+    return this.voxelUnits.vehicleMeshes.setEnabled(enabled);
+  }
+  get vehMeshKnobs() {
+    return this.voxelUnits.vehicleMeshes.knobs;
+  }
   private readonly placeholderGeometry = new BoxGeometry(1, 1, 1);
   private placeholderMaterial: MeshStandardNodeMaterial | null = null;
   private readonly housePalettes = new Set<number>();
@@ -1842,8 +1849,7 @@ export class LiveView {
     if (this.gpuFenceAt != null) return;
     // Optional: test stand-ins of the renderer have no backend.
     const backend = this.hd.renderer?.backend as
-      | { device?: { queue?: { onSubmittedWorkDone?(): Promise<void> } } }
-      | undefined;
+      { device?: { queue?: { onSubmittedWorkDone?(): Promise<void> } } } | undefined;
     const queue = backend?.device?.queue;
     if (typeof queue?.onSubmittedWorkDone !== 'function') return;
     this.gpuFenceAt = now;
@@ -3897,6 +3903,8 @@ export class LiveView {
       (!this.outOfSight || this.voxelUnits.built(source.cacheKey) || this.admitNewArt())
     ) {
       const { root, turret } = this.voxelUnits.build(source.model, source.key, source.cacheKey, source.variant);
+      // Some injected presentation hosts implement only the baseline voxel interface.
+      if (object.kind === 'vehicle') this.voxelUnits.setVehiclePart?.({ root, turret });
       return {
         ...base,
         root,

@@ -1,3 +1,4 @@
+import { VehicleMeshController } from '../ra2/vehicleMeshController';
 import { Mesh, type BufferGeometry, type Group, type Vector3 } from 'three/webgpu';
 import type { VoxelModel } from '../../../ra2-assets/src/manifest';
 import { localLightLift } from '../atmosphere';
@@ -34,6 +35,7 @@ import type { VoxelCardTies } from '../ra2/voxelNativeDepth';
 import { selectedVoxelTurretIndex } from '../ra2/voxelTurrets';
 
 export interface VoxelUnitsOptions {
+  vehicleMesh?: boolean;
   voxelLook?: 'engine' | 'remaster';
   smoothVoxel?: Partial<SmoothVoxelOptions>;
   voxelProjection?: string;
@@ -78,6 +80,11 @@ export interface VoxelPose {
  * the bookkeeping (which object uses which unit); everything about how a voxel unit looks lives here.
  */
 export class VoxelUnits {
+  readonly vehicleMeshes: VehicleMeshController;
+  private readonly meshSources = new WeakMap<
+    Group,
+    { model: VoxelModel; palette: Uint8Array; parts: VoxelGeometry[] }
+  >();
   private readonly material: ReturnType<typeof createVoxelMaterial>;
   private readonly geometries = new Map<string, VoxelGeometry[]>();
   private readonly voxelLook: 'engine' | 'remaster';
@@ -104,6 +111,7 @@ export class VoxelUnits {
     readonly libraryBase?: string,
     options: VoxelUnitsOptions = {},
   ) {
+    this.vehicleMeshes = hd.nodes.own(new VehicleMeshController(hd.nodes, options.vehicleMesh ?? world.vehicleMesh));
     this.voxelLook = options.voxelLook ?? world.voxelLook ?? hd.settings.voxelLook;
     this.smoothVoxel = smoothVoxelOptions({ ...world.smoothVoxel, ...options.smoothVoxel });
     const projectionBase = options.voxelProjection ?? world.voxelProjection;
@@ -120,7 +128,7 @@ export class VoxelUnits {
 
   /** Meshes being built and redraw projections being fetched: art that was asked for and is not on screen yet. */
   get loading(): number {
-    return this.meshing.size + this.pending.size;
+    return this.meshing.size + this.pending.size + this.vehicleMeshes.loading;
   }
 
   /** Successful section requests served by persistent storage or freshly built, for startup diagnostics. */
@@ -313,7 +321,15 @@ export class VoxelUnits {
     const unit = instantiateVoxel(parts, this.material, this.hd.nodes);
     this.pending.get(parts)?.add(unit);
     this.standInOf.get(parts)?.units.add(unit.root);
+    this.meshSources.set(unit.root, { model, palette: this.cache.paletteRgb.get(paletteKey)!, parts });
     return unit;
+  }
+
+  /** Register only vehicles; projectiles, aircraft and building turrets never enter this controller. */
+  setVehiclePart(unit: VoxelUnit): void {
+    const source = this.meshSources.get(unit.root);
+    if (source && unit.root instanceof VoxelRoot)
+      this.vehicleMeshes.register(unit.root, source.model, source.palette, source.parts);
   }
 
   /**
@@ -393,6 +409,7 @@ export class VoxelUnits {
   /** Stop the mesh Workers; the view that owns this calls it once, after its last unit is gone. */
   disposeAll(): void {
     this.disposed = true;
+    this.vehicleMeshes.dispose();
     this.smoothBuilder?.dispose?.();
     this.meshing.clear();
     // Stand-ins belong to this instance alone (the smooth geometries they wait for follow their model).
@@ -403,6 +420,7 @@ export class VoxelUnits {
 
   /** Take a unit out of the scene (geometry stays cached for the next instance of its type). */
   dispose(unit: VoxelUnit): void {
+    if (unit.root instanceof VoxelRoot) this.vehicleMeshes?.unregister(unit.root);
     this.setCaptureCode(unit, NOT_CAPTURED_CODE);
     for (const waiting of this.pending.values()) waiting.delete(unit);
     for (const standIn of this.standIns.values()) standIn.units.delete(unit.root);

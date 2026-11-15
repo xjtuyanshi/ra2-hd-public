@@ -284,7 +284,7 @@ class RemasterLighting extends PhysicalLightingModel {
   }
 }
 
-class RemasterMaterial extends MeshStandardNodeMaterial {
+export class RemasterMaterial extends MeshStandardNodeMaterial {
   ao!: ShaderNode;
   state!: VoxelPbrState;
   look!: SpriteLookState;

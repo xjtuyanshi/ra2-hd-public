@@ -150,6 +150,10 @@ if (params.get('pipelines') === 'async') live.hd.enableAsyncPipelines();
 if (params.get('outofsight') === '1') live.outOfSight = true;
 (window as unknown as { __hd: unknown }).__hd = {
   hd: live.hd,
+  vehMesh: (enabled: boolean) => live.vehMesh(enabled),
+  get vehMeshKnobs() {
+    return live.vehMeshKnobs;
+  },
   world: live.world,
   voxelProjection: voxelProjectionFor(live.hd.nodes),
   voxelPbr: voxelPbrFor(live.hd.nodes),

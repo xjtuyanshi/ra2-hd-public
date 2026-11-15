@@ -28,6 +28,7 @@ type ProjectionKnob = (typeof PROJECTION_KNOBS)[number];
  * Projection knobs are uniforms at window.__hd.voxelProjection.{relight,blend,strength}.value.
  */
 export function voxelLookParams(params: URLSearchParams): {
+  vehicleMesh?: boolean;
   voxelLook: 'engine' | 'remaster';
   smoothVoxel: Readonly<SmoothVoxelOptions>;
   voxelProjection?: string;
@@ -45,6 +46,7 @@ export function voxelLookParams(params: URLSearchParams): {
     }
   }
   return {
+    ...(params.get('veh') === 'mesh' ? { vehicleMesh: true } : {}),
     voxelLook: params.get('vlook') === 'remaster' ? 'remaster' : 'engine',
     smoothVoxel: smoothVoxelOptions(options),
     voxelProjection: params.get('vproj')?.trim()

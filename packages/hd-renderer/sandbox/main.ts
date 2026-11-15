@@ -10,7 +10,7 @@ import { SpriteLayer } from '../src/ra2/sprites';
 import { loadRa2World } from '../src/ra2/world';
 import { voxelLightingFor } from '../src/ra2/vpl';
 import { applyVoxelShadowParams } from '../src/ra2/voxelShadow';
-import { voxelShape } from '../src/ra2/voxels';
+import { VoxelUnit, voxelShape } from '../src/ra2/voxels';
 import { addLookGui, applyLookParams, voxelLookParams } from './look';
 import { voxelPbrFor } from '../src/ra2/voxelPbr';
 import { voxelProjectionFor } from '../src/ra2/voxelProjection';
@@ -47,6 +47,7 @@ const world = mapName
   ? await loadRa2World(`/${encodeURIComponent(mapName)}`, {
       ...voxelLookParams(params),
       voxelShape: shape,
+      ...(params.has('uonly') ? { includeObject: (object: MapObject) => object.kind !== 'vehicle' } : {}),
       // ?tmap=0 draws the per-tile atlas instead of the (AI-upscaled) whole-map terrain image, for A/B review.
       terrainMap: params.get('tmap') !== '0',
       hdSprites: params.get('hdsprites') !== '0',
@@ -110,18 +111,20 @@ function unitGrid(manifest: HdCacheManifest): MapObject[] {
   // ?uowner= may list one owner per type (comma separated); the last one applies to the remaining types.
   const owners = (params.get('uowner') ?? Object.keys(manifest.houses ?? {})[0] ?? '').split(',');
   const facings = (params.get('ufacings') ?? '32,96,160,224').split(',').map(Number);
+  const count = Math.min(100, Math.max(1, Math.floor(Number(params.get('ucount') ?? facings.length))));
+  const columns = Math.min(count, Math.max(1, Math.floor(Number(params.get('ucols') ?? count))));
   return types
     .filter((voxel) => manifest.voxels[voxel])
     .flatMap((voxel, row) =>
-      facings.map((facing, i) => ({
+      Array.from({ length: count }, (_, i) => ({
         kind: 'vehicle' as const,
         type: voxel,
         voxel,
         owner: owners[Math.min(row, owners.length - 1)] || undefined,
-        x: ux + i * 1.7 + row * 1.5,
-        y: uy - i * 1.7 + row * 1.5,
+        x: ux + (i % columns) * 1.7 + (row * Math.ceil(count / columns) + Math.floor(i / columns)) * 1.5,
+        y: uy - (i % columns) * 1.7 + (row * Math.ceil(count / columns) + Math.floor(i / columns)) * 1.5,
         z: Number(params.get('uz') ?? 0),
-        facing,
+        facing: facings[i % facings.length],
       })),
     );
 }
@@ -129,9 +132,14 @@ const hd = new HdRenderer(canvas, state, {
   nodes: world?.nodes,
   forceWebGL: params.get('webgl') === '1',
   requiredLimits: await HdRenderer.adapterLimits(),
-  // ?perf=1: GPU timestamp queries (window.__hd.stats().gpuMs).
+  // ?perf=1: GPU timestamp queries (window.__hd.stats().gpuTimestampMs).
   trackTimestamp: params.get('perf') === '1',
 });
+if (params.has('tfixed')) {
+  const seconds = Number(params.get('tfixed'));
+  if (!Number.isFinite(seconds) || seconds < 0) throw new RangeError('Invalid tfixed');
+  hd.seconds = () => seconds;
+}
 // Night presentation: ?lights=0 (map light sources off), ?lamps=auto|on|off, ?windows=0|1, ?mist=<x>, ?nightlevel=<x>.
 const atmosphere = hd.atmosphere;
 if (params.get('lights') === '0') atmosphere.lights = false;
@@ -205,6 +213,10 @@ const handle = {
   hd,
   world,
   state,
+  vehMesh: (enabled: boolean) => world?.vehicleMeshes?.setEnabled(enabled),
+  get vehMeshKnobs() {
+    return world?.vehicleMeshes?.knobs;
+  },
   voxelPbr: voxelPbrFor(hd.nodes),
   voxelProjection: voxelProjectionFor(hd.nodes),
   stats: () => hd.stats(),
@@ -363,6 +375,17 @@ night.add(atmosphere, 'mist', 0, 3, 0.05).name('薄雾倍数');
 const wetness = world?.terrain.wetness;
 if (wetness) night.add(wetness, 'value', 0, 1, 0.01).name('地面湿度').listen();
 const look = gui.addFolder('画质');
+// Keep the review control opt-in; it calls the same runtime path as the console handle.
+if (params.get('veh') === 'mesh' && world?.vehicleMeshes) {
+  const vehicleReview = { mesh: world.vehicleMeshes.active };
+  look
+    .add(vehicleReview, 'mesh')
+    .name('车辆精修网格')
+    .onChange((enabled: boolean) => {
+      void world.vehicleMeshes!.setEnabled(enabled);
+    });
+}
+
 look
   .add(hd.settings, 'toneMapper', {
     原版保真: 'faithful',
@@ -417,7 +440,16 @@ function loop(now: number): void {
   if (keys.has('w') || keys.has('arrowup')) hd.view.panPixels(0, pan);
   if (keys.has('s') || keys.has('arrowdown')) hd.view.panPixels(0, -pan);
 
-  step(dt, t);
+  const fixed = params.has('tfixed') ? Number(params.get('tfixed')) : undefined;
+  const clock = fixed ?? t;
+  if (fixed === undefined) step(dt, t);
+  if (world && (params.has('uturret') || params.has('uturretspin'))) {
+    const offset = Number(params.get('uturret') ?? 0) + clock * Number(params.get('uturretspin') ?? 0);
+    world.root.traverse((object) => {
+      if (!(object instanceof VoxelUnit) || !object.userData.vehicleTurret) return;
+      object.userData.vehicleTurret.rotation.y = (-offset * Math.PI * 2) / 256;
+    });
+  }
   for (const [i, fire] of fires.entries())
     hd.effects.fire(hd.seconds(), fire.at, fire.scale, `sandbox-fire-${i}`, fireWind);
   // ?boom=1 on original maps: periodic explosions around the view centre (no scripted armies there).
@@ -438,7 +470,7 @@ function loop(now: number): void {
   state.tick++;
   state.events = pending.splice(0);
   hd.setState(state);
-  hd.frame(dt);
+  hd.frame(fixed === undefined ? dt : 0);
 
   fpsFrames++;
   fpsTime += dt;

@@ -53,6 +53,7 @@ export class SmoothVoxelPool implements SmoothSectionBuilder {
     private readonly createWorker: () => SmoothWorkerLike,
     readonly size = defaultPoolSize(),
     private readonly idleMs = SMOOTH_POOL_IDLE_MS,
+    private readonly vehicleMesh = false,
   ) {}
 
   /** Sections being built or waiting for a Worker. */
@@ -69,7 +70,16 @@ export class SmoothVoxelPool implements SmoothSectionBuilder {
     if (this.disposed) return Promise.reject(new Error('smooth voxel pool disposed'));
     return new Promise<SmoothMeshData>((resolve, reject) => {
       // Plain data only: frozen option objects and JSON sections clone as they are.
-      this.queue.push({ request: { id: this.nextId++, section, options: { ...options } }, resolve, reject });
+      this.queue.push({
+        request: {
+          id: this.nextId++,
+          section,
+          options: { ...options },
+          ...(this.vehicleMesh ? { vehicleMesh: true } : {}),
+        },
+        resolve,
+        reject,
+      });
       this.pump();
     });
   }
@@ -167,9 +177,12 @@ export function defaultPoolSize(): number {
 }
 
 /** A pool of real Workers, or null where there are none (tests, non-browser hosts): callers then build in place. */
-export function createSmoothVoxelPool(): SmoothVoxelPool | null {
+export function createSmoothVoxelPool(vehicleMesh = false): SmoothVoxelPool | null {
   if (typeof Worker === 'undefined') return null;
   return new SmoothVoxelPool(
     () => new Worker(new URL('./voxelSmoothWorker.ts', import.meta.url), { type: 'module' }) as SmoothWorkerLike,
+    defaultPoolSize(),
+    SMOOTH_POOL_IDLE_MS,
+    vehicleMesh,
   );
 }

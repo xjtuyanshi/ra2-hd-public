@@ -3,6 +3,7 @@
  * buildSmoothSection is pure CPU work (distance transforms, blurs, ambient-occlusion rays: 0.1 to 1 s per model), so
  * it never has to run on the thread that presents frames. See voxelSmoothPool.ts for the owner of these Workers.
  */
+import { buildVehicleSection } from './vehicleMesh';
 import type { VoxelSection } from '../../../ra2-assets/src/manifest';
 import { buildSmoothSection, type SmoothMeshData, type SmoothVoxelOptions } from './voxelSmooth';
 
@@ -134,6 +135,7 @@ const persistentMeshes: SmoothSectionCache = {
 };
 
 export interface SmoothSectionRequest {
+  vehicleMesh?: boolean;
   id: number;
   section: VoxelSection;
   options: SmoothVoxelOptions;
@@ -156,7 +158,9 @@ export function answerSmoothSection(request: SmoothSectionRequest): {
   transfer: ArrayBuffer[];
 } {
   try {
-    const mesh = buildSmoothSection(request.section, request.options);
+    const mesh = request.vehicleMesh
+      ? buildVehicleSection(request.section)
+      : buildSmoothSection(request.section, request.options);
     return { reply: { id: request.id, mesh }, transfer: smoothMeshBuffers(mesh) };
   } catch (error) {
     return { reply: { id: request.id, error: error instanceof Error ? error.message : String(error) }, transfer: [] };
@@ -171,6 +175,8 @@ export async function answerSmoothSectionCached(
   request: SmoothSectionRequest,
   cache: SmoothSectionCache = persistentMeshes,
 ): Promise<ReturnType<typeof answerSmoothSection>> {
+  // Vehicle meshes have a separate attribute contract and never enter the legacy persistent cache.
+  if (request.vehicleMesh) return answerSmoothSection(request);
   let key: string | undefined;
   try {
     const input = new TextEncoder().encode(JSON.stringify([MESH_CACHE_VERSION, request.section, request.options]));
