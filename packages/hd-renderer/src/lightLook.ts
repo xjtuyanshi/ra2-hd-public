@@ -23,6 +23,15 @@ export const LIGHT_LOOK_CURRENT = {
   smokeEdge: 0.4,
   smokeRidge: 0,
   wreckGlow: 0,
+  smokeReal: 0,
+  smokeLift: 0.6,
+  smokeShear: 0.3,
+  smokeScale: 1,
+  smokeCurl: 0.3,
+  smokeSoft: 0.2,
+  smokeCardWarp: 1,
+  smokeShadow: 1,
+  smokeHaze: 0,
 } as const;
 export const LIGHT_LOOK_NEW = {
   smokeVolume: 1,
@@ -46,9 +55,27 @@ export const LIGHT_LOOK_NEW = {
   smokeEdge: 0.22,
   smokeRidge: 0.6,
   wreckGlow: 1,
+  /** Round 8: one shared advected turbulence field for every HD smoke pool (effects.ts realSmoke); 0 = round 7. */
+  smokeReal: 1,
+  /** World units above a puff's ground over which its density fades in (building bases stay visible). */
+  smokeLift: 0.6,
+  /** Downwind lean and stretch of the field per world unit of height. */
+  smokeShear: 0.3,
+  /** Field frequency (noise tiles per world unit). */
+  smokeScale: 1.6,
+  /** Curl-like domain-warp amount (rolling billows and wisps). */
+  smokeCurl: 0.8,
+  /** Width of the density edge: small = crisp billow edges, large = hazy. */
+  smokeSoft: 0.1,
+  /** Original smoke particle cards: swirl offset of the art sample (1 = up to ~4 engine px). */
+  smokeCardWarp: 1,
+  /** Self-shadow contrast from the field's slope toward the light. */
+  smokeShadow: 2,
+  /** Faint translucent fringe around the eroded billows (share of full density). */
+  smokeHaze: 0.25,
 } as const;
 /** Parameters that are gains or widths rather than 0..1 shares. */
-const WIDE = new Set<string>(['smokeDetail', 'beamGlow', 'beamSpread', 'beamCoreGain', 'beamImpact']);
+const WIDE = new Set<string>(['smokeLift', 'smokeShear', 'smokeScale', 'smokeCurl', 'smokeCardWarp', 'smokeShadow', 'smokeDetail', 'beamGlow', 'beamSpread', 'beamCoreGain', 'beamImpact']);
 export type LightLookValues = { [K in keyof typeof LIGHT_LOOK_NEW]: number };
 const lookUniform = (v: number) => uniform(v);
 export type LightLook = { [K in keyof LightLookValues]: ReturnType<typeof lookUniform> };

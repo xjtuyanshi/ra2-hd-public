@@ -328,7 +328,9 @@ describe('round 7: smoke and legacy boundaries', () => {
       const taps = new Map<string, number>();
       for (const [, binding] of code.matchAll(/\btextureSample\w*\(\s*([\w]+)/g))
         taps.set(binding!, (taps.get(binding!) ?? 0) + 1);
-      expect(Math.max(...taps.values())).toBeLessThanOrEqual(7); // Original three noise taps plus at most four.
+      // Exclusive uniform branches: legacy/round-7 (original three noise taps plus at most four) and round-8 real smoke
+      // (five) are both in the code, but a fragment runs one of them.
+      expect(Math.max(...taps.values())).toBeLessThanOrEqual(7 + 5);
       lightLook(nodes.smokeLook, 'cur');
       expect(shaderBytes(mesh).replace(/NodeBuffer_\d+/g, 'NodeBuffer')).toBe(
         code.replace(/NodeBuffer_\d+/g, 'NodeBuffer'),
@@ -336,7 +338,7 @@ describe('round 7: smoke and legacy boundaries', () => {
     }
     nodes.dispose();
   });
-  it.each([false, true])('builds bounded smoke-card sampling for the %s RGBA path with two noise taps', (hd) => {
+  it.each([false, true])('builds bounded smoke-card sampling for the %s RGBA path with 2 + 5 noise taps', (hd) => {
     const nodes = new AtmosphereNodes({ realLight: true }),
       scene = receiverScene(nodes);
     const texture = new DataTexture(new Uint8Array(32 * 32 * 4), 32, 32);
@@ -384,7 +386,8 @@ describe('round 7: smoke and legacy boundaries', () => {
     const samples = new Map<string, number>();
     for (const [, binding] of code.matchAll(/\btextureSample\w*\(\s*([\w]+)/g))
       samples.set(binding!, (samples.get(binding!) ?? 0) + 1);
-    expect([...samples.values()]).toContain(2); // Shared noise is sampled exactly twice.
+    // Shared noise: twice in the round-7 branch, five times in the exclusive round-8 branch (cardRealSmoke).
+    expect([...samples.values()]).toContain(2 + 5);
 
     lightLook(nodes.smokeLook, 'cur');
     expect(shaderBytes(mesh).replace(/NodeBuffer_\d+/g, 'NodeBuffer')).toBe(

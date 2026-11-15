@@ -20,6 +20,7 @@ import {
 } from 'three/webgpu';
 import {
   Fn,
+  If,
   abs,
   clamp,
   cameraFar,
@@ -666,7 +667,98 @@ function smokeVolume(
   return { density, shade };
 }
 
+/**
+ * Round-8 real smoke (smokeReal = 1). Both earlier profiles shaded each puff from its own puff-local noise, so every
+ * quad kept a round outline of its own: the union of a blast's puffs read as cotton balls (legacy lobes) or as soft
+ * round blobs and a uniform fog column (round 7). Here every puff of every pool samples ONE turbulence field that is
+ * anchored in the world's screen plane and advected by the flow (rise plus the shared layer wind): overlapping puffs
+ * cut the same eddies, so a blast's puffs merge into one plume whose outline follows the field's isolines, not the
+ * quads. The quad only gives a soft envelope; the visible structure is the field:
+ *   - low octaves with a light rotated (curl-like) warp give rounded billows; a faster-rising small-eddy octave makes
+ *     the surface churn instead of the whole texture sliding at one speed;
+ *   - features are stretched along the flow and leaned downwind with height (wind shear);
+ *   - density fades in over the first `smokeLift` world units above the puff's ground, so the base of a burning or
+ *     exploding building stays visible (round-7 review: the volume was densest at the bottom and hid the tower base;
+ *     the original anims' smoke there is a thin 50 % translucent haze);
+ *   - an extra tap toward the light gives a soft self-shadow: tops facing the light are lighter, the undersides and
+ *     dense cores darker, never a sphere shading or a bright rim.
+ * Five noise reads in all. Colour ramps, spawn counts, sizes, lifetimes, velocities, depth and order are the pools'.
+ */
+function realSmoke(
+  p: ShaderNode,
+  ground: ShaderNode,
+  t: ShaderNode,
+  seed: ShaderNode,
+  nodes: typeof DEFAULT_ATMOSPHERE_NODES,
+  cameraRight: ShaderNode,
+  cameraUp: ShaderNode,
+  now: ShaderNode,
+  /** [coverage gain, coverage bias, lift on (0/1)]: per pool, calibrated on live frozen frames. */
+  pool: readonly [number, number, number],
+): { density: ShaderNode; shade: ShaderNode; thin: ShaderNode; field: ShaderNode } {
+  const look = nodes.smokeLook;
+  const noise = waterTextures().noise;
+  const wind3 = vec3(nodes.smokeWind.x, 0, nodes.smokeWind.y);
+  const wind = vec2(dot(wind3, cameraRight), dot(wind3, cameraUp));
+  // Flow on screen: buoyant rise plus the one layer wind (the same wind the puffs' spawn velocities carry).
+  const flow = vec2(wind.x.mul(0.7), wind.y.mul(0.7).add(0.45));
+  const dir = normalize(flow);
+  const across = vec2(dir.y, dir.x.negate());
+  const world = positionWorld;
+  const height = world.y.sub(ground).max(0);
+  const s = vec2(dot(world, cameraRight), dot(world, cameraUp));
+  // Shear: the higher the smoke, the further downwind its features lean, and the longer they are drawn out. Both are
+  // offsets linear in the height (never a scale of the absolute map coordinate: dividing the coordinate itself by a
+  // height factor compressed tens of field periods into one puff and drew horizontal streaks on the first live frame).
+  const lean = height.mul(look.smokeShear);
+  const along = dot(s, dir).sub(lean.mul(0.6));
+  const side = dot(s, across).sub(lean.mul(dot(wind, across)).mul(2));
+  const q = vec2(side, along).mul(look.smokeScale);
+  const speed = length(flow).mul(look.smokeScale);
+  const t0 = now.mul(speed);
+  // Low octaves (r: 4 cells per tile, g: 8) with a light curl-like warp from their rotated pair: rounded billows.
+  // A strong warp smeared the fine octaves into hair-like streaks in the offline study; real smoke near its source is
+  // lobed, and streaks belong only to the thin downwind edge (the shear stretch above does that).
+  const low = (at: ShaderNode) => {
+    const big = texture(noise, at.mul(0.3).sub(vec2(0, t0.mul(0.2))));
+    const warp = vec2(big.g.sub(0.5), big.r.sub(0.5).negate()).mul(look.smokeCurl).mul(0.5);
+    const q1 = at.mul(0.55).add(warp).sub(vec2(0, t0.mul(0.3)));
+    const a = texture(noise, q1);
+    return { big, q1, value: big.r.mul(0.4).add(a.r.mul(0.25)).add(a.g.mul(0.2)) };
+  };
+  const here = low(q);
+  const q1 = here.q1.toVar();
+  // Small eddies stream up faster than the billows: the cloud's surface churns instead of sliding as one texture.
+  const b = texture(noise, q1.mul(2.1).add(vec2(0.37, 0.11)).sub(vec2(0, t0.mul(0.45)))).toVar();
+  const field = here.value.add(b.g.mul(0.1)).add(b.b.mul(0.05)).toVar();
+  // Soft envelope from the quad (zero at its edge), its outline itself broken by the slow billows.
+  const ragged = p.add(vec2(here.big.g.sub(0.5), here.big.r.sub(0.5)).mul(0.6));
+  const envelope = exp(dot(ragged, ragged).mul(-1.6)).mul(smoothstep(1, 0.75, length(p)));
+  // Fade in over the first smokeLift units above the ground (the pool's own lift switch), and thin with age.
+  const lift = mix(float(1), mix(float(0.12), float(1), smoothstep(0.02, look.smokeLift.max(0.03), height)), pool[2]);
+  const threshold = float(0.36).add(t.mul(0.2)).add(seed.sub(0.5).mul(0.04));
+  const raw = envelope.mul(field.mul(pool[0]).add(pool[1])).toVar();
+  const soft = look.smokeSoft.max(0.02);
+  // A thin haze just outside the eroded body: the billows' torn outline alone read like ink on paper at 1:1, while
+  // real smoke keeps a faint translucent fringe around its lobes.
+  const haze = smoothstep(threshold.sub(0.22), threshold, raw).mul(look.smokeHaze);
+  const density = max(smoothstep(threshold, threshold.add(soft), raw), haze)
+    .mul(lift)
+    .mul(float(1).sub(t.mul(0.35)))
+    .toVar();
+  // Self-shadow: the billow field one step toward the light (screen upper left). Where the field falls toward the
+  // light this point is on a lit face; where it rises it lies in the lee. Low octaves only: a fine-scale gradient
+  // lit every eddy and read as fur.
+  const toward = low(q.add(vec2(-0.09, 0.12).mul(look.smokeScale))).value;
+  const facing = here.value.sub(toward).mul(look.smokeShadow.mul(6)).add(p.y.mul(0.3));
+  const shade = mix(float(0.48), float(1.1), smoothstep(-1, 1, facing)).mul(mix(float(1), float(0.85), density));
+  // Thin, low-density edges transmit more of the light behind them (fires below): weights the young warm glow.
+  const thin = float(1).sub(density).mul(smoothstep(0.0, 0.3, raw.sub(threshold).add(soft)));
+  return { density, shade, thin, field };
+}
+
 /** Exact ground contact time, including the spawn lift; the shadow must not stop at the lifted origin. */
+
 function debrisFlightTime(rise: number, height: number): number {
   return (rise + Math.sqrt(rise * rise + 2 * ENHANCED.debris.gravity * Math.max(0, height))) / ENHANCED.debris.gravity;
 }
@@ -692,6 +784,16 @@ function debrisFade(age: ShaderNode, life: ShaderNode): ShaderNode {
  * already the smoke, so the HD puff only softens it.
  */
 const GARNISH_SMOKE_OPACITY = 0.45;
+/**
+ * realSmoke coverage per pool: [field gain, field bias, ground lift on]. Explosion billows and columns rise from the
+ * blast's ground (lift on); trail and soot puffs are born in the air. Calibrated on SOV07TMD frozen frames so a puff's
+ * mean coverage stays near its round-7 value while its outline follows the shared field.
+ */
+const REAL_SMOKE = {
+  billow: [1.3, 0.05, 1],
+  column: [1.3, 0.05, 1],
+  puff: [1.35, 0.1, 0],
+} as const satisfies Record<string, readonly [number, number, number]>;
 /** Seconds between flame tongues of one persistent fire. */
 const FIRE_INTERVAL = 1 / 14;
 /** Share of a persistent fire's beats that also emit a puff of its dark smoke column. */
@@ -1031,7 +1133,7 @@ export class EffectsLayer {
     });
 
     this.smoke = new ParticlePool(SMOKE, quad, blended(), (pool) => {
-      const { age, life, size, seed, origin, velocity, alive, extra } = particleInputs(pool, this.now);
+      const { age, life, size, seed, origin, velocity, ground, alive, extra } = particleInputs(pool, this.now);
       // params.w: 1 = the dark soot of a burning wreck, 2 = a live-view garnish puff (lighter, over original art).
       const garnish: ShaderNode = step(1.5, extra);
       const soot: ShaderNode = clamp(extra.sub(garnish.mul(2)), 0, 1);
@@ -1047,33 +1149,75 @@ export class EffectsLayer {
         this.cameraUp,
       );
       pool.material.colorNode = Fn(() => {
-        const p = uv().sub(0.5).mul(2);
-        const n = mx_noise_float(vec3(p.mul(1.8), seed.mul(20).add(t.mul(1.5)))).mul(0.3);
-        const oldMask = smoothstep(1.0, 0.2, length(p).add(n));
-        const volume = this.nodes.realLight
-          ? smokeVolume(p, age, t, seed, this.nodes, this.cameraRight, this.cameraUp, [0.15, 0, 0.9, 0.35])
-          : undefined;
-        const mask = volume
-          ? mix(oldMask, volume.density, this.nodes.smokeLook.smokeVolume.mul(this.nodes.realLight!.enabled))
-          : oldMask;
-        // Unlit smoke follows the scene's light level (1 at clear noon) and glows near fires and explosions, lit from
-        // below. Physical smoke takes only a weak, nearly neutral directional fill (smokeLight).
-        // Soot glows more from the fire under it (lit from below).
-        const lit = this.nodes.sceneBrightness.add(
-          smokeLight(positionWorld.xz, this.nodes, positionWorld.y, vec3(0, -1, 0))
-            .div(this.nodes.referenceLevel)
-            .mul(float(0.5).add(soot)),
-        );
-        // Neutral greys like the original smoke art (anim.pal 68..137, R = G = B); soot is near black.
-        const grey = mix(mix(color(0x3a3a3a), color(0x858585), seed), color(0x141210), soot);
-        const shade = grey.mul(mix(float(1.6), float(0.9), smoothstep(0, 0.25, t))).mul(lit);
-        // Soot fades in slowly as it rises, so it never lays dark discs on the ground beside the fire.
-        const alpha = mask
-          .mul(smoothstep(0.0, mix(float(0.08), float(0.3), soot), t))
-          .mul(smoothstep(1.0, 0.35, t))
-          .mul(mix(float(0.7), float(0.5), soot))
-          .mul(mix(float(1), float(GARNISH_SMOKE_OPACITY), garnish));
-        return vec4(shade, alpha.mul(t.lessThan(1).select(float(1), float(0))));
+        // Shared inputs are assigned before the branch: TSL caches a node into a variable where it is first built,
+        // and a first build inside the If left the Else branch reading an unassigned variable (age 0: invisible).
+        const p = vec2(0).toVar();
+        p.assign(uv().sub(0.5).mul(2));
+        const ageV = float(0).toVar();
+        ageV.assign(age);
+        const tV = float(0).toVar();
+        tV.assign(t);
+        const seedV = float(0).toVar();
+        seedV.assign(seed);
+        const groundV = float(0).toVar();
+        groundV.assign(ground);
+        const sootV = float(0).toVar();
+        sootV.assign(soot);
+        const garnishV = float(0).toVar();
+        garnishV.assign(garnish);
+        const out = vec4(0).toVar();
+        const legacy = () => {
+          const n = mx_noise_float(vec3(p.mul(1.8), seedV.mul(20).add(tV.mul(1.5)))).mul(0.3);
+          const oldMask = smoothstep(1.0, 0.2, length(p).add(n));
+          const volume = this.nodes.realLight
+            ? smokeVolume(p, ageV, tV, seedV, this.nodes, this.cameraRight, this.cameraUp, [0.15, 0, 0.9, 0.35])
+            : undefined;
+          const mask = volume
+            ? mix(oldMask, volume.density, this.nodes.smokeLook.smokeVolume.mul(this.nodes.realLight!.enabled))
+            : oldMask;
+          // Unlit smoke follows the scene's light level (1 at clear noon) and glows near fires and explosions, lit from
+          // below. Physical smoke takes only a weak, nearly neutral directional fill (smokeLight).
+          // Soot glows more from the fire under it (lit from below).
+          const lit = this.nodes.sceneBrightness.add(
+            smokeLight(positionWorld.xz, this.nodes, positionWorld.y, vec3(0, -1, 0))
+              .div(this.nodes.referenceLevel)
+              .mul(float(0.5).add(sootV)),
+          );
+          // Neutral greys like the original smoke art (anim.pal 68..137, R = G = B); soot is near black.
+          const grey = mix(mix(color(0x3a3a3a), color(0x858585), seedV), color(0x141210), sootV);
+          const shade = grey.mul(mix(float(1.6), float(0.9), smoothstep(0, 0.25, tV))).mul(lit);
+          // Soot fades in slowly as it rises, so it never lays dark discs on the ground beside the fire.
+          const alpha = mask
+            .mul(smoothstep(0.0, mix(float(0.08), float(0.3), sootV), tV))
+            .mul(smoothstep(1.0, 0.35, tV))
+            .mul(mix(float(0.7), float(0.5), sootV))
+            .mul(mix(float(1), float(GARNISH_SMOKE_OPACITY), garnishV));
+          out.assign(vec4(shade, alpha.mul(tV.lessThan(1).select(float(1), float(0)))));
+        };
+        const realOn = this.nodes.realLight
+          ? this.nodes.smokeLook.smokeReal.mul(this.nodes.realLight.enabled).greaterThan(0.5)
+          : null;
+        // Uniform branch: the legacy and round-7 graphs cost nothing while the real smoke draws, and vice versa.
+        if (realOn)
+          If(realOn, () => {
+            // Trail and soot puffs are airborne: no ground lift (their ground is their own spawn point).
+            const r = realSmoke(p, groundV, tV, seedV, this.nodes, this.cameraRight, this.cameraUp, this.now, REAL_SMOKE.puff);
+            const lit = this.nodes.sceneBrightness.mul(r.shade).add(
+              smokeLight(positionWorld.xz, this.nodes, positionWorld.y, vec3(0, -1, 0))
+                .div(this.nodes.referenceLevel)
+                .mul(float(0.5).add(sootV)),
+            );
+            const grey = mix(mix(color(0x3a3a3a), color(0x858585), seedV), color(0x141210), sootV);
+            const shade = grey.mul(mix(float(1.6), float(0.9), smoothstep(0, 0.25, tV))).mul(lit);
+            const alpha = r.density
+              .mul(smoothstep(0.0, mix(float(0.08), float(0.3), sootV), tV))
+              .mul(smoothstep(1.0, 0.35, tV))
+              .mul(mix(float(0.7), float(0.5), sootV))
+              .mul(mix(float(1), float(GARNISH_SMOKE_OPACITY), garnishV));
+            out.assign(vec4(shade, alpha.mul(tV.lessThan(1).select(float(1), float(0)))));
+          }).Else(legacy);
+        else legacy();
+        return out;
       })();
     });
 
@@ -1434,69 +1578,124 @@ export class EffectsLayer {
       if (terrainDepth) pool.material.depthNode = terrainDepth.node(pool.material.depthNode, centre);
       pool.material.positionNode = billboard(centre, grow, this.cameraRight, this.cameraUp);
       pool.material.colorNode = Fn(() => {
-        const p = uv().sub(0.5).mul(2);
-        const angle = seed.mul(6.283).add(age.mul(seed.sub(0.5).mul(1.2)));
-        const c = cos(angle);
-        const s = sin(angle);
-        const q = vec2(p.x.mul(c).sub(p.y.mul(s)), p.x.mul(s).add(p.y.mul(c)));
-        const lumps = texture(noise, q.mul(0.32).add(vec2(seed.mul(3.7), seed.mul(1.9).add(age.mul(0.025))))).g.toVar();
-        const broad = texture(noise, q.mul(0.16).add(vec2(seed.mul(7.1), seed.mul(2.3).add(age.mul(0.018))))).r.toVar();
-        const fine = texture(noise, q.mul(0.9).add(vec2(seed.mul(5.3), age.mul(-0.04)))).b.toVar();
-        const bump = lumps.sub(0.5).mul(1.2).add(broad.sub(0.5).mul(0.6)).add(fine.sub(0.5).mul(0.4)).toVar();
-        const e = ENHANCED.smoke;
-        const late = smoothstep(...e.lateFrom, age);
-        const edge = late.mul(e.lateEdge);
-        const { density, normal: nrm, shadow } = smokeLobes(p, seed, angle, edge, fine, broad, bump, e);
-        const sun = dot(nrm, vec3(-0.5, 0.68, 0.53)).max(0);
-        const rim = pow(float(1).sub(nrm.z), 3).mul(0.35);
-        const shade = float(e.ambient)
-          .add(sun.mul(e.sun))
-          .add(rim)
-          .mul(mix(e.underside, 1, smoothstep(...e.undersideRange, nrm.y)))
-          .mul(shadow);
-        const volume = this.nodes.realLight
-          ? smokeVolume(p, age, t, seed, this.nodes, this.cameraRight, this.cameraUp)
-          : undefined;
-        const volumeWeight = this.nodes.realLight
-          ? this.nodes.smokeLook.smokeVolume.mul(this.nodes.realLight.enabled)
-          : float(0);
-        const lit = this.nodes.sceneBrightness.mul(volume ? mix(shade, volume.shade, volumeWeight) : shade).add(
-          smokeLight(
-            positionWorld.xz,
-            this.nodes,
-            positionWorld.y,
-            volume
-              ? mix(
-                  this.cameraRight.mul(nrm.x).add(this.cameraUp.mul(nrm.y)).add(this.toCamera.mul(nrm.z)),
-                  this.toCamera,
-                  volumeWeight,
-                )
-              : this.cameraRight.mul(nrm.x).add(this.cameraUp.mul(nrm.y)).add(this.toCamera.mul(nrm.z)),
-          )
-            .div(this.nodes.referenceLevel)
-            .mul(0.45),
-        );
-        // Young soot retains the fire's warmth; cold lobes age to neutral grey so sunlit tops stay distinct.
-        const base = mix(color(0x1d1a17), color(0x86847f), clamp(t.mul(1.6).add(seed.mul(0.25)), 0, 1));
-        // The fire's glow: underneath the young puff, and inside it for the first moments (black-orange smoke).
-        // The fire's glow fades in seconds, not in shares of the (long) life: a lingering cloud is cold soot.
-        const under = smoothstep(0.15, -0.8, nrm.y)
-          .mul(exp(age.mul(-3.2)))
-          .mul(1.8);
-        const inner = exp(dot(p, p).mul(-3))
-          .mul(pow(clamp(float(1).sub(age.div(0.7)), 0, 1), 2))
-          .mul(1.6);
-        const glow = mix(vec3(1.0, 0.36, 0.08), vec3(1.0, 0.66, 0.3), inner.min(1))
-          .mul(heat)
-          .mul(under.add(inner));
-        const alpha = (volume ? mix(density, volume.density, volumeWeight) : density)
-          .mul(smoothstep(0.0, 0.08, t))
-          .mul(smoothstep(1.0, 0.35, t))
-          .mul(e.opacity)
-          .mul(mix(1, e.lateOpacity, late))
-          .mul(t.lessThan(1).select(float(1), float(0)))
-          .min(mix(1, e.maxLate, late));
-        return vec4(base.mul(lit).mul(alpha).add(glow.mul(alpha)), alpha);
+        // Shared inputs are assigned before the branch: TSL caches a node into a variable where it is first built,
+        // and a first build inside the If left the Else branch reading an unassigned variable (age 0: invisible).
+        const p = vec2(0).toVar();
+        p.assign(uv().sub(0.5).mul(2));
+        const ageV = float(0).toVar();
+        ageV.assign(age);
+        const tV = float(0).toVar();
+        tV.assign(t);
+        const seedV = float(0).toVar();
+        seedV.assign(seed);
+        const heatV = float(0).toVar();
+        heatV.assign(heat);
+        const groundV = float(0).toVar();
+        groundV.assign(ground);
+        const out = vec4(0).toVar();
+        const legacy = () => {
+          const angle = seedV.mul(6.283).add(ageV.mul(seedV.sub(0.5).mul(1.2)));
+          const c = cos(angle);
+          const s = sin(angle);
+          const q = vec2(p.x.mul(c).sub(p.y.mul(s)), p.x.mul(s).add(p.y.mul(c)));
+          const lumps = texture(noise, q.mul(0.32).add(vec2(seedV.mul(3.7), seedV.mul(1.9).add(ageV.mul(0.025))))).g.toVar();
+          const broad = texture(noise, q.mul(0.16).add(vec2(seedV.mul(7.1), seedV.mul(2.3).add(ageV.mul(0.018))))).r.toVar();
+          const fine = texture(noise, q.mul(0.9).add(vec2(seedV.mul(5.3), ageV.mul(-0.04)))).b.toVar();
+          const bump = lumps.sub(0.5).mul(1.2).add(broad.sub(0.5).mul(0.6)).add(fine.sub(0.5).mul(0.4)).toVar();
+          const e = ENHANCED.smoke;
+          const late = smoothstep(...e.lateFrom, ageV);
+          const edge = late.mul(e.lateEdge);
+          const { density, normal: nrm, shadow } = smokeLobes(p, seedV, angle, edge, fine, broad, bump, e);
+          const sun = dot(nrm, vec3(-0.5, 0.68, 0.53)).max(0);
+          const rim = pow(float(1).sub(nrm.z), 3).mul(0.35);
+          const shade = float(e.ambient)
+            .add(sun.mul(e.sun))
+            .add(rim)
+            .mul(mix(e.underside, 1, smoothstep(...e.undersideRange, nrm.y)))
+            .mul(shadow);
+          const volume = this.nodes.realLight
+            ? smokeVolume(p, ageV, tV, seedV, this.nodes, this.cameraRight, this.cameraUp)
+            : undefined;
+          const volumeWeight = this.nodes.realLight
+            ? this.nodes.smokeLook.smokeVolume.mul(this.nodes.realLight.enabled)
+            : float(0);
+          const lit = this.nodes.sceneBrightness.mul(volume ? mix(shade, volume.shade, volumeWeight) : shade).add(
+            smokeLight(
+              positionWorld.xz,
+              this.nodes,
+              positionWorld.y,
+              volume
+                ? mix(
+                    this.cameraRight.mul(nrm.x).add(this.cameraUp.mul(nrm.y)).add(this.toCamera.mul(nrm.z)),
+                    this.toCamera,
+                    volumeWeight,
+                  )
+                : this.cameraRight.mul(nrm.x).add(this.cameraUp.mul(nrm.y)).add(this.toCamera.mul(nrm.z)),
+            )
+              .div(this.nodes.referenceLevel)
+              .mul(0.45),
+          );
+          // Young soot retains the fire's warmth; cold lobes age to neutral grey so sunlit tops stay distinct.
+          const base = mix(color(0x1d1a17), color(0x86847f), clamp(tV.mul(1.6).add(seedV.mul(0.25)), 0, 1));
+          // The fire's glow: underneath the young puff, and inside it for the first moments (black-orange smoke).
+          // The fire's glow fades in seconds, not in shares of the (long) life: a lingering cloud is cold soot.
+          const under = smoothstep(0.15, -0.8, nrm.y)
+            .mul(exp(ageV.mul(-3.2)))
+            .mul(1.8);
+          const inner = exp(dot(p, p).mul(-3))
+            .mul(pow(clamp(float(1).sub(ageV.div(0.7)), 0, 1), 2))
+            .mul(1.6);
+          const glow = mix(vec3(1.0, 0.36, 0.08), vec3(1.0, 0.66, 0.3), inner.min(1))
+            .mul(heatV)
+            .mul(under.add(inner));
+          const alpha = (volume ? mix(density, volume.density, volumeWeight) : density)
+            .mul(smoothstep(0.0, 0.08, tV))
+            .mul(smoothstep(1.0, 0.35, tV))
+            .mul(e.opacity)
+            .mul(mix(1, e.lateOpacity, late))
+            .mul(tV.lessThan(1).select(float(1), float(0)))
+            .min(mix(1, e.maxLate, late));
+          out.assign(vec4(base.mul(lit).mul(alpha).add(glow.mul(alpha)), alpha));
+        };
+        const realOn = this.nodes.realLight
+          ? this.nodes.smokeLook.smokeReal.mul(this.nodes.realLight.enabled).greaterThan(0.5)
+          : null;
+        // Uniform branch: the legacy and round-7 graphs cost nothing while the real smoke draws, and vice versa.
+        if (realOn)
+          If(realOn, () => {
+            const e = ENHANCED.smoke;
+            const late = smoothstep(...e.lateFrom, ageV);
+            const r = realSmoke(p, groundV, tV, seedV, this.nodes, this.cameraRight, this.cameraUp, this.now, REAL_SMOKE.billow);
+            const lit = this.nodes.sceneBrightness.mul(r.shade).add(
+              smokeLight(positionWorld.xz, this.nodes, positionWorld.y, this.toCamera)
+                .div(this.nodes.referenceLevel)
+                .mul(0.45),
+            );
+            const base = mix(color(0x1d1a17), color(0x86847f), clamp(tV.mul(1.6).add(seedV.mul(0.25)), 0, 1));
+            // The fire's glow while young: from below, and through the thin edges more than through dense cores.
+            const under = smoothstep(0.2, -0.9, p.y)
+              .mul(exp(ageV.mul(-3.2)))
+              .mul(1.8);
+            // The young core glow follows the field's denser eddies (a round exp core read as a beige ball on the
+            // first live frames) and stays orange: it is fire light inside the soot, not a lit tan cloud.
+            const inner = exp(dot(p, p).mul(-3))
+              .mul(pow(clamp(float(1).sub(ageV.div(0.7)), 0, 1), 2))
+              .mul(smoothstep(0.42, 0.72, r.field))
+              .mul(0.9);
+            const glow = mix(vec3(1.0, 0.3, 0.06), vec3(1.0, 0.52, 0.18), inner.min(1))
+              .mul(heatV)
+              .mul(under.mul(float(0.5).add(r.thin)).add(inner));
+            const alpha = r.density
+              .mul(smoothstep(0.0, 0.08, tV))
+              .mul(smoothstep(1.0, 0.35, tV))
+              .mul(e.opacity)
+              .mul(mix(1, e.lateOpacity, late))
+              .mul(tV.lessThan(1).select(float(1), float(0)))
+              .min(mix(1, e.maxLate, late));
+            out.assign(vec4(base.mul(lit).mul(alpha).add(glow.mul(alpha)), alpha));
+          }).Else(legacy);
+        else legacy();
+        return out;
       })();
     });
 
@@ -1752,64 +1951,111 @@ export class EffectsLayer {
       if (terrainDepth) pool.material.depthNode = terrainDepth.node(pool.material.depthNode, centre);
       pool.material.positionNode = billboard(centre, grow, this.cameraRight, this.cameraUp);
       pool.material.colorNode = Fn(() => {
-        const p = uv().sub(0.5).mul(2);
-        const angle = seed.mul(6.283).add(age.mul(seed.sub(0.5).mul(0.4)));
-        const c = cos(angle);
-        const sn = sin(angle);
-        const q = vec2(p.x.mul(c).sub(p.y.mul(sn)), p.x.mul(sn).add(p.y.mul(c)));
-        const lumps = texture(noise, q.mul(0.3).add(vec2(seed.mul(3.7), seed.mul(1.9).add(age.mul(0.012))))).g.toVar();
-        const broad = texture(noise, q.mul(0.16).add(vec2(seed.mul(7.1), seed.mul(2.3).add(age.mul(0.018))))).r.toVar();
-        const fine = texture(noise, q.mul(0.85).add(vec2(seed.mul(5.3), age.mul(-0.02)))).b.toVar();
-        const bump = lumps.sub(0.5).mul(1.2).add(fine.sub(0.5).mul(0.4)).toVar();
-        const e = ENHANCED.column;
-        const late = smoothstep(...e.lateFrom, age);
-        const edge = late.mul(e.lateEdge);
-        const { density, normal: nrm, shadow } = smokeLobes(p, seed, angle, edge, fine, broad, bump, e);
-        const sun = dot(nrm, vec3(-0.5, 0.68, 0.53)).max(0);
-        const rim = pow(float(1).sub(nrm.z), 3).mul(0.3);
-        const volume = this.nodes.realLight
-          ? smokeVolume(p, age, t, seed, this.nodes, this.cameraRight, this.cameraUp)
-          : undefined;
-        const volumeWeight = this.nodes.realLight
-          ? this.nodes.smokeLook.smokeVolume.mul(this.nodes.realLight.enabled)
-          : float(0);
-        const legacyShade = float(e.ambient)
-          .add(sun.mul(e.sun))
-          .add(rim)
-          .mul(mix(e.underside, 1, smoothstep(...e.undersideRange, nrm.y)))
-          .mul(shadow);
-        const lit = this.nodes.sceneBrightness
-          .mul(volume ? mix(legacyShade, volume.shade, volumeWeight) : legacyShade)
-          .add(
-            smokeLight(
-              positionWorld.xz,
-              this.nodes,
-              positionWorld.y,
-              volume
-                ? mix(
-                    this.cameraRight.mul(nrm.x).add(this.cameraUp.mul(nrm.y)).add(this.toCamera.mul(nrm.z)),
-                    this.toCamera,
-                    volumeWeight,
-                  )
-                : this.cameraRight.mul(nrm.x).add(this.cameraUp.mul(nrm.y)).add(this.toCamera.mul(nrm.z)),
-            )
-              .div(this.nodes.referenceLevel)
-              .mul(0.4),
-          );
-        const base = mix(color(0x2a2622), color(0x8e8c87), clamp(t.mul(1.5).add(seed.mul(0.2)), 0, 1));
-        const glow = vec3(1.0, 0.42, 0.12)
-          .mul(heat)
-          .mul(smoothstep(0.1, -0.8, nrm.y))
-          .mul(pow(clamp(float(1).sub(t.mul(5)), 0, 1), 2))
-          .mul(1.4);
-        const alpha = (volume ? mix(density, volume.density, volumeWeight) : density)
-          .mul(smoothstep(0.0, 0.06, t))
-          .mul(smoothstep(1.0, 0.4, t))
-          .mul(0.62)
-          .mul(mix(1, e.lateOpacity, late))
-          .mul(t.lessThan(1).select(float(1), float(0)))
-          .min(mix(1, e.maxLate, late));
-        return vec4(base.mul(lit).mul(alpha).add(glow.mul(alpha)), alpha);
+        // Shared inputs are assigned before the branch: TSL caches a node into a variable where it is first built,
+        // and a first build inside the If left the Else branch reading an unassigned variable (age 0: invisible).
+        const p = vec2(0).toVar();
+        p.assign(uv().sub(0.5).mul(2));
+        const ageV = float(0).toVar();
+        ageV.assign(age);
+        const tV = float(0).toVar();
+        tV.assign(t);
+        const seedV = float(0).toVar();
+        seedV.assign(seed);
+        const heatV = float(0).toVar();
+        heatV.assign(heat);
+        const groundV = float(0).toVar();
+        groundV.assign(ground);
+        const out = vec4(0).toVar();
+        const legacy = () => {
+          const angle = seedV.mul(6.283).add(ageV.mul(seedV.sub(0.5).mul(0.4)));
+          const c = cos(angle);
+          const sn = sin(angle);
+          const q = vec2(p.x.mul(c).sub(p.y.mul(sn)), p.x.mul(sn).add(p.y.mul(c)));
+          const lumps = texture(noise, q.mul(0.3).add(vec2(seedV.mul(3.7), seedV.mul(1.9).add(ageV.mul(0.012))))).g.toVar();
+          const broad = texture(noise, q.mul(0.16).add(vec2(seedV.mul(7.1), seedV.mul(2.3).add(ageV.mul(0.018))))).r.toVar();
+          const fine = texture(noise, q.mul(0.85).add(vec2(seedV.mul(5.3), ageV.mul(-0.02)))).b.toVar();
+          const bump = lumps.sub(0.5).mul(1.2).add(fine.sub(0.5).mul(0.4)).toVar();
+          const e = ENHANCED.column;
+          const late = smoothstep(...e.lateFrom, ageV);
+          const edge = late.mul(e.lateEdge);
+          const { density, normal: nrm, shadow } = smokeLobes(p, seedV, angle, edge, fine, broad, bump, e);
+          const sun = dot(nrm, vec3(-0.5, 0.68, 0.53)).max(0);
+          const rim = pow(float(1).sub(nrm.z), 3).mul(0.3);
+          const volume = this.nodes.realLight
+            ? smokeVolume(p, ageV, tV, seedV, this.nodes, this.cameraRight, this.cameraUp)
+            : undefined;
+          const volumeWeight = this.nodes.realLight
+            ? this.nodes.smokeLook.smokeVolume.mul(this.nodes.realLight.enabled)
+            : float(0);
+          const legacyShade = float(e.ambient)
+            .add(sun.mul(e.sun))
+            .add(rim)
+            .mul(mix(e.underside, 1, smoothstep(...e.undersideRange, nrm.y)))
+            .mul(shadow);
+          const lit = this.nodes.sceneBrightness
+            .mul(volume ? mix(legacyShade, volume.shade, volumeWeight) : legacyShade)
+            .add(
+              smokeLight(
+                positionWorld.xz,
+                this.nodes,
+                positionWorld.y,
+                volume
+                  ? mix(
+                      this.cameraRight.mul(nrm.x).add(this.cameraUp.mul(nrm.y)).add(this.toCamera.mul(nrm.z)),
+                      this.toCamera,
+                      volumeWeight,
+                    )
+                  : this.cameraRight.mul(nrm.x).add(this.cameraUp.mul(nrm.y)).add(this.toCamera.mul(nrm.z)),
+              )
+                .div(this.nodes.referenceLevel)
+                .mul(0.4),
+            );
+          const base = mix(color(0x2a2622), color(0x8e8c87), clamp(tV.mul(1.5).add(seedV.mul(0.2)), 0, 1));
+          const glow = vec3(1.0, 0.42, 0.12)
+            .mul(heatV)
+            .mul(smoothstep(0.1, -0.8, nrm.y))
+            .mul(pow(clamp(float(1).sub(tV.mul(5)), 0, 1), 2))
+            .mul(1.4);
+          const alpha = (volume ? mix(density, volume.density, volumeWeight) : density)
+            .mul(smoothstep(0.0, 0.06, tV))
+            .mul(smoothstep(1.0, 0.4, tV))
+            .mul(0.62)
+            .mul(mix(1, e.lateOpacity, late))
+            .mul(tV.lessThan(1).select(float(1), float(0)))
+            .min(mix(1, e.maxLate, late));
+          out.assign(vec4(base.mul(lit).mul(alpha).add(glow.mul(alpha)), alpha));
+        };
+        const realOn = this.nodes.realLight
+          ? this.nodes.smokeLook.smokeReal.mul(this.nodes.realLight.enabled).greaterThan(0.5)
+          : null;
+        // Uniform branch: the legacy and round-7 graphs cost nothing while the real smoke draws, and vice versa.
+        if (realOn)
+          If(realOn, () => {
+            const e = ENHANCED.column;
+            const late = smoothstep(...e.lateFrom, ageV);
+            const r = realSmoke(p, groundV, tV, seedV, this.nodes, this.cameraRight, this.cameraUp, this.now, REAL_SMOKE.column);
+            const lit = this.nodes.sceneBrightness.mul(r.shade).add(
+              smokeLight(positionWorld.xz, this.nodes, positionWorld.y, this.toCamera)
+                .div(this.nodes.referenceLevel)
+                .mul(0.4),
+            );
+            const base = mix(color(0x2a2622), color(0x8e8c87), clamp(tV.mul(1.5).add(seedV.mul(0.2)), 0, 1));
+            const glow = vec3(1.0, 0.42, 0.12)
+              .mul(heatV)
+              .mul(smoothstep(0.2, -0.9, p.y).mul(float(0.5).add(r.thin)))
+              .mul(pow(clamp(float(1).sub(tV.mul(5)), 0, 1), 2))
+              .mul(1.4);
+            const alpha = r.density
+              .mul(smoothstep(0.0, 0.06, tV))
+              .mul(smoothstep(1.0, 0.4, tV))
+              .mul(0.62)
+              .mul(mix(1, e.lateOpacity, late))
+              .mul(tV.lessThan(1).select(float(1), float(0)))
+              .min(mix(1, e.maxLate, late));
+            out.assign(vec4(base.mul(lit).mul(alpha).add(glow.mul(alpha)), alpha));
+          }).Else(legacy);
+        else legacy();
+        return out;
       })();
     });
 

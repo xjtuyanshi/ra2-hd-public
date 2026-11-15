@@ -413,7 +413,7 @@ __hdBridge.light.look({ smokeWisp: 0.5, beamFlicker: 0.1 });
 
 Shared uniforms live on `hd.nodes.smokeLook` (round 7b defaults): smoke `smokeVolume=1`, `smokeWisp=0.75`,
 `smokeWarp=0.8`, `smokeStretch=0.35`, `smokeDetail=2`, `smokeEdge=0.22` (width of the density ramp: smaller is
-crisper wisps), `smokeRidge=0.6` (share of ridged noise: filaments); lasers `beamLight=1`, `beamCore=0.2` (core
+crisper wisps), `smokeRidge=0.6` (share of ridged noise: filaments), plus the round-8 controls below; lasers `beamLight=1`, `beamCore=0.2` (core
 radius share), `beamCoreGain=1.15` (core radiance; at the night bloom threshold so the core blooms), `beamGlow=2.4`
 (glow radius), `beamTail=0.5` (exponential tail share), `beamSpread=2` (laser quad width factor, so the tail
 reaches zero inside it), `beamFlicker=0.12`, `beamImpact=0.7` (hit-point bloom); sources `chronoPool=0`,
@@ -423,7 +423,27 @@ reaches zero inside it), `beamFlicker=0.12`, `beamImpact=0.7` (hit-point bloom);
 policies, and `look('cur')` restores all of them. Detail, glow, spread, core gain and impact accept 0..4; other
 controls accept 0..1. These controls have no visual effect without the opted-in, enabled physical path.
 
-Procedural smoke density uses the existing noise texture (four additional taps per puff: a domain-warped coarse
+Round 8 real smoke (`smokeReal=1`, default; `0` gives the round-7 profile below, and `look('cur')` the legacy lobes):
+every HD smoke pool (explosion billows, smoke columns, trail and soot puffs) and every neutral texel of original smoke
+cards samples one turbulence field anchored in the world's screen plane and advected by the flow (rise plus the
+shared wind). Overlapping puffs cut the same eddies, so a blast's puffs merge into one plume whose outline follows the
+field instead of each quad's circle; the original particles of one smoke system continue into each other the same
+way. Low octaves with a light rotated (curl-like) warp give rounded billows, a faster-rising small-eddy octave keeps
+the surface churning, and the field leans and stretches downwind with height (offsets linear in height, never a scale
+of the absolute map coordinate, which drew horizontal streaks). Density fades in over the first `smokeLift=0.6`
+world units above a billow's or column's ground so building bases stay visible, thins with age, and keeps a faint
+fringe (`smokeHaze=0.25`). A tap toward the light gives a soft self-shadow from the billow slope (`smokeShadow=2`;
+low octaves only: a fine-scale slope read as fur), never sphere normals or a rim. The young warm core glow follows the
+field's denser eddies (a round core read as a beige ball). Other controls: `smokeScale=1.6` (field frequency per world
+unit), `smokeCurl=0.8`, `smokeShear=0.3`, `smokeSoft=0.1` (edge width), `smokeCardWarp=1` (card art swirl, up to
+~4 engine px inside the frame). Round 8 takes five noise taps per fragment; the legacy/round-7 and round-8 graphs
+are exclusive uniform branches. Shared inputs (age, life share, seed, heat, ground, puff uv) are assigned before the
+branch: TSL caches a node where it is first built, and a first build inside one branch left the other reading an
+unassigned variable (`tests/realSmokeRound8.test.ts` guards this). Card coverage over the field's range stays within
+10% of the original crisp mask on average and never extends past the art's own coverage; colours stay the art's own
+grey (HD pools keep their ramps).
+
+Round-7 procedural smoke density uses the existing noise texture (four additional taps per puff: a domain-warped coarse
 octave, a ridged fine octave, a finer octave and an overhead tap for self-shadow), in a frame aligned with the puff's
 on-screen drift (rise plus the shared wind) and stretched along it with age, so edges pull into wisps downwind and
 the body thins as the erosion threshold rises. Card smoke takes two taps per eligible texel; card coverage and

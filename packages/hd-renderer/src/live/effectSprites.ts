@@ -648,7 +648,72 @@ function cardSmokeAlpha(
   );
 }
 
+/**
+ * Round-8 card smoke (smokeReal = 1): the ONE world-anchored turbulence field of effects.ts realSmoke, sampled in the
+ * card's screen plane. A smoke system's original particles (SGRYSMK1/LGRYSMK1 puffs at 50 % translucency) are
+ * separate cards; with a shared field the eddies continue from one puff into the next, so the stream reads as one
+ * rising plume instead of a string of grey balls. The art is resampled through the field's curl offset (inside the
+ * frame) and eroded where the field is thin; colour stays the texel's own grey times a soft self-shadow (mean ~1).
+ * Five noise reads.
+ */
+function cardRealSmoke(layer: EffectSpriteLayer, p: ShaderNode, anchor: ShaderNode) {
+  const nodes = layer.smokeNodes!;
+  const look = nodes.smokeLook;
+  const noise = waterTextures().noise;
+  const wind3 = vec3(nodes.smokeWind.x, 0, nodes.smokeWind.y);
+  const wind = vec2(wind3.dot(layer.cameraRight), wind3.dot(layer.cameraUp));
+  const flow = vec2(wind.x.mul(0.7), wind.y.mul(0.7).add(0.45));
+  const dir = flow.normalize();
+  const across = vec2(dir.y, dir.x.negate());
+  const ppu = float(PIXELS_PER_CELL_EDGE);
+  const s = vec2(
+    anchor.xyz.dot(layer.cameraRight).add(p.x.div(ppu)),
+    anchor.xyz.dot(layer.cameraUp).sub(p.y.div(ppu)),
+  );
+  const q = vec2(s.dot(across), s.dot(dir)).mul(look.smokeScale);
+  const speed = flow.length().mul(look.smokeScale);
+  const t0 = layer.now.mul(speed);
+  // Same octaves, warp and rates as effects.ts realSmoke (keep the two in step: HD and original smoke share eddies).
+  const low = (at: ShaderNode) => {
+    const big = texture(noise, at.mul(0.3).sub(vec2(0, t0.mul(0.2))));
+    const warp = vec2(big.g.sub(0.5), big.r.sub(0.5).negate()).mul(look.smokeCurl).mul(0.5);
+    const q1 = at.mul(0.55).add(warp).sub(vec2(0, t0.mul(0.3)));
+    const a = texture(noise, q1);
+    return { q1, warp, value: big.r.mul(0.4).add(a.r.mul(0.25)).add(a.g.mul(0.2)) };
+  };
+  const here = low(q);
+  const b = texture(noise, here.q1.mul(2.1).add(vec2(0.37, 0.11)).sub(vec2(0, t0.mul(0.45)))).toVar();
+  const field = here.value.add(b.g.mul(0.1)).add(b.b.mul(0.05)).toVar();
+  const toward = low(q.add(vec2(-0.09, 0.12).mul(look.smokeScale))).value;
+  const facing = here.value.sub(toward).mul(look.smokeShadow.mul(6));
+  // Card pixels: the art is pulled along the slow swirl by up to ~4 engine px (clamped to the frame by the caller).
+  const swirl = here.warp.add(vec2(b.g.sub(0.5), b.r.sub(0.5).negate()).mul(0.6));
+  const offset = vec2(swirl.x, swirl.y.negate()).mul(look.smokeCardWarp.mul(4));
+  const shade = mix(float(0.8), float(1.14), smoothstep(-1, 1, facing));
+  return { field, offset, shade };
+}
+/** CPU twin of the round-8 card coverage: soft art coverage eroded by the shared field (see cardRealSmoke). */
+export function realCardAlpha(coverage: number, field: number, look: LightLookValues): number {
+  const ss = (e0: number, e1: number, x: number) => {
+    const t = Math.max(0, Math.min(1, (x - e0) / (e1 - e0)));
+    return t * t * (3 - 2 * t);
+  };
+  const body = ss(0.12, 0.88, coverage);
+  const soft = Math.max(0.02, look.smokeSoft);
+  const erode = ss(0.36, 0.36 + soft * 2, field + (coverage - 0.5) * 0.25);
+  return Math.min(1, body * erode * REAL_CARD_COVER);
+}
+/** Mean-coverage compensation of realCardAlpha: the erosion removes ~10-15 % of a puff's body on average. */
+const REAL_CARD_COVER = 1.12;
+function realCardAlphaNode(coverage: ShaderNode, field: ShaderNode, nodes: AtmosphereNodes): ShaderNode {
+  const body = smoothstep(0.12, 0.88, coverage);
+  const soft = nodes.smokeLook.smokeSoft.max(0.02);
+  const erode = smoothstep(0.36, soft.mul(2).add(0.36), field.add(coverage.sub(0.5).mul(0.25)));
+  return body.mul(erode).mul(REAL_CARD_COVER).min(1);
+}
+
 class PageMesh {
+
   readonly mesh: InstancedQuad;
   /** Whether the current instances include translucent cards (the mesh then uses the display-space mix). */
   translucent = false;
@@ -827,7 +892,7 @@ class PageMesh {
           .add(t01.colour.mul(w01))
           .add(t11.colour.mul(w11))
           .div(max(coverage, 1e-4));
-        return { mask, art };
+        return { mask, art, coverage };
       };
       const original = sample(vec2(tx, ty));
       let mask = original.mask;
@@ -842,11 +907,22 @@ class PageMesh {
         .and(hi.greaterThan(0.7))
         .and(hi.sub(lo).greaterThan(hi.mul(0.2)));
       const fire: ShaderNode = warm.and(aStyle.z.greaterThan(0.5)).select(float(1), float(0));
+      let smokeShade: ShaderNode = float(1);
       if (layer.smokeNodes) {
         const nodes = layer.smokeNodes;
         const baseMask = mask;
-        mask = Fn(() => {
+        const realOn = nodes.smokeLook.smokeReal.mul(nodes.realLight!.enabled).greaterThan(0.5);
+        const smoke = Fn(() => {
           const a = baseMask.toVar();
+          const shade = float(1).toVar();
+          // Inputs of both branches are assigned before them (TSL caches a node where it is first built: a first
+          // build inside one branch leaves the other reading an unassigned variable).
+          const at0 = vec2(0).toVar();
+          at0.assign(vec2(px, py));
+          const anchor = vec3(0).toVar();
+          anchor.assign(aAnchor.xyz);
+          const opacity = float(0).toVar();
+          opacity.assign(aStyle.x);
           If(
             hi
               .sub(lo)
@@ -854,22 +930,31 @@ class PageMesh {
               .and(hi.lessThan(0.86))
               .and(fire.lessThan(0.01))
               .and(draw.equal(0))
-              .and(baseMask.greaterThan(0.001)),
+              .and(original.coverage.greaterThan(0.001)),
             () => {
-              const age = float(1).sub(aStyle.x);
-              const n = cardSmokeNoise(layer, vec2(px, py), aAnchor, age);
-              const at = clamp(vec2(tx, ty).add(n.offset), aRect.xy.add(0.5), aRect.xy.add(aRect.zw).sub(0.5));
-              const warped = sample(at);
-              a.assign(cardSmokeAlpha(baseMask, warped.mask, n.density, nodes, age));
+              If(realOn, () => {
+                const real = cardRealSmoke(layer, at0, anchor);
+                const at = clamp(vec2(tx, ty).add(real.offset), aRect.xy.add(0.5), aRect.xy.add(aRect.zw).sub(0.5));
+                a.assign(realCardAlphaNode(sample(at).coverage, real.field, nodes));
+                shade.assign(real.shade);
+              }).Else(() => {
+                const age = float(1).sub(opacity);
+                const n = cardSmokeNoise(layer, at0, anchor, age);
+                const at = clamp(vec2(tx, ty).add(n.offset), aRect.xy.add(0.5), aRect.xy.add(aRect.zw).sub(0.5));
+                const warped = sample(at);
+                a.assign(cardSmokeAlpha(baseMask, warped.mask, n.density, nodes, age));
+              });
             },
           );
-          return a;
+          return vec2(a, shade);
         })().toVar();
+        mask = smoke.x;
+        smokeShade = smoke.y;
       }
       // Native Top cloud art remains bright over black shroud; it does not inherit the event's scene illumination.
-      const lit: ShaderNode = art.mul(
-        pass === 'top' ? vec3(layer.displayScale) : mix(layer.light, vec3(FX_GLOW), fire),
-      );
+      const lit: ShaderNode = art
+        .mul(smokeShade)
+        .mul(pass === 'top' ? vec3(layer.displayScale) : mix(layer.light, vec3(FX_GLOW), fire));
       const isShadow = draw.greaterThan(1.5);
       const shadow = vec4(0, 0, 0, mask.mul(0.5).mul(aStyle.x));
       const a: ShaderNode = mask.mul(aStyle.x);
@@ -1096,20 +1181,42 @@ class HdPageMesh {
       const e = max(max(fire, glow), whiteHot);
       const smokeFactor = layer.smokeNodes
         ? Fn(() => {
+            const nodes = layer.smokeNodes!;
             const factor = float(1).toVar();
+            const shade = float(1).toVar();
+            // Inputs of both branches are assigned before them (see the indexed card material).
+            const at0 = vec2(0).toVar();
+            at0.assign(vec2(px, py));
+            const anchor = vec4(0).toVar();
+            anchor.assign(aAnchor);
             If(e.lessThan(0.01).and(chroma.lessThan(0.07)).and(draw.equal(0)).and(rgba.a.greaterThan(0.001)), () => {
-              const age = float(1).sub(aAnchor.w);
-              const n = cardSmokeNoise(layer, vec2(px, py), aAnchor, age);
-              const warped: ShaderNode = mix(
-                sample(aRect, aOffsets.xy, n.offset),
-                sample(aNextRect, aOffsets.zw, n.offset),
-                blend,
-              );
-              // Premultiplied RGB scales with coverage; straight grey is never regraded or resampled into fire.
-              factor.assign(cardSmokeAlpha(rgba.a, warped.a, n.density, layer.smokeNodes!, age).div(rgba.a.max(1e-5)));
+              If(nodes.smokeLook.smokeReal.mul(nodes.realLight!.enabled).greaterThan(0.5), () => {
+                // Round 8: the shared field (cardRealSmoke). Redrawn smoke is already soft, so its own coverage is
+                // eroded (no extra edge sharpening) and kept within REAL_CARD_COVER on average.
+                const real = cardRealSmoke(layer, at0, anchor);
+                const warped: ShaderNode = mix(
+                  sample(aRect, aOffsets.xy, real.offset),
+                  sample(aNextRect, aOffsets.zw, real.offset),
+                  blend,
+                );
+                const soft = nodes.smokeLook.smokeSoft.max(0.02);
+                const erode = smoothstep(0.36, soft.mul(2).add(0.36), real.field.add(warped.a.sub(0.5).mul(0.25)));
+                factor.assign(warped.a.mul(erode).mul(REAL_CARD_COVER).min(1).div(rgba.a.max(1e-5)));
+                shade.assign(real.shade);
+              }).Else(() => {
+                const age = float(1).sub(anchor.w);
+                const n = cardSmokeNoise(layer, at0, anchor, age);
+                const warped: ShaderNode = mix(
+                  sample(aRect, aOffsets.xy, n.offset),
+                  sample(aNextRect, aOffsets.zw, n.offset),
+                  blend,
+                );
+                // Premultiplied RGB scales with coverage; straight grey is never regraded or resampled into fire.
+                factor.assign(cardSmokeAlpha(rgba.a, warped.a, n.density, nodes, age).div(rgba.a.max(1e-5)));
+              });
             });
-            return factor;
-          })()
+            return vec2(factor, shade);
+          })().toVar()
         : undefined;
       // Flame grade: the redrawn fireballs (like the original's) spend their first frames as a pale yellow-white blob.
       // Re-map flame pixels through a temperature ramp with a gamma on their heat, so only the hottest texels stay
@@ -1140,7 +1247,7 @@ class HdPageMesh {
       // half-transparent fireball over grass mixes to an olive murk, and half-transparent smoke reads as a grey veil.
       const fade: ShaderNode = pow(aAnchor.w, mix(layer.hdSmokeFade, layer.hdFlameFade, e));
       return smokeFactor
-        ? vec4(lit.mul(fade).mul(smokeFactor), rgba.a.mul(fade).mul(smokeFactor))
+        ? vec4(lit.mul(fade).mul(smokeFactor.x).mul(smokeFactor.y), rgba.a.mul(fade).mul(smokeFactor.x))
         : vec4(lit.mul(fade), rgba.a.mul(fade));
     })();
     return material;
