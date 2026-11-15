@@ -122,6 +122,16 @@ describe('clear water optical policy', () => {
     expect(snow.murk).toBeGreaterThan(1);
     for (const theater of ['temperate', 'desert', 'urban']) expect(clearPalette(theater).murk).toBe(1);
   });
+  it('turns a night map\'s water navy at luma 1 and leaves day maps to the approved look', () => {
+    const [r, g, b] = CLEAR_WATER.nightTint;
+    expect(0.2126 * r + 0.7152 * g + 0.0722 * b).toBeCloseTo(1, 2);
+    // The original's moonlit lake (SOV07TMD) is navy: blue well above green, green about red.
+    expect(b / g).toBeGreaterThan(2.5);
+    expect(g / r).toBeLessThan(1.2);
+    // The navy share is (1 - dim) x gradeNavy: none on a normal day map (dim 1), full on SOV07TMD (dim about 0.24).
+    expect(Math.min(1, (1 - 0.24) * CLEAR_WATER.gradeNavy)).toBe(1);
+    expect(CLEAR_WATER.gradeNavyLevel).toBeLessThan(1);
+  });
   it('keeps A at its approved physical scale, scroll directions and comfort clock', () => {
     // Prototype A's 1-second change per unit of local contrast (A 3.67 / 3.55): 0.8 moved about 1.45x A, 0.5 about
     // 0.9x A in open water once the half-direction-free relief lowered the contrast.

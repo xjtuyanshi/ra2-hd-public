@@ -60,6 +60,8 @@ export const LUSH2_SCHEMA: readonly TuningField<keyof Lush2Values>[] = [
   { key: 'snowBlue', label: '雪地蓝 [snowBlue]', min: 0, max: 1, step: 0.01 },
   { key: 'snowLift', label: '雪地提亮 [snowLift]', min: 1, max: 2, step: 0.01 },
 ];
+/** Cloud shade depth of every lit theatre: at least the deep preset's darkening, which lush2's clouds replace. */
+export const LUSH2_SHADE_DEPTH = 0.34;
 const temperate: Readonly<Lush2Values> = Object.freeze({
   strength: 1,
   grassLight: 0.9,
@@ -91,7 +93,9 @@ const temperate: Readonly<Lush2Values> = Object.freeze({
   shoreKeep: 1,
   treeBlend: 1,
   snowBlue: 1,
-  shadeDepth: 0.3,
+  // Owner's deep cloud preset (darkening 0.33) is the floor: lush2's patches replace it while lush2 is on. Live XMP27T8
+  // (same frame and cloud clock, linear luma on/off): core land shade 0.56 against deep-only 0.55; 0.3 gave 0.50.
+  shadeDepth: LUSH2_SHADE_DEPTH,
 });
 export const LUSH2_DEFAULTS: Readonly<Record<Theater, Readonly<Lush2Values>>> = Object.freeze({
   temperate,
@@ -102,7 +106,6 @@ export const LUSH2_DEFAULTS: Readonly<Record<Theater, Readonly<Lush2Values>>> = 
     grassChroma: 1.04,
     shadeChroma: 1.25,
     cover: 0.4,
-    shadeDepth: 0.26,
   }),
   newurban: Object.freeze({
     ...temperate,
@@ -111,7 +114,6 @@ export const LUSH2_DEFAULTS: Readonly<Record<Theater, Readonly<Lush2Values>>> = 
     grassChroma: 1.04,
     shadeChroma: 1.25,
     cover: 0.4,
-    shadeDepth: 0.26,
   }),
   snow: Object.freeze({
     ...temperate,
@@ -128,7 +130,6 @@ export const LUSH2_DEFAULTS: Readonly<Record<Theater, Readonly<Lush2Values>>> = 
     shadeChroma: 1,
     gold: 0,
     cover: 0.28,
-    shadeDepth: 0.12,
   }),
   desert: Object.freeze({
     ...temperate,
@@ -138,7 +139,6 @@ export const LUSH2_DEFAULTS: Readonly<Record<Theater, Readonly<Lush2Values>>> = 
     shadeChroma: 1.25,
     gold: 0.1,
     cover: 0.35,
-    shadeDepth: 0.24,
   }),
   lunar: Object.freeze({
     ...temperate,
@@ -263,6 +263,11 @@ export function lush2Mapping(
       debugCloud: false,
       shape: {
         ...ALIVE_CLOUD_SHAPES.lush,
+        // The owner's cloud preset (deep) also shades the water: body/seabed 0.85 and sky reflection 0.95 of the land
+        // shadow. lush2's patches replace that preset while it is on, so they keep its water shares; the lush shape's
+        // 0.2 / 0.45 left the water almost unshaded under a deep land shadow.
+        waterBodyWeight: ALIVE_CLOUD_SHAPES.deep.waterBodyWeight,
+        waterSkyWeight: ALIVE_CLOUD_SHAPES.deep.waterSkyWeight,
         scale: values.patchScale,
         largeScale: values.patchScale * 2,
         edgeLow: cloudCoverThreshold(values.cover) - penumbraSpan(values.softness) / values.patchScale / 2,

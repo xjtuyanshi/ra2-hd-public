@@ -515,16 +515,20 @@ describe('lush2 runtime policy', () => {
     expect([field('patchScale').min, field('patchScale').max]).toEqual([6, 24]);
     expect([field('shadeDepth').min, field('shadeDepth').max]).toEqual([0, 0.5]);
     for (const [theater, depth] of [
-      ['temperate', 0.3],
-      ['desert', 0.24],
-      ['snow', 0.12],
-      ['urban', 0.26],
+      ['temperate', 0.34],
+      ['desert', 0.34],
+      ['snow', 0.34],
+      ['urban', 0.34],
     ] as const) {
       expect(lush2Defaults(theater).shadeDepth).toBe(depth);
       expect(lush2Defaults(theater).patchScale).toBe(12);
       expect(lush2Defaults(theater).contact).toBe(1);
       expect(lush2Defaults(theater).drift).toBe(0.6);
       const mapped = lush2Mapping(lush2Defaults(theater), theater);
+      // lush2's clouds replace the owner's deep preset: at least its depth, and its shares on the water.
+      expect(mapped.alive.shape!.darkening).toBeGreaterThanOrEqual(ALIVE_CLOUD_SHAPES.deep.darkening);
+      expect(mapped.alive.shape!.waterBodyWeight).toBe(ALIVE_CLOUD_SHAPES.deep.waterBodyWeight);
+      expect(mapped.alive.shape!.waterSkyWeight).toBe(ALIVE_CLOUD_SHAPES.deep.waterSkyWeight);
       const [dx, dz] = aliveDrift(48, 0.6, mapped.alive.speed);
       expect(Math.hypot(dx, dz)).toBeCloseTo(28.8, 12);
     }

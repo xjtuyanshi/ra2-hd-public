@@ -1426,9 +1426,17 @@ function createMaterials(
       const towardsWater: ShaderNode = vec2(gradU, gradV).normalize();
       // Step about 0.7 cells inland, measured in composite pixels (one cell spans roughly 42 engine pixels).
       const reach = vec2((0.7 * 42 * map.ref.scale) / map.ref.width, (0.35 * 42 * map.ref.scale) / map.ref.height);
-      const inland: ShaderNode = srgbScale(
-        texture(colourMap, uv.sub(towardsWater.mul(reach).mul(smoothstep(-0.7, 0.0, shore)))).rgb,
-        grade,
+      const inlandUv: ShaderNode = uv.sub(towardsWater.mul(reach).mul(smoothstep(-0.7, 0.0, shore)));
+      const inland: ShaderNode = srgbScale(texture(colourMap, inlandUv).rgb, grade);
+      // An islet or rock narrower than the step has no inland: the tap crosses it into the water on the far side, and
+      // copying that painted water over the whole rock drew it as a dark, almost invisible blot (SOV07TMD's lake rocks
+      // at night). Only ground whose tap is still on land, a few tenths of a cell from the water, is replaced.
+      const inlandOnLand: ShaderNode = smoothstep(
+        -0.15,
+        -0.4,
+        texture(map.shore, inlandUv)
+          .r.mul(SHORE_MAX - SHORE_MIN)
+          .add(SHORE_MIN),
       );
       // On maps staged as dusk or night (water.artTone) the water and its shore stay as the map paints them: the
       // look's daylight body read as glowing blue where the original is near-black, and its shallows, foam and wet
@@ -1438,7 +1446,7 @@ function createMaterials(
       // Nor at a hard shore: the rock at the water's edge is the map's own art, not a beach to dress.
       // Clear shares this beach band (its painted grey-blue outline read as a dark ring) with lighter wet sand.
       const ownShore: ShaderNode = waterline ? float(1).sub(tone).mul(waterline.beach) : float(1).sub(tone);
-      const band = smoothstep(-0.55, -0.12, shore).mul(ownShore);
+      const band = smoothstep(-0.55, -0.12, shore).mul(ownShore).mul(inlandOnLand);
       const sand = wetShore(shore).mul(ownShore);
       shoreWetMask = lushShoreMask(shore, nodes).mul(ownShore);
       landMask = landMask.mul(float(1).sub(max(band, sand)));

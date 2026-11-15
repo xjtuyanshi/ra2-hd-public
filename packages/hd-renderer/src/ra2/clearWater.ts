@@ -76,13 +76,18 @@ export const CLEAR_WATER = {
   /** How far (1/m) the bed's own light and dark (sand ripples, rocks) stays visible through the water. */
   bedTexture: 0.25,
   /**
-   * Night: hue shift of the water body under the blue moonlight (luma 1, so it only keeps the water a dark teal rather
-   * than navy) and the body's brightness relative to the ground's own night darkening. The body is lit by the same
-   * scene light as the ground, so at 1 the water darkens with the night exactly as the land does; the earlier fixed
-   * x3.6 lift (5.0, 3.4, 1.9) kept the night sea about as bright as by day and read as a glowing, fluorescent sea.
+   * Night: the water body under the moon takes this hue (luma 1, linear Rec.709) at its own brightness times
+   * nightLevel. The hue is the original's moonlit lake (SOV07TMD, sRGB about 9, 10, 23: navy, not teal); the earlier
+   * multiplier (1.38, 0.94, 0.52) kept the teal palette's hue and read as a dark teal-green lake. The body is lit by the
+   * same scene light as the ground; the earlier fixed x3.6 lift kept the night sea about as bright as by day.
    */
-  nightTint: [1.38, 0.94, 0.52],
-  nightLevel: 1,
+  nightTint: [0.8, 0.9, 2.55],
+  nightLevel: 0.8,
+  /**
+   * Night moon sheen (linear, added as reflected light on open water): a faint cool sky glow that follows the waves'
+   * relief, so a dark night lake still reads as moving water rather than a flat navy fill.
+   */
+  moonSheen: [0.0011, 0.0016, 0.0042],
   /**
    * Night share that map profiles report by day (lighting.ts: 1 - (sun intensity 1.44 - 0.6) / 0.9, about 0.067) and
    * the body lift (luma 3.6) the approved day look was tuned with at that share.
@@ -105,6 +110,10 @@ export const CLEAR_WATER = {
    * 0.24 / 0.62 = 0.39, ^ 1.5 = 0.24) while a normal day map stays at 1.
    */
   gradePower: 1.5,
+  /** How fast a dark map's water takes the navy night hue: share = (1 - dim) x gradeNavy (SOV07TMD dim 0.24: full). */
+  gradeNavy: 1.35,
+  /** Brightness of that navy relative to the graded teal's luma (the original's night lake is about L* 4). */
+  gradeNavyLevel: 0.75,
   motionTarget: 1.5,
   anisotropyTarget: 0.4,
   highlightTarget: 0.04,
@@ -282,8 +291,18 @@ export function clearWaterLook(
   const gradeHue: ShaderNode = inputs.grade ? inputs.grade.div(gradeLuma) : vec3(1);
   const waterGrade: ShaderNode = mix(vec3(1), gradeHue, float(1).sub(dim).mul(CLEAR_WATER.gradeHue)).mul(dim);
   // Linear colours scaled like the art (srgbScale): the ground's tile art is darkened in the palette's sRGB scale.
-  const graded = (c: ShaderNode): ShaderNode =>
-    sRGBTransferEOTF((sRGBTransferOETF(c) as ShaderNode).mul(waterGrade)) as ShaderNode;
+  // A map lit as night by its own [Lighting] (dim well below 1) also takes the original's moonlit navy hue
+  // (CLEAR_WATER.nightTint) at the graded brightness: the teal palette under the grade's half hue still read as a dark
+  // teal-green lake where the original is navy. Day maps (dim 1) are unchanged.
+  const navyShare = float(1).sub(dim).mul(CLEAR_WATER.gradeNavy).min(1);
+  const graded = (c: ShaderNode): ShaderNode => {
+    const scaled = sRGBTransferEOTF((sRGBTransferOETF(c) as ShaderNode).mul(waterGrade)) as ShaderNode;
+    return mix(
+      scaled,
+      vec3(dot(scaled, vec3(0.2126, 0.7152, 0.0722))).mul(vec3(...CLEAR_WATER.nightTint).mul(CLEAR_WATER.gradeNavyLevel)),
+      navyShare,
+    );
+  };
   const hard: ShaderNode = inputs.calm ?? float(0);
   // Quays, seawalls and pavement: no beach there (no turquoise shallows, no foam), deep water up to the wall.
   const quay: ShaderNode = (inputs.quay ?? float(0)).mul(float(1).sub(hard));
@@ -497,13 +516,13 @@ export function clearWaterLook(
       .add(quay.mul(0.03))
       .sub(quay.mul(smoothstep(0.07, 0.0, edge)).mul(0.3)),
   );
-  // Night: the moonlight is blue; a greener body keeps the water a dark teal, never black navy. Its brightness follows
+  // Night: the moonlight is blue; the body takes the original's moonlit navy hue at its own brightness, which follows
   // the scene light like the ground's (CLEAR_WATER.nightTint, nightLevel). Day map profiles already report a small
   // night share (CLEAR_WATER.dayNight), at which the approved day look includes the earlier lift; only the share
   // beyond it takes the new night body, so the day look is unchanged.
   const luma = (c: ShaderNode): ShaderNode => vec3(dot(c, vec3(0.2126, 0.7152, 0.0722)));
   const dayLift = body.mul(vec3(...CLEAR_WATER.dayLift));
-  const nightBody = body.mul(vec3(...CLEAR_WATER.nightTint).mul(CLEAR_WATER.nightLevel));
+  const nightBody = luma(body).mul(vec3(...CLEAR_WATER.nightTint).mul(CLEAR_WATER.nightLevel));
   body = mix(body, mix(dayLift, luma(dayLift), 0.1), night.min(CLEAR_WATER.dayNight));
   body = mix(
     body,
@@ -642,8 +661,18 @@ export function clearWaterLook(
     .mul(float(1).sub(night.mul(0.5)));
   const objectShare = objectMirror.mul(open);
   body = mix(body.mul(float(1).sub(strength.mul(open)).sub(objectShare)), color(0xe8eeec), foam);
+  // Moon sheen: only the night share beyond a day map's (CLEAR_WATER.dayNight), so day maps are unchanged; brighter on
+  // wave faces turned to the raised night relief light, so the sheen moves with the waves.
+  const moonShare = night
+    .sub(CLEAR_WATER.dayNight)
+    .max(0)
+    .div(1 - CLEAR_WATER.dayNight);
+  const moonSheen = vec3(...CLEAR_WATER.moonSheen)
+    .mul(mix(float(0.35), float(1.65), smoothstep(0.75, 1.25, lit)))
+    .mul(moonShare);
   const emission = mirror
     .mul(strength)
+    .add(nodes.alive.shadeWith(moonSheen, nodes.alive.waterSky))
     .add(nodes.alive.shadeWith(sparkle, 1))
     .add(lights)
     .mul(open)
