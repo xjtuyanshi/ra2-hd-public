@@ -2119,3 +2119,24 @@ Read `live.hd.stats().gpuTimestampMs` (`__hdBridge.live` in-game or `__fx.live` 
 adapters report null. Samples include every render pass and may reflect shared-machine contention; compare
 same-scene windows and report presentation rate and logic FPS separately. The deterministic bench clock makes
 its CPU `frameMs` zero, so those values are not runtime performance measurements.
+
+## Protected resource overlays
+
+RA2 resource overlays retain their authored coverage when sprite integration is enabled. Resource instances use
+surface category 5 in the existing packed instance data. Live library overlays and map-cell fallbacks publish the
+same category. Optional object softening, contrast, clarity suppression, sharpening suppression and feathering
+exclude that category, including the mask's dilation band. The generic filter takes the category from its caller;
+it does not recognise resource filenames or classify artwork by colour.
+
+Modern cloud scenes retain a separate reference analytic field for resource art, initialised from the view's
+original `alive` options. Lush tuning changes the scene field only. Resource coverage is published in the existing
+physical-depth metadata attachment even for ground decals; hardware depth writes stay unchanged. The outline pass
+maps protected resource codes back to the ground code, preserving their previous outline policy. Default worlds
+without sprite integration, modern clouds or explicit surface diagnostics retain their former shader path.
+
+Older final-tone experiments resolve protected pixels through an additional reference display-filter branch:
+excluding the centre alone cannot stop changed neighbour gathers from altering an edge. This branch owns extra
+post targets and needs separate GPU timing. Lush2 and sprite integration do not allocate those reference targets.
+
+Synthetic coverage and shader tests are asset-free. Exact rendered resource pixels, foreground occlusion and
+neighbouring post-filter footprints still require same-frame GPU comparisons against the default look.

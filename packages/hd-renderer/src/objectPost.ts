@@ -11,6 +11,7 @@ import {
   ivec2,
   max,
   mix,
+  mod,
   textureSize,
   uv,
   vec3,
@@ -25,7 +26,7 @@ const LUMA = [0.2126, 0.7152, 0.0722] as const;
 const CODE_EPSILON = 0.5 / 256;
 
 /** Physical-depth codes are discrete data. Never interpolate them, or gather colour across a code boundary. */
-function footprint(codes: ShaderNode) {
+function footprint(codes: ShaderNode, protectedCategory = 0) {
   const size: ShaderNode = (textureSize(codes) as ShaderNode).xy;
   const point: ShaderNode = floor(uv().mul(size));
   const p: ShaderNode = ivec2(int(point.x), int(point.y));
@@ -33,21 +34,23 @@ function footprint(codes: ShaderNode) {
   const code = (q: ShaderNode): ShaderNode => codes.load(at(q)).yz;
   const same = (a: ShaderNode, b: ShaderNode): ShaderNode =>
     max(abs(a.x.sub(b.x)), abs(a.y.sub(b.y))).lessThan(CODE_EPSILON);
-  const object = (c: ShaderNode): ShaderNode => max(c.x, c.y).greaterThan(CODE_EPSILON);
-  return { p, at, code, same, object };
+  const protectedCode = (c: ShaderNode): ShaderNode =>
+    protectedCategory ? mod(floor(c.y.mul(256).add(0.5)), 8).equal(protectedCategory) : float(0).greaterThan(0);
+  const object = (c: ShaderNode): ShaderNode => max(c.x, c.y).greaterThan(CODE_EPSILON).and(protectedCode(c).not());
+  return { p, at, code, same, object, protectedCode };
 }
 
 /** One-device-pixel dilation with a feathered outer ring: centre 1, axial neighbours 1/2, diagonals 1/4. */
-export function objectPostMask(codes: ShaderNode): ShaderNode {
+export function objectPostMask(codes: ShaderNode, protectedCategory = 0): ShaderNode {
   return Fn(() => {
-    const { p, code, object } = footprint(codes);
+    const { p, code, object, protectedCode } = footprint(codes, protectedCategory);
     const mask: ShaderNode = float(object(code(p))).toVar('objectPostMask');
     for (let y = -1; y <= 1; y++)
       for (let x = -1; x <= 1; x++) {
         if (!x && !y) continue;
         mask.assign(max(mask, float(object(code(p.add(ivec2(x, y))))).mul(x && y ? 0.25 : 0.5)));
       }
-    return mask;
+    return protectedCode(code(p)).select(float(0), mask);
   })();
 }
 
@@ -60,7 +63,7 @@ export function objectSurfaceFilter(
 ): ShaderNode {
   const t = group.uniforms;
   return Fn(() => {
-    const { p, at, code, same, object } = footprint(codes);
+    const { p, at, code, same, object } = footprint(codes, group.protectedCategory);
     const centre: ShaderNode = picture.load(at(p)).toVar();
     const result: ShaderNode = centre.toVar();
     const c: ShaderNode = code(p).toVar();
@@ -105,47 +108,53 @@ export function objectOutlineFeather(
 ): ShaderNode {
   const t = group.uniforms;
   return Fn(() => {
-    const f = footprint(codes);
+    const f = footprint(codes, group.protectedCategory);
     const { at, code, same } = f;
     const p: ShaderNode = pixel ?? f.p;
     const centre: ShaderNode = picture.load(at(p)).toVar();
     const result: ShaderNode = centre.toVar();
-    If(t.on.greaterThan(0).and(t.outlineFeather.greaterThan(0)), () => {
-      const c: ShaderNode = code(p).toVar();
-      const taps: { q: ShaderNode; w: ShaderNode }[] = [];
-      const different: ShaderNode = float(0).toVar();
-      const norm: ShaderNode = float(0).toVar();
-      const inverseSigma2: ShaderNode = float(-0.5).div(t.outlineFeather.mul(0.6).max(0.5).pow(2)).toVar();
-      const weights = new Map<number, ShaderNode>();
-      for (let y = -3; y <= 3; y++)
-        for (let x = -3; x <= 3; x++) {
-          const d2 = x * x + y * y;
-          if (d2 > 9) continue;
-          const q: ShaderNode = p.add(ivec2(x, y));
-          let w = weights.get(d2);
-          if (!w) {
-            w = exp(inverseSigma2.mul(d2))
-              .mul(t.outlineFeather.add(1 - Math.sqrt(d2)).clamp())
-              .toVar();
-            weights.set(d2, w);
+    If(
+      t.on
+        .greaterThan(0)
+        .and(t.outlineFeather.greaterThan(0))
+        .and(f.protectedCode(code(p)).not()),
+      () => {
+        const c: ShaderNode = code(p).toVar();
+        const taps: { q: ShaderNode; w: ShaderNode }[] = [];
+        const different: ShaderNode = float(0).toVar();
+        const norm: ShaderNode = float(0).toVar();
+        const inverseSigma2: ShaderNode = float(-0.5).div(t.outlineFeather.mul(0.6).max(0.5).pow(2)).toVar();
+        const weights = new Map<number, ShaderNode>();
+        for (let y = -3; y <= 3; y++)
+          for (let x = -3; x <= 3; x++) {
+            const d2 = x * x + y * y;
+            if (d2 > 9) continue;
+            const q: ShaderNode = p.add(ivec2(x, y));
+            let w = weights.get(d2);
+            if (!w) {
+              w = exp(inverseSigma2.mul(d2))
+                .mul(t.outlineFeather.add(1 - Math.sqrt(d2)).clamp())
+                .toVar();
+              weights.set(d2, w);
+            }
+            norm.addAssign(w);
+            taps.push({ q, w });
+            different.assign(
+              max(
+                different,
+                float(same(c, code(q)))
+                  .oneMinus()
+                  .mul(w.greaterThan(0)),
+              ),
+            );
           }
-          norm.addAssign(w);
-          taps.push({ q, w });
-          different.assign(
-            max(
-              different,
-              float(same(c, code(q)))
-                .oneMinus()
-                .mul(w.greaterThan(0)),
-            ),
-          );
-        }
-      If(different.greaterThan(0), () => {
-        const sum: ShaderNode = vec3(0).toVar();
-        for (const { q, w } of taps) sum.addAssign(picture.load(at(q)).rgb.mul(w));
-        result.assign(vec4(mix(centre.rgb, sum.div(norm), t.on.mul(t.outlineFeather.min(1))), centre.a));
-      });
-    });
+        If(different.greaterThan(0), () => {
+          const sum: ShaderNode = vec3(0).toVar();
+          for (const { q, w } of taps) sum.addAssign(picture.load(at(q)).rgb.mul(w));
+          result.assign(vec4(mix(centre.rgb, sum.div(norm), t.on.mul(t.outlineFeather.min(1))), centre.a));
+        });
+      },
+    );
     return result;
   })();
 }
@@ -159,6 +168,7 @@ export function objectPostCPU(
   y: number,
   t: { on: number; objSoft: number; objContrast: number; outlineFeather: number },
   pixelScale = 1,
+  protectedCode = 0,
 ) {
   const height = pixels.length / width;
   const at = (dx: number, dy: number) =>
@@ -166,10 +176,11 @@ export function objectPostCPU(
   const k = at(x, y),
     c = codes[k]!,
     centre = pixels[k]!;
-  let mask = c ? 1 : 0;
+  const eligible = (value: number) => value !== 0 && (!protectedCode || value !== protectedCode);
+  let mask = eligible(c) ? 1 : 0;
   for (let dy = -1; dy <= 1; dy++)
     for (let dx = -1; dx <= 1; dx++)
-      if ((dx || dy) && codes[at(x + dx, y + dy)]) mask = Math.max(mask, dx && dy ? 0.25 : 0.5);
+      if ((dx || dy) && eligible(codes[at(x + dx, y + dy)]!)) mask = Math.max(mask, dx && dy ? 0.25 : 0.5);
   const gather = (radius: number, spacing: number, sigma: number) => {
     const sum = [0, 0, 0];
     let norm = 0;
@@ -211,6 +222,7 @@ export function objectPostCPU(
       }
     if (different) feather = centre.map((v, i) => v + (sum[i]! / norm - v) * t.on * Math.min(t.outlineFeather, 1));
   }
+  if (protectedCode && c === protectedCode) return { mask: 0, surface: centre, feather: centre };
   return { mask, surface, feather };
 }
 
@@ -231,7 +243,9 @@ export class ObjectMaskedSharpen extends SharpenNode {
     material.fragmentNode = mix(
       material.fragmentNode as ShaderNode,
       this.textureNode,
-      objectPostMask(this.codes).mul(this.group.uniforms.on).mul(this.group.uniforms.objSharp),
+      objectPostMask(this.codes, this.group.protectedCategory)
+        .mul(this.group.uniforms.on)
+        .mul(this.group.uniforms.objSharp),
     );
     return output;
   }

@@ -1,3 +1,4 @@
+import { needsSurfaceClasses } from '../../../../packages/hd-renderer/src/ra2/lookFlags';
 import { setSessionShortcutCode, trackGameChatEntry } from './gameInput';
 import { createChatEntryGuess } from './chatEntryGuess';
 import { RA2_CHAT_ENTRY_POLICY } from '../../../games/ra2/chatEntryPolicy';
@@ -1459,7 +1460,7 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
             ? { crystalSparkle: Number(params.get('hd-sparkle')) }
             : {}),
           spriteIntegration: params.get('hd-sprite') === '1',
-          surfaceClasses: params.get('hd-mask') === '1',
+          surfaceClasses: needsSurfaceClasses(params),
           trackTimestamp: import.meta.env.DEV && params.get('hd-gpu') === '1',
           modernClouds: params.has('hd-tone') || params.get('hd-blend') === '1',
           ...(params.get('hd-vlook') === 'remaster' || (import.meta.env.DEV && params.get('hd-veh') === '1')

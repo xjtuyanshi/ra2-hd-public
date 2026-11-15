@@ -1,3 +1,4 @@
+import { LegacyLivingWorldNodes } from './livingWorldLegacy';
 import { CloudToneUniforms } from './cloudTone';
 import { GroundToneUniforms } from './groundTone';
 import {
@@ -35,6 +36,8 @@ import { emptyHeightGrid, frontMaxTexture } from './groundRay';
 export class AtmosphereNodes extends SceneLightingUniforms {
   /** Compile diagnostic category packing only for explicitly opted-in worlds. */
   surfaceClasses = false;
+  /** Resource art follows the Build 13 cloud field independently of experimental scene controls. */
+  readonly resourceClouds = new LegacyLivingWorldNodes();
   private disposed = false;
   private readonly resources = new Set<{ dispose(): void }>();
   /** Materials and lookup textures created for this context share its lifetime. */
@@ -98,6 +101,11 @@ export class AtmosphereNodes extends SceneLightingUniforms {
 
   constructor(modernClouds = true) {
     super(modernClouds);
+    // Explicit TSL names are binding identities: the reference field must not alias the experimental field.
+    for (const [key, value] of Object.entries(this.resourceClouds)) {
+      if (value && typeof value === 'object' && 'isUniformNode' in value)
+        (value as { setName(name: string): unknown }).setName(`referenceCloud_${key}`);
+    }
     this.black.needsUpdate = true;
     this.noSurface.needsUpdate = true;
   }

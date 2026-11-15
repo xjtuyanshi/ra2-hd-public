@@ -1,3 +1,4 @@
+import { spriteIntegrationFor } from '../spriteIntegration';
 import { configureSpriteIntegration } from './spriteIntegrationTuning';
 import { DataTexture, LinearFilter, Object3D, RGFormat, UnsignedByteType, Vector3 } from 'three/webgpu';
 import { SURFACE, surfaceFromLandType } from '../../../ra2-assets/src/lights';
@@ -124,8 +125,10 @@ export async function loadRa2World(
   } & Ra2CacheOptions = {},
 ): Promise<HdWorld> {
   const nodes = options.nodes ?? new AtmosphereNodes(options.modernClouds === true);
-  nodes.surfaceClasses = options.surfaceClasses ?? false;
+  nodes.surfaceClasses =
+    options.surfaceClasses === true || options.spriteIntegration === true || options.modernClouds === true;
   configureSpriteIntegration(nodes, options.spriteIntegration === true);
+  spriteIntegrationFor(nodes).protectedCategory = 5;
   const voxelLook = options.voxelLook ?? 'engine';
   const smoothVoxel = smoothVoxelOptions(options.smoothVoxel);
   const projections = options.voxelProjection ? voxelProjectionLibrary(options.voxelProjection, nodes) : undefined;

@@ -13,6 +13,7 @@ export async function createNativeCursor(
   screen: HTMLCanvasElement,
   base = '/hd-cache/_ui/cursor',
   onDraw?: () => void,
+  refine?: (pixels: ImageData, frame: number) => ImageData | null,
 ) {
   const response = await fetch(`${base}/cursor.json`);
   if (!response.ok) return null;
@@ -68,6 +69,8 @@ export async function createNativeCursor(
     canvas.remove();
     return null;
   }
+  let refinementEnabled = !!refine;
+  const refined = new Map<number, ImageData | null>();
   let frame: VmFrame | null = null;
   let inside = false;
   let clientX = 0,
@@ -98,8 +101,21 @@ export async function createNativeCursor(
       canvas.width = width;
       canvas.height = height;
       ctx.imageSmoothingEnabled = false;
-      if (rect) ctx.drawImage(bitmap, rect.x, rect.y, width, height, 0, 0, width, height);
-      else {
+      canvas.style.imageRendering = scale > 1 ? 'auto' : 'pixelated';
+      if (rect) {
+        ctx.drawImage(bitmap, rect.x, rect.y, width, height, 0, 0, width, height);
+        if (refine && refinementEnabled && pointer) {
+          if (!refined.has(pointer.frame))
+            refined.set(pointer.frame, refine(ctx.getImageData(0, 0, width, height), pointer.frame));
+          const art = refined.get(pointer.frame);
+          if (art) {
+            canvas.width = art.width;
+            canvas.height = art.height;
+            ctx.putImageData(art, 0, 0);
+            canvas.style.imageRendering = 'auto';
+          }
+        }
+      } else {
         const pixels = ctx.createImageData(width, height);
         pixels.data.set(system!.rgba);
         ctx.putImageData(pixels, 0, 0);
@@ -173,6 +189,12 @@ export async function createNativeCursor(
   window.addEventListener('scroll', layoutChanged, true);
   document.addEventListener('fullscreenchange', layoutChanged);
   return {
+    /** Development A/B changes only presentation, retaining the last native frame and hotspot. */
+    setRefinement(enabled: boolean) {
+      refinementEnabled = !!refine && enabled;
+      lastArt = '';
+      render();
+    },
     position(x: number, y: number, visible: boolean) {
       if (document.pointerLockElement !== screen) return;
       // Start can lock before the first picture arrives. Keep logical position
@@ -200,6 +222,7 @@ export async function createNativeCursor(
       if (oldCursor) screen.style.setProperty('cursor', oldCursor, oldPriority);
       else screen.style.removeProperty('cursor');
       frame = null;
+      refined.clear();
       bitmap.close();
       canvas.remove();
     },

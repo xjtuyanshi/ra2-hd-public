@@ -1,3 +1,4 @@
+import { mod, floor } from 'three/tsl';
 import { surfaceCategoryDisplay } from './surfaceDebug';
 import { objectPostMask, objectSurfaceFilter, objectOutlineFeather, ObjectMaskedSharpen } from './objectPost';
 import { spriteIntegrationFor } from './spriteIntegration';
@@ -1304,11 +1305,19 @@ export class HdRenderer {
     if (this.painterDepthEnabled || overlay || unlit) {
       const outputs: Record<string, ShaderNode> = { output: materialOutput };
       if (this.painterDepthEnabled) {
-        // Physical-depth alpha follows depth writes, independently of art coverage; overlays never write depth.
+        // Physical-depth alpha follows depth writes; opted-in protected decals also publish surface metadata.
         // Green and blue carry the silhouette code of the surface that wrote the depth (silhouette.ts).
-        outputs.physicalDepth = Fn(([], builder: NodeBuilder) =>
-          vec4(float(1).sub(physicalDepth), silhouetteOf(builder.material), builder.material.depthWrite ? 1 : 0),
-        )();
+        outputs.physicalDepth = Fn(([], builder: NodeBuilder) => {
+          const code = silhouetteOf(builder.material);
+          // Resource decals publish their protection category without changing the hardware depth buffer.
+          const coverage =
+            this.nodes.surfaceClasses && this.spriteIntegration.protectedCategory > 0
+              ? mod(floor(code.y.mul(256).add(0.5)), 8)
+                  .equal(this.spriteIntegration.protectedCategory)
+                  .select(float(1), float(builder.material.depthWrite ? 1 : 0))
+              : float(builder.material.depthWrite ? 1 : 0);
+          return vec4(float(1).sub(physicalDepth), code, coverage);
+        })();
       }
       if (overlay) outputs.emissive = vec4(0, 0, 0, materialOutput.a);
       if (unlit) outputs.unlit = vec4(0, 0, 0, materialOutput.a);
@@ -1424,9 +1433,16 @@ export class HdRenderer {
       return emission ? linear.add(emission) : linear;
     };
     let output: ShaderNode;
+    let referenceOutput: ShaderNode | null = null;
     let toneLook: ShaderNode | null = null;
     const toneCode: ShaderNode | null =
       this.settings.tone && this.painterDepthEnabled ? scenePass.getTextureNode('physicalDepth').yz.toVar() : null;
+    const protectedPixel: ShaderNode | null =
+      this.nodes.surfaceClasses && this.painterDepthEnabled && this.spriteIntegration.protectedCategory > 0
+        ? mod(floor(scenePass.getTextureNode('physicalDepth').z.mul(256).add(0.5)), 8).equal(
+            this.spriteIntegration.protectedCategory,
+          )
+        : null;
     if (this.settings.tone) {
       const linear: ShaderNode =
         toneMapper === 'faithful' ? mixed : toneMapping(TONE_MAPPERS[toneMapper], float(1), vec4(composite, 1)).rgb;
@@ -1450,8 +1466,10 @@ export class HdRenderer {
             ? mix(keyFaithful, keyNeutral, this.nightDisplay)
             : toneMapping(TONE_MAPPERS[toneMapper], float(1), vec4(keyComposite, 1)).rgb;
       }
+      if (protectedPixel) referenceOutput = renderOutput(vec4(addEmission(graded), 1), NoToneMapping);
+      const toned = this.finalTone.node(linear, graded, share, this.nightDisplay, toneCode, toneKey);
       output = renderOutput(
-        vec4(addEmission(this.finalTone.node(linear, graded, share, this.nightDisplay, toneCode, toneKey)), 1),
+        vec4(addEmission(protectedPixel ? mix(toned, graded, float(protectedPixel)) : toned), 1),
         NoToneMapping,
       );
     } else if (hasCinematicGrade(this.settings)) {
@@ -1487,7 +1505,9 @@ export class HdRenderer {
     );
     const objectPost = this.painterDepthEnabled && debugView === 'none' && this.spriteIntegration.compiled;
     const objectCodes: ShaderNode = objectPost ? scenePass.getTextureNode('physicalDepth') : null;
-    const objectMask: ShaderNode = objectPost ? objectPostMask(objectCodes) : null;
+    const objectMask: ShaderNode = objectPost
+      ? objectPostMask(objectCodes, this.spriteIntegration.protectedCategory)
+      : null;
     const integration = this.spriteIntegration.uniforms;
     const objectCopy = (input: ShaderNode): ShaderNode => {
       const copy: ShaderNode = convertToTexture(input);
@@ -1499,7 +1519,16 @@ export class HdRenderer {
     // so the grain pass never re-evaluates lighting, bloom or grading just to classify foliage.
     const picture: ShaderNode | null =
       (this.settings.clarity > 0 || grainCut) && debugView === 'none'
-        ? convertToTexture(grainCut ? vec4(display.rgb, this.finalTone.grainMask(toneLook!, toneCode)) : display)
+        ? convertToTexture(
+            grainCut
+              ? vec4(
+                  display.rgb,
+                  protectedPixel
+                    ? this.finalTone.grainMask(toneLook!, toneCode).mul(float(1).sub(float(protectedPixel)))
+                    : this.finalTone.grainMask(toneLook!, toneCode),
+                )
+              : display,
+          )
         : null;
     if (picture && (this.settings.tone || objectPost)) nodes.push(picture);
     if (grainCut) display = this.finalTone.grainCut(picture, this.nightDisplay);
@@ -1567,6 +1596,13 @@ export class HdRenderer {
         (display as { getTextureNode?: () => ShaderNode }).getTextureNode?.() ?? objectCopy(display);
       display = objectOutlineFeather(finished, objectCodes, this.spriteIntegration);
     }
+    const outlineCode =
+      this.nodes.surfaceClasses && this.spriteIntegration.protectedCategory > 0
+        ? (code: ShaderNode): ShaderNode =>
+            mod(floor(code.y.mul(256).add(0.5)), 8)
+              .equal(this.spriteIntegration.protectedCategory)
+              .select(vec2(0), code)
+        : undefined;
     if (antialias === 'edges' && this.painterDepthEnabled) {
       // Last of all, on the finished picture: what the pass does not touch reaches the canvas exactly as before.
       const finished: ShaderNode =
@@ -1574,10 +1610,72 @@ export class HdRenderer {
         (objectPost ? objectCopy(display) : convertToTexture(display));
       // Resolve feathered neighbours lazily inside MLAA: one added source copy, no separate feather render target.
       display = objectPost
-        ? silhouetteSmooth(finished, objectCodes, this.outlineSearch, (pixel) =>
-            objectOutlineFeather(finished, objectCodes, this.spriteIntegration, pixel),
+        ? silhouetteSmooth(
+            finished,
+            objectCodes,
+            this.outlineSearch,
+            (pixel) => objectOutlineFeather(finished, objectCodes, this.spriteIntegration, pixel),
+            outlineCode,
           )
-        : silhouetteSmooth(finished, scenePass.getTextureNode('physicalDepth'), this.outlineSearch);
+        : silhouetteSmooth(
+            finished,
+            scenePass.getTextureNode('physicalDepth'),
+            this.outlineSearch,
+            undefined,
+            outlineCode,
+          );
+    }
+    if (referenceOutput && protectedPixel) {
+      // A tone's neighbour gathers can alter a protected edge even when its centre skipped the tone. Resolve those
+      // pixels through the reference display filters as well. Only legacy final-tone experiments allocate this branch;
+      // lush2 and sprite integration retain their existing targets. Every added target belongs to pipelineNodes.
+      const referenceToe = float(1).sub(referenceOutput.rgb.div(NIGHT_TOE)).max(0);
+      let reference: ShaderNode = vec4(
+        referenceOutput.rgb
+          .add(this.blackLift.mul(toeVisibility).mul(referenceToe.mul(referenceToe)))
+          .sub(this.darkLoss.mul(toeVisibility))
+          .max(0),
+        1,
+      );
+      if (this.settings.clarity > 0) {
+        const source = objectCopy(reference);
+        const fine = gaussianBlur(source, this.claritySampleScale, (CLARITY_FINE * CLARITY_KERNEL_SCALE) / 2, {
+          resolutionScale: 0.5,
+        });
+        const broad = gaussianBlur(source, this.claritySampleScale, (CLARITY_SIGMA * CLARITY_KERNEL_SCALE) / 2, {
+          resolutionScale: 0.5,
+        });
+        nodes.push(fine, broad);
+        const luma = vec3(0.2126, 0.7152, 0.0722);
+        const lum = dot(reference.rgb, luma);
+        const band = dot(fine.rgb, luma).sub(dot(broad.rgb, luma));
+        const detail = band.max(0).add(band.min(0).mul(0.5));
+        const weight = smoothstep(0.05, 0.25, lum).mul(smoothstep(0.98, 0.75, lum));
+        reference = vec4(
+          reference.rgb.mul(float(1).add(detail.mul(this.clarityAmount).mul(weight).div(lum.max(0.05)))).max(0),
+          1,
+        );
+      }
+      if (antialias === 'fxaa') {
+        reference = fxaa(reference);
+        nodes.push(reference);
+      }
+      if (sharpness >= 0 && sharpness < 2) {
+        reference = sharpen(reference, sharpness);
+        nodes.push(reference);
+      }
+      if (antialias === 'edges') {
+        const finished =
+          (reference as { getTextureNode?: () => ShaderNode }).getTextureNode?.() ?? objectCopy(reference);
+        reference = silhouetteSmooth(
+          finished,
+          scenePass.getTextureNode('physicalDepth'),
+          this.outlineSearch,
+          undefined,
+          outlineCode,
+        );
+      }
+      display = mix(display, reference, float(protectedPixel));
     }
     // Reuse the existing display pass and physical depth: no debug render target, grading, or extra pass.
     // This branch is uniform-only and does not evaluate the cloud field while debug is disabled.
@@ -1917,6 +2015,13 @@ export class HdRenderer {
 
     const now = this.seconds();
     this.nodes.alive.update(
+      now,
+      env.windDirection,
+      light.night,
+      Math.max(rainAmount, snowAmount, scene.overcast),
+      airless,
+    );
+    this.nodes.resourceClouds.update(
       now,
       env.windDirection,
       light.night,

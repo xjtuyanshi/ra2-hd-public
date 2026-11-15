@@ -1,3 +1,4 @@
+import { legacyCloudReference } from '../legacyCloudReference';
 import {
   spriteIntegrationFor,
   quotientGradientNode,
@@ -586,7 +587,7 @@ class SpriteGraph {
     const look = spriteLookFor(nodes);
     const { capture, sampling } = features;
     const integration = features.integration && features.hd && !features.hdSupersample;
-    const tune = spriteIntegrationFor(nodes).uniforms;
+    const baseTune = spriteIntegrationFor(nodes).uniforms;
     this.atlasPage = textureSlot(sampling.atlas);
     this.hdColour = textureSlot(sampling.hd);
     this.hdRemap = textureSlot(sampling.remap);
@@ -643,6 +644,8 @@ class SpriteGraph {
     const isFull: ShaderNode = step(0.5, aFlags.z).mul(float(1).sub(step(1.5, aFlags.z)));
     const isNone: ShaderNode = step(1.5, aFlags.z);
     const isUnlit: ShaderNode = step(2.5, aFlags.z);
+    // Resource overlays retain authored colour and coverage even when other sprites are integrated.
+    const tune = features.integration ? { ...baseTune, on: baseTune.on.mul(isUnlit.oneMinus()) } : baseTune;
     // Ungraded trees retain their former terrain event policy; self-lit overlays bypass scene lighting altogether.
     const sceneMultiplier: ShaderNode = mix(nodes.sceneObjectMul, nodes.sceneTerrainMul, max(isFull, isNone));
     // Objects ('ambient'): the engine ADDS the extra light to the cell's object level (I + ExtraInfantryLight ...), so
@@ -1519,7 +1522,11 @@ class SpriteGraph {
         // Ore's authored self-light still bypasses map/night grading, but cloud cover is a surface shadow.
         // House-converter lamps remain emitted light and are mixed in separately below.
         If(isUnlit.greaterThan(0.5), () => {
-          result.rgb.assign(shadeSurface(result.rgb));
+          result.rgb.assign(
+            nodes.alive.modern && nodes.surfaceClasses
+              ? legacyCloudReference(result.rgb, nodes.resourceClouds)
+              : shadeSurface(result.rgb),
+          );
         });
         unlitShareOut.assign(unlitShare);
         // Black shadow/contact RGB naturally darkens the already transformed receiver. Only cast-shadow coverage
@@ -1544,7 +1551,7 @@ class SpriteGraph {
         if (!nodes.alive.modern) return vec4(mix(tintedLit, tintedUnlit, unlitShare), result.a.mul(bodyOpacity));
         const finished = mix(tintedLit, tintedUnlit, unlitShare).toVar();
         // Flat kinds are ground decals, shadows and reflections, not upright object pictures.
-        If(aFlat.lessThan(0.5), () => {
+        If(aFlat.lessThan(0.5).and(isUnlit.lessThan(0.5)), () => {
           finished.assign(
             cloudToneNode(
               finished,
@@ -1757,7 +1764,10 @@ class SpriteGraph {
       const category: ShaderNode = varying(
         surfaceClass
           .greaterThan(0)
-          .select(surfaceClass, treeWind.greaterThan(0).select(4, aFlat.greaterThan(0.5).select(0, 1))),
+          .select(
+            surfaceClass,
+            isUnlit.greaterThan(0.5).select(5, treeWind.greaterThan(0).select(4, aFlat.greaterThan(0.5).select(0, 1))),
+          ),
         'surfaceClass',
       );
       silhouette = vec2(silhouette.x, floor(silhouette.y.mul(256).div(8)).mul(8).add(category).div(256));

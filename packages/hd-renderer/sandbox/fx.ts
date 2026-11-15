@@ -1,3 +1,4 @@
+import { needsSurfaceClasses } from '../src/ra2/lookFlags';
 import { applyLush2 } from '../src/ra2/lush2Tone';
 import { mountLush2Tuning } from '../src/ra2/lush2Tuning';
 import { parseAliveParams } from '../src/livingWorld';
@@ -137,6 +138,14 @@ const live = await LiveView.create(canvas, {
   ...voxelLookParams(params),
   trackTimestamp: params.get('hd-gpu') === '1',
   ...(params.get('hd-veh') === '1' ? { vehicleRefinement: true, surfaceClasses: true } : {}),
+  surfaceClasses: needsSurfaceClasses(
+    new URLSearchParams(
+      [...params].map(([key, value]) => [
+        key === 'sprite' || key === 'tone' || key === 'blend' ? `hd-${key}` : key,
+        value,
+      ]),
+    ),
+  ),
   modernClouds: params.has('tone') || params.get('blend') === '1',
   spriteIntegration: params.get('sprite') === '1',
   ...parseWeatherParams(params),

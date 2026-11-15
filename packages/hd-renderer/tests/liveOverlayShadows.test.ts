@@ -78,3 +78,39 @@ describe('map overlay shadow shape', () => {
     expect(shadow.terrainShadow).toBeUndefined();
   });
 });
+
+it('marks ore and gem growth art as protected without classifying ordinary overlay colours', () => {
+  const resource = {
+    sprite: 'art',
+    palette: 'unit',
+    remap: false,
+    flat: true,
+    frames: 4,
+    drawOffset: [0, 0],
+    tiberium: true,
+  };
+  const library = {
+    overlays: { ORE: resource, GEM: resource, DECAL: { ...resource, tiberium: false } },
+    sprites: { art: sprite },
+  } as unknown as TypeLibrary;
+  const result = buildOverlayInstances(
+    {
+      originX: 0,
+      originY: 0,
+      width: 3,
+      height: 1,
+      index: new Int16Array([0, 1, 2]),
+      data: new Uint8Array([0, 1, 2]),
+      types: ['ORE', 'GEM', 'DECAL'],
+      revision: 1,
+    },
+    library,
+    { width: 3, height: 1, levels: new Uint8Array(3), exists: new Uint8Array([1, 1, 1]) },
+    () => 'unit',
+  );
+  const bodies = [...result.pages.values()].flat().filter((s) => !s.shadow);
+  expect(bodies.map((s) => s.surfaceClass)).toEqual([5, 5, 0]);
+  expect(bodies.map((s) => s.unlit)).toEqual([true, true, false]);
+  expect(bodies.map((s) => s.flat)).toEqual([true, true, true]);
+  expect(bodies.map((s) => s.frame)).toEqual([frame, frame, frame]);
+});
