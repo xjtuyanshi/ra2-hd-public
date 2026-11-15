@@ -20,7 +20,7 @@ import {
 } from 'three/tsl';
 import { Color } from 'three/webgpu';
 import { DEFAULT_ATMOSPHERE_NODES, moonlit, sampleLightField } from '../atmosphere';
-import { oceanNormalTexture, waterTextures } from '../proceduralTextures';
+import { oceanNormalTexture, waterTextureNode } from '../proceduralTextures';
 import type { ShaderNode } from '../tsl';
 import type { BedWaterInputs, BedWaterLook, WaterLook, WaterLookInputs } from './waterLook';
 
@@ -258,17 +258,16 @@ export function clearWaterLook(
   const normal = field.xyz;
   const groundTilt = normal.xz.negate().div(max(normal.y, 0.01));
   const light = vec3(...CLEAR_GLINT_LIGHT);
-  const noise = waterTextures().noise;
   // One broad noise tap (g) and a mid-scale one wander the shelf edge: the shore distance is warped before the shelf
   // profile, so the shallows widen in some places and narrow in others instead of an even ring.
-  const broad = texture(noise, p.xz.mul(0.043).add(vec2(0.57, 0.21)));
-  const mid = texture(noise, p.xz.mul(0.16).add(vec2(0.13, 0.71))).g;
+  const broad = waterTextureNode('noise', p.xz.mul(0.043).add(vec2(0.57, 0.21)));
+  const mid = waterTextureNode('noise', p.xz.mul(0.16).add(vec2(0.13, 0.71))).g;
   // The factor stays at least 0.5, and the shelf reaches open water by about 2.6 cells whatever the warp: the shore
   // values (mass, tone) spread from the coast end in a round box-blur footprint a few cells out, beyond which they read
   // as a long sandy coast; a wider shelf there drew turquoise discs around islets and pale blobs off cliffs.
   // Along a long coast the shelf also changes over tens of cells: a narrow fringe where the bed drops steeply, wide
   // sand flats elsewhere (one very broad tap), so a straight coast does not carry an even band.
-  const reach = smoothstep(0.3, 0.7, texture(noise, p.xz.mul(0.011).add(vec2(0.31, 0.83))).r);
+  const reach = smoothstep(0.3, 0.7, waterTextureNode('noise', p.xz.mul(0.011).add(vec2(0.31, 0.83))).r);
   const longCoast: ShaderNode = inputs.shoreMass ? smoothstep(0.25, 0.55, inputs.shoreMass) : float(1);
   const flats = mix(float(1), mix(float(0.6), float(1.9), reach), longCoast);
   // Islets take most of their wander from the mid-scale tap (features under a cell), so their fringe follows the
@@ -307,9 +306,12 @@ export function clearWaterLook(
   // Sand: a fine grain and a coarser, wavering mottle of ripples and weed. Both are laid out round on screen
   // (ground x - z across, half of x + z down): ripple marks stretched along the ground's x - z axis read as horizontal
   // streaks on screen and made the shallows the most anisotropic texture in view.
-  const sandTap = texture(noise, p.xz.add(bounded).mul(vec2(0.42, 0.42)));
+  const sandTap = waterTextureNode('noise', p.xz.add(bounded).mul(vec2(0.42, 0.42)));
   const rippleAt = p.xz.add(bounded).add(vec2(sandTap.g.mul(0.35), 0));
-  const ripple = texture(noise, vec2(rippleAt.x.sub(rippleAt.y), rippleAt.x.add(rippleAt.y).mul(0.5)).mul(0.6)).b;
+  const ripple = waterTextureNode(
+    'noise',
+    vec2(rippleAt.x.sub(rippleAt.y), rippleAt.x.add(rippleAt.y).mul(0.5)).mul(0.6),
+  ).b;
   const sandGrain = sandTap.b.sub(0.5).mul(0.5).add(sandTap.g.sub(0.5).mul(1.4)).add(ripple.sub(0.5).mul(1.1)).add(1);
   // The bed near a shore takes the brightness of that shore's land (dark rock islands sit in dark-floored water).
   // Islets and headlands (short shores) sit on a darker rock bed than a beach of the same land brightness.
@@ -325,7 +327,7 @@ export function clearWaterLook(
   const shifted = p.xz.add(bounded.mul(3));
   const under = vec2(shifted.x.sub(shifted.y), shifted.x.add(shifted.y).mul(0.5));
   // Rock and weed from one tap: the broad field shaped by the medium one (the noise texture's r and g octaves).
-  const rockTap = texture(noise, under.mul(0.11));
+  const rockTap = waterTextureNode('noise', under.mul(0.11));
   const rockField = rockTap.r.mul(0.6).add(rockTap.g.mul(0.4));
   // Rocks start in the shallows, so the bed there is not a bare even colour, and fade out with depth: the bed of deep
   // water is not seen, and patches tens of cells wide there read as dark stains or cloud shadows on the open sea.
@@ -380,8 +382,8 @@ export function clearWaterLook(
     .mul(bedShade);
   const seen = exp(metres.mul(-CLEAR_WATER.clarity));
   // Caustics: drifting light on the bed between about a third of a cell and a cell and a half from the beach.
-  const caustic = texture(
-    waterTextures().caustics,
+  const caustic = waterTextureNode(
+    'caustics',
     p.xz
       .div(1.3)
       .add(bounded.mul(4))
@@ -496,8 +498,8 @@ export function clearWaterLook(
   const glint = pow(sunDot, CLEAR_WATER.shininess).mul(CLEAR_WATER.sparkle).add(pow(sunDot, 60).mul(0.03));
   // Break the glints up with a fine mask that is isotropic on screen (ground x - z across, x + z down undoes the 2:1
   // squash): one crest otherwise lit a whole horizontal dash, and patches of them streaked across a still.
-  const twinkle = texture(
-    noise,
+  const twinkle = waterTextureNode(
+    'noise',
     vec2(p.x.sub(p.z), p.x.add(p.z).mul(0.5))
       .mul(1.1)
       .add(vec2(time.mul(0.011), time.mul(-0.008))),
@@ -511,8 +513,8 @@ export function clearWaterLook(
   const lights = sampleLightField(p.xz.sub(vec2(Math.SQRT1_2, Math.SQRT1_2).mul(0.9)).add(groundTilt.mul(2)), nodes)
     .mul(0.12)
     .min(vec3(0.18));
-  const breakup = texture(noise, p.xz.mul(0.24)).g;
-  const lace = texture(noise, p.xz.mul(0.9).add(vec2(time.mul(0.007), 0))).b;
+  const breakup = waterTextureNode('noise', p.xz.mul(0.24)).g;
+  const lace = waterTextureNode('noise', p.xz.mul(0.9).add(vec2(time.mul(0.007), 0))).b;
   const cycle = time.mul((2 * Math.PI) / CLEAR_WATER.foamPeriod).add(breakup.mul(3));
   const breath = sin(cycle).mul(0.5).add(0.5);
   // Beaches: no white outline at the waterline (the owner read the continuous white rim as a sticker edge). The sand
@@ -528,7 +530,11 @@ export function clearWaterLook(
     .mul(rising)
     .mul(0.5);
   // Only a few stretches of coast take a set of waves at a time: a broad mask drifting along the coast.
-  const set = smoothstep(0.6, 0.72, texture(noise, p.xz.mul(0.07).add(vec2(time.mul(0.006), time.mul(-0.004)))).g);
+  const set = smoothstep(
+    0.6,
+    0.72,
+    waterTextureNode('noise', p.xz.mul(0.07).add(vec2(time.mul(0.006), time.mul(-0.004)))).g,
+  );
   const beachFoam = swashLine
     .mul(set)
     .mul(smoothstep(0.05, 0.09, swash))
@@ -550,8 +556,8 @@ export function clearWaterLook(
     surfaceMetres.y.mul(Math.cos(wind)).sub(surfaceMetres.x.mul(Math.sin(wind))),
   );
   // The cached noise has 24 fine / 4 broad lattice cycles per tile; convert prototype metres to its UVs.
-  const fleck = texture(noise, alongWind.mul(vec2(4.5 / 24, 1.6 / 24))).b;
-  const gust = texture(noise, surfaceMetres.mul(0.05 / 4).add(clock.mul(0.03 / 4))).r;
+  const fleck = waterTextureNode('noise', alongWind.mul(vec2(4.5 / 24, 1.6 / 24))).b;
+  const gust = waterTextureNode('noise', surfaceMetres.mul(0.05 / 4).add(clock.mul(0.03 / 4))).r;
   const whitecaps = smoothstep(0.6, 0.82, field.w.mul(0.8).add(fleck.mul(0.55)))
     .mul(smoothstep(0.35, 0.7, gust))
     .mul(CLEAR_WATER.whitecap)

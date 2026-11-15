@@ -1,5 +1,7 @@
+import { LinearMipmapLinearFilter } from 'three/webgpu';
+import { waterTextures, waterTextureNode } from '../src/proceduralTextures';
 import { describe, expect, it } from 'vitest';
-import { vec3, float } from 'three/tsl';
+import { vec2, vec3, float } from 'three/tsl';
 import {
   createWaterTuning,
   parseWaterStyle,
@@ -107,4 +109,27 @@ describe('painted small-water protection', () => {
     for (let y = 10; y < 190; y++) for (let x = 10; x < 190; x++) data[y * width + x] = 255;
     expect(paintedWaterMask({ data, width, height }, 1).data.some(Boolean)).toBe(false);
   });
+});
+
+it('packs water fields without changing bytes, repeat/filter semantics or the non-mipmapped noise/hash', () => {
+  const fields = waterTextures();
+  const bytes = fields.layers.image.data as Uint8Array;
+  const layerSize = fields.ripple.image.data.length;
+  expect(fields.layers.image.depth).toBe(4);
+  expect(fields.layers.minFilter).toBe(LinearMipmapLinearFilter);
+  expect(fields.layers.generateMipmaps).toBe(true);
+  for (const [layer, key] of (['ripple', 'chop', 'caustics', 'noise'] as const).entries()) {
+    const original = fields[key];
+    expect(bytes.slice(layer * layerSize, (layer + 1) * layerSize)).toEqual(original.image.data);
+    expect(fields.layers.wrapS).toBe(original.wrapS);
+    expect(fields.layers.wrapT).toBe(original.wrapT);
+    expect(fields.layers.magFilter).toBe(original.magFilter);
+    const node = waterTextureNode(key, vec2(0.25, 0.75));
+    expect(node.value).toBe(fields.layers);
+    expect(node.depthNode.value ?? node.depthNode.node.value).toBe(layer);
+    if (key === 'noise') {
+      expect(original.generateMipmaps).toBe(false);
+      expect(node.levelNode.value ?? node.levelNode.node.value).toBe(0);
+    } else expect(node.levelNode).toBeNull();
+  }
 });

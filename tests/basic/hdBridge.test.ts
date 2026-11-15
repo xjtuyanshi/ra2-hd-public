@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { neutralGrade } from '../../packages/hd-renderer/src/post';
 import type { VmShell } from '../../src/adapter/vmShell';
 import type { GameRenderState, GameRenderPreparation } from '../../src/games/renderState';
 import {
@@ -19,6 +20,7 @@ import type { VmFrame } from '../../src/vm86/win32';
 import { hdSidebar } from '../helpers/hdSidebar';
 import { createWebGpuFrameCapture } from '../../src/graphics/webGpuFrameCapture';
 import { initializeWorkerLocale } from '../../src/ui/shared/i18n/translate';
+import * as gameInput from '../../src/ui/pages/game/gameInput';
 
 // The bridge loads LiveView (three.js, WebGPU) through a dynamic import; a stub stands in for it.
 const liveView = vi.hoisted(() => ({ create: vi.fn() }));
@@ -28,6 +30,9 @@ vi.mock('../../packages/hd-renderer/src/HdRenderer', () => ({
   LOOK_PRESETS: { faithful: {}, golden: { hour: 16.5 }, cinematic: { hour: 16.5 } },
   applyLookPreset: hdRenderer.applyLookPreset,
 }));
+
+const lushTuning = vi.hoisted(() => ({ mount: vi.fn() }));
+vi.mock('../../packages/hd-renderer/src/ra2/lush2Tuning', () => ({ mountLush2Tuning: lushTuning.mount }));
 
 const hdUi = vi.hoisted(() => ({ start: vi.fn() }));
 vi.mock('../../src/ui/pages/game/hdUi', () => ({ startHdUi: hdUi.start }));
@@ -208,6 +213,7 @@ function setup(
   vi.spyOn(performance, 'now').mockImplementation(() => clock);
   vi.spyOn(console, 'info').mockImplementation(() => undefined);
   const screen = {
+    focus: vi.fn(),
     style: { position: 'static', zIndex: '' },
     parentElement: { insertBefore: vi.fn() },
     clientWidth: 800,
@@ -1027,6 +1033,83 @@ describe('HD bridge look parameters', () => {
     );
     expect(view.hd.applySettings.mock.invocationCallOrder[0]).toBeLessThan(view.push.mock.invocationCallOrder[0]!);
     expect(view.hd.applySettings.mock.invocationCallOrder[0]).toBeLessThan(view.render.mock.invocationCallOrder[0]!);
+    harness.stop();
+  });
+
+  it('applies hd-tone without hd-look before the first snapshot and render', async () => {
+    const harness = setup('?hd=1&hd-tone=moist2');
+    const view = fakeLookView();
+    Object.assign(view.hd.settings, neutralGrade());
+    await goLive(harness, view);
+    expect(view.hd.settings).toMatchObject({ tone: { density: 0.08, grade: null, grain: 0.12 } });
+    expect(hdRenderer.applyLookPreset).not.toHaveBeenCalled();
+    expect(view.hd.applySettings).toHaveBeenCalledTimes(1);
+    expect(view.hd.applySettings.mock.invocationCallOrder[0]).toBeLessThan(view.push.mock.invocationCallOrder[0]!);
+    expect(view.hd.applySettings.mock.invocationCallOrder[0]).toBeLessThan(view.render.mock.invocationCallOrder[0]!);
+    harness.stop();
+  });
+
+  it('returns tuning focus to the game input canvas and releases the panel with the view', async () => {
+    const tracking = vi.spyOn(gameInput, 'trackGameChatEntry');
+    const dispose = vi.fn();
+    lushTuning.mount.mockReturnValueOnce({ dispose });
+    const harness = setup('?hd=1&hd-tune=1');
+    const view = fakeLookView();
+    await goLive(harness, view);
+    expect(lushTuning.mount).toHaveBeenCalledTimes(1);
+    const returnFocus = lushTuning.mount.mock.calls[0]![4] as () => void;
+    const textEntryActive = lushTuning.mount.mock.calls[0]![5] as () => boolean;
+    const chat = tracking.mock.calls[0]![1];
+    expect(tracking.mock.calls[0]![0]).toBe(harness.screen);
+    expect(textEntryActive()).toBe(false);
+    chat.forwardedKeyDown('Enter');
+    expect(textEntryActive()).toBe(true);
+    harness.stop.toggle();
+    expect(textEntryActive()).toBe(false);
+    chat.forwardedKeyDown('Backspace');
+    expect(textEntryActive()).toBe(true);
+    returnFocus();
+    expect(harness.screen.focus).toHaveBeenCalledExactlyOnceWith({ preventScroll: true });
+    harness.stop();
+    expect(textEntryActive()).toBe(false);
+    expect(dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it('applies hd-tone=lush through the lazy tone path before the first snapshot', async () => {
+    const harness = setup('?hd=1&hd-tone=lush');
+    const view = fakeLookView();
+    await goLive(harness, view);
+    expect(view.hd.settings).toMatchObject({
+      groundTone: { bareDepth: 0.68, scale: 2.6, soften: 0.1 },
+      tone: { grade: null, density: 0, contrast: 0, chroma: [1, 1, 1], grain: 0.3, groundClarity: 0.7 },
+    });
+    expect(hdRenderer.applyLookPreset).not.toHaveBeenCalled();
+    expect(view.hd.applySettings).toHaveBeenCalledTimes(1);
+    expect(view.hd.applySettings.mock.invocationCallOrder[0]).toBeLessThan(view.push.mock.invocationCallOrder[0]!);
+    expect(view.hd.applySettings.mock.invocationCallOrder[0]).toBeLessThan(view.render.mock.invocationCallOrder[0]!);
+    harness.stop();
+  });
+
+  it('derives tone from the applied look and the live theatre', async () => {
+    const harness = setup('?hd=1&hd-look=cinematic&hd-tone=moist1');
+    const view = fakeLookView();
+    Object.assign(view.hd.settings, neutralGrade());
+    view.theater = 'snow';
+    hdRenderer.applyLookPreset.mockImplementationOnce((settings) => Object.assign(settings, { gradeContrast: 0.2 }));
+    await goLive(harness, view);
+    expect(view.hd.settings).toMatchObject({
+      tone: { density: 0, contrast: expect.closeTo(0.072, 12), grade: { gradeContrast: 0.2 } },
+    });
+    expect(view.hd.applySettings).toHaveBeenCalledTimes(1);
+    harness.stop();
+  });
+
+  it.each(['off', 'unknown'])('keeps explicit hd-tone=%s disabled', async (style) => {
+    const harness = setup(`?hd=1&hd-tone=${style}`);
+    const view = fakeLookView();
+    await goLive(harness, view);
+    expect(view.hd.settings).toMatchObject({ tone: null });
+    expect(view.hd.applySettings).toHaveBeenCalledTimes(1);
     harness.stop();
   });
 

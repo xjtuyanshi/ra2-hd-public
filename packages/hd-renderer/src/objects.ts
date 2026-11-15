@@ -1,3 +1,5 @@
+import { setObjectGroundAnchor } from './objectGroundAnchor';
+import { objectCloudTone } from './objectCloudTone';
 import {
   BoxGeometry,
   Color,
@@ -8,7 +10,7 @@ import {
   MeshStandardNodeMaterial,
   Object3D,
 } from 'three/webgpu';
-import { mx_noise_float, positionLocal, uniform } from 'three/tsl';
+import { Fn, vec4, output, mx_noise_float, positionLocal, uniform } from 'three/tsl';
 import { HOUSE_COLORS, type RenderObject } from './contract';
 import { DEFAULT_ATMOSPHERE_NODES } from './atmosphere';
 import { SceneLitMaterial } from './lighting';
@@ -35,17 +37,22 @@ export class ObjectLayer {
     for (const material of [this.dark, this.steel, this.concrete])
       material.sceneMultiplier = atmosphereNodes.sceneObjectMul;
     for (const material of [this.bark, this.leaves]) material.sceneMultiplier = atmosphereNodes.sceneTerrainMul;
-    for (const material of [this.dark, this.steel, this.concrete, this.bark, this.leaves])
-      material.cloudShadow = atmosphereNodes.alive.shadow;
+    for (const material of [this.dark, this.steel, this.concrete, this.bark, this.leaves]) this.dress(material);
     const windows = new SceneLitMaterial({ color: 0x1b2430, roughness: 0.2, metalness: 0.1 });
     windows.sceneMultiplier = atmosphereNodes.sceneObjectMul;
-    windows.cloudShadow = atmosphereNodes.alive.shadow;
+    this.dress(windows);
     this.windows = windows;
     // Warm window light that flickers slightly per pane at night.
     const flicker = mx_noise_float(positionLocal.mul(4)).mul(0.25).add(0.75);
     this.windows.emissiveNode = uniform(new Color(1.0, 0.72, 0.35))
       .mul(this.night.mul(3.0))
       .mul(flicker);
+  }
+
+  private dress(material: SceneLitMaterial): void {
+    const cloud = objectCloudTone(this.atmosphereNodes);
+    material.cloudShadow = cloud.shadow;
+    material.outputNode = Fn(() => vec4(cloud.grade(output.rgb), output.a))();
   }
 
   sync(objects: readonly RenderObject[], heightAt: (x: number, z: number) => number): void {
@@ -78,7 +85,7 @@ export class ObjectLayer {
     if (!material) {
       const created = metal(house < 0 ? 0x8a8a80 : HOUSE_COLORS[house % HOUSE_COLORS.length]!, 0.45, 0.4);
       created.sceneMultiplier = this.atmosphereNodes.sceneObjectMul;
-      created.cloudShadow = this.atmosphereNodes.alive.shadow;
+      this.dress(created);
       material = created;
       this.houseMaterials.set(house, material);
     }
@@ -93,6 +100,7 @@ export class ObjectLayer {
       mesh.castShadow = true;
       mesh.receiveShadow = true;
       group.add(mesh);
+      setObjectGroundAnchor(mesh, group);
       return mesh;
     };
     switch (object.kind) {
@@ -144,6 +152,9 @@ export class ObjectLayer {
       default:
         add(new Mesh(new BoxGeometry(0.2, 0.3, 0.2), this.house(object.house))).position.y = 0.15;
     }
+    group.traverse((part) => {
+      if (part instanceof Mesh) setObjectGroundAnchor(part, group);
+    });
     return { group, turret };
   }
 }

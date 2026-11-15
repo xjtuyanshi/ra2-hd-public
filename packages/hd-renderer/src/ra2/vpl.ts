@@ -1,4 +1,5 @@
 import { spriteIntegrationFor } from '../spriteIntegration';
+import { objectCloudTone } from '../objectCloudTone';
 import {
   Color,
   DataTexture,
@@ -499,7 +500,8 @@ function createGraph(
   // Every part mesh drawn with a material of this graph carries its unit's silhouette code (see VoxelUnit).
   const material = setSilhouette(new VoxelMaterial());
   material.sceneMultiplier = nodes.sceneObjectMul;
-  material.cloudShadow = nodes.alive.shadow;
+  const cloud = objectCloudTone(nodes);
+  material.cloudShadow = cloud.shadow;
   material.state = state;
   const look = (material.look = spriteLookFor(nodes));
   const gains = (material.gains = voxelMeshGains(state, look));
@@ -558,7 +560,7 @@ function createGraph(
     .mul(1 / Math.PI)
     .mul(float(0.55).add(max(n.y, 0).mul(0.45)))
     .mul(meshLocalLight);
-  const sceneShade: ShaderNode = nodes.alive.shade(
+  const sceneShade: ShaderNode = cloud.shade(
     sceneLitColour(mix(moonlit(lit, nodes), lit, paint).mul(voxelFill), nodes.sceneObjectMul),
   );
   let shaded: ShaderNode = sceneShade.add(localLightHeadroom(sceneShade, lit.mul(local), nodes.localLightCap)).mul(ao);
@@ -578,7 +580,7 @@ function createGraph(
     const projState = voxelProjectionFor(nodes);
     const formAo: ShaderNode = poweredOcclusion(float(1).sub(occlusion.mul(projState.formAO.clamp())), gains.aoPower);
     const colour: ShaderNode = srgbScale(projected.colour, level.div(projState.levelRef.max(0.01))).mul(formAo);
-    const projectedScene: ShaderNode = nodes.alive.shade(
+    const projectedScene: ShaderNode = cloud.shade(
       sceneLitColour(mix(moonlit(colour, nodes), colour, projected.paint).mul(voxelFill), nodes.sceneObjectMul),
     );
     const projectedShade: ShaderNode = projectedScene.add(
@@ -600,7 +602,13 @@ function createGraph(
     material.matp = vec3(matp.xy, matp.z.mul(uncovered));
   }
   material.emissiveNode = mix(shaded, debugColour, debugOn);
-  material.colorNode = raw.mul(voxelSunDiffuse).mul(ao).mul(live).mul(uncovered);
+  material.colorNode = Fn(() => {
+    // Hoist before emissive/palette siblings and the physical lighting finish; all share this one foot sample.
+    cloud.coverage.toStack();
+    cloud.shadow.toStack();
+    cloud.linearShadow.toStack();
+    return raw.mul(voxelSunDiffuse).mul(ao).mul(live).mul(uncovered);
+  })();
   material.roughnessNode = matp.x;
   // Metalness only shapes the highlight (see VoxelLightingModel); the diffuse term stays a plain weak Lambert.
   material.metalnessNode = float(0);
@@ -609,7 +617,7 @@ function createGraph(
   material.outputNode = Fn(() =>
     vec4(
       applyObjectTint(
-        voxelLookFinish(output.rgb, state, normalWorld),
+        cloud.grade(voxelLookFinish(output.rgb, state, normalWorld)),
         meshObjectTint.x,
         meshObjectTint.y,
         level,

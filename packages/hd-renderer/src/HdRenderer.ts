@@ -1,5 +1,8 @@
 import { objectPostMask, objectSurfaceFilter, objectOutlineFeather, ObjectMaskedSharpen } from './objectPost';
 import { spriteIntegrationFor } from './spriteIntegration';
+import { CloudCoverageMap } from './cloudCoverageMap';
+import type { CloudToneParams } from './cloudTone';
+import type { GroundToneParams } from './groundTone';
 import {
   ACESFilmicToneMapping,
   AgXToneMapping,
@@ -76,9 +79,18 @@ import type { AliveChange, AliveOptions } from './livingWorld';
 import { Mist, MIST_CAP } from './mist';
 import { ObjectLayer } from './objects';
 import { SILHOUETTE_LEVELS, SILHOUETTE_SEARCH, silhouetteOf, silhouetteSmooth } from './silhouette';
-import { cinematicGrade, faithfulToneMap, hasCinematicGrade, neutralGrade, type CinematicGradeParams } from './post';
+import { cloudNeutralGradeTint } from './cloudTone';
+import {
+  cinematicGrade,
+  cinematicGradeRgb,
+  faithfulToneMap,
+  hasCinematicGrade,
+  neutralGrade,
+  type CinematicGradeParams,
+} from './post';
 import { buildTerrain, type TerrainBuild } from './terrain';
 import type { ShaderNode } from './tsl';
+import { FinalTone, type FinalToneParams } from './tone';
 import { updateUnlitDisplay } from './unlit';
 import { buildWater, type WaterUniforms } from './water';
 import { buildRain, buildSnow, type RainSystem } from './weather';
@@ -131,6 +143,10 @@ export interface HdSettings extends CinematicGradeParams {
   /** Load-time voxel geometry selection. Changing it requires rebuilding the world's voxel units. */
   voxelLook: 'engine' | 'remaster';
   toneMapper: ToneMapper;
+  /** Optional final colour stage; null preserves the original graph and key. */
+  tone: FinalToneParams | null;
+  groundTone: GroundToneParams | null;
+  cloudTone: CloudToneParams | null;
   exposure: number;
   bloom: number;
   vignette: number;
@@ -784,6 +800,9 @@ export class HdRenderer {
   readonly settings: HdSettings = {
     voxelLook: 'engine',
     toneMapper: 'faithful',
+    tone: null,
+    groundTone: null,
+    cloudTone: null,
     exposure: 1,
     bloom: 0.55,
     vignette: 0.25,
@@ -834,6 +853,7 @@ export class HdRenderer {
   /** Nodes of the current pipeline that own render targets (pass targets, bloom, FXAA and sharpen), freed on rebuild. */
   private pipelineNodes: { dispose(): void }[] = [];
   private readonly bloomStrength = uniform(0.55);
+  private readonly finalTone = new FinalTone();
   private readonly clarityAmount = uniform(0);
   private readonly claritySampleScale = uniform(1);
   /** Bloom threshold on the unexposed scene (see frame()). */
@@ -903,6 +923,7 @@ export class HdRenderer {
   /** Present when drawing an original map; null for the procedural sandbox. */
   private world: HdWorld | null = null;
   private waterY = 0;
+  private cloudCoverageMap?: CloudCoverageMap;
   private bounds = { width: 0, height: 0 };
   private readonly seenEvents = new Set<number>();
   private state: RenderState;
@@ -1054,6 +1075,12 @@ export class HdRenderer {
       waterY = map.waterLevel * LEVEL_HEIGHT;
       this.scene.add(this.objects.root);
       this.view.target.set(map.width / 2, 0, map.height / 2);
+    }
+    this.cloudCoverageMap = new CloudCoverageMap(this.bounds.width, this.bounds.height, this.nodes.alive);
+    if (this.layerNodes !== this.nodes) {
+      this.layerNodes.alive.coverageTexture.value = this.cloudCoverageMap.target.texture;
+      this.layerNodes.alive.coverageBounds.value.copy(this.nodes.alive.coverageBounds.value);
+      this.layerNodes.alive.coverageCached.value = 1;
     }
     this.waterY = waterY ?? -1000;
     // Voxel units stand on (and tilt with) the ground or the water surface under them, and their flattened shadows
@@ -1240,6 +1267,8 @@ export class HdRenderer {
     if (this.topEffectsPass) key.push('top-effects');
     if (this.mistWanted()) key.push('mist');
     if (this.painterDepthEnabled && debugView === 'none' && this.spriteIntegration.compiled) key.push('object-post');
+    if (this.settings.tone) key.push('tone', this.settings.tone.grain > 0, this.settings.tone.keyRadius > 0);
+    if (this.settings.tone?.groundClarity !== undefined) key.push('groundClarity');
     return JSON.stringify(key);
   }
 
@@ -1392,7 +1421,37 @@ export class HdRenderer {
       return emission ? linear.add(emission) : linear;
     };
     let output: ShaderNode;
-    if (hasCinematicGrade(this.settings)) {
+    let toneLook: ShaderNode | null = null;
+    const toneCode: ShaderNode | null =
+      this.settings.tone && this.painterDepthEnabled ? scenePass.getTextureNode('physicalDepth').yz.toVar() : null;
+    if (this.settings.tone) {
+      const linear: ShaderNode =
+        toneMapper === 'faithful' ? mixed : toneMapping(TONE_MAPPERS[toneMapper], float(1), vec4(composite, 1)).rgb;
+      const graded: ShaderNode = hasCinematicGrade(this.settings)
+        ? mix(linear, cinematicGrade(linear, this.gradeUniforms), this.gradeShare)
+        : linear;
+      toneLook = graded;
+      const share: ShaderNode = hasCinematicGrade(this.settings) ? this.gradeShare : float(0);
+      // The tone's patch key: the scene around the pixel, exposed and tone mapped like `linear` (mist, shroud and
+      // bloom left out; they only shift the classification, never the pixel's own colour).
+      let toneKey: ShaderNode | null = null;
+      if (this.settings.tone.keyRadius > 0) {
+        const keyComposite: ShaderNode = vec3(this.finalTone.keyTaps((at) => hdr.sample(at).rgb))
+          .mul(this.exposure)
+          .mul(vignette)
+          .toVar();
+        const keyFaithful: ShaderNode = faithfulToneMap(keyComposite);
+        const keyNeutral: ShaderNode = neutralToneMapping(keyComposite, float(1));
+        toneKey =
+          toneMapper === 'faithful'
+            ? mix(keyFaithful, keyNeutral, this.nightDisplay)
+            : toneMapping(TONE_MAPPERS[toneMapper], float(1), vec4(keyComposite, 1)).rgb;
+      }
+      output = renderOutput(
+        vec4(addEmission(this.finalTone.node(linear, graded, share, this.nightDisplay, toneCode, toneKey)), 1),
+        NoToneMapping,
+      );
+    } else if (hasCinematicGrade(this.settings)) {
       // Grade display-linear colour after the tone map, before renderOutput encodes sRGB and the night toe lift.
       const linear: ShaderNode =
         toneMapper === 'faithful' ? mixed : toneMapping(TONE_MAPPERS[toneMapper], float(1), vec4(composite, 1)).rgb;
@@ -1432,12 +1491,20 @@ export class HdRenderer {
       if (copy.isRTTNode && !nodes.includes(copy)) nodes.push(copy);
       return copy;
     };
+    const grainCut = this.settings.tone && this.settings.tone.grain > 0 && toneCode && debugView === 'none';
+    // Clarity and grain share one display copy. Its scratch alpha carries the pre-tone foliage/ground mask,
+    // so the grain pass never re-evaluates lighting, bloom or grading just to classify foliage.
+    const picture: ShaderNode | null =
+      (this.settings.clarity > 0 || grainCut) && debugView === 'none'
+        ? convertToTexture(grainCut ? vec4(display.rgb, this.finalTone.grainMask(toneLook!, toneCode)) : display)
+        : null;
+    if (picture && (this.settings.tone || objectPost)) nodes.push(picture);
+    if (grainCut) display = this.finalTone.grainCut(picture, this.nightDisplay);
     if (this.settings.clarity > 0 && debugView === 'none') {
       // Band-pass (difference of two half-resolution blurs): faces, crevices and canopy masses a few CSS px and up gain
       // contrast while pixel-scale texture (brick, asphalt grain) is left as it is; the plain unsharp mask doubled it.
       this.claritySampleScale.value = this.viewPixelScale() / CLARITY_KERNEL_SCALE;
       // Both blurs read one copy of the picture: handed the expression, each drew a full-size copy of its own.
-      const picture: ShaderNode = objectPost ? objectCopy(display) : convertToTexture(display);
       // Keep kernel weights and materials stable. Scaling the sample offsets preserves the blur's scene radius;
       // encoding the scale in sigma instead rebuilt four shaders on every sufficiently large window-size change.
       const fine: ShaderNode = gaussianBlur(
@@ -1460,7 +1527,9 @@ export class HdRenderer {
       // shadows); mid-tones only, so near-white highlights and the darkest pixels do not ring.
       let detail = band.max(0).add(band.min(0).mul(0.5));
       if (objectPost) detail = detail.mul(float(1).sub(objectMask.mul(integration.on).mul(integration.objClarity)));
-      const weight = smoothstep(0.05, 0.25, lum).mul(smoothstep(0.98, 0.75, lum));
+      let weight = smoothstep(0.05, 0.25, lum).mul(smoothstep(0.98, 0.75, lum));
+      if (grainCut && this.settings.tone?.groundClarity !== undefined)
+        weight = weight.mul(mix(float(1), this.finalTone.groundClarity, picture.a));
       display = vec4(
         display.rgb.mul(float(1).add(detail.mul(this.clarityAmount).mul(weight).div(lum.max(0.05)))).max(0),
         1,
@@ -1513,6 +1582,10 @@ export class HdRenderer {
   }
 
   applySettings(): void {
+    this.nodes.groundTone.set(this.settings.groundTone);
+    this.nodes.cloudTone.set(this.settings.cloudTone);
+    if (this.layerNodes !== this.nodes) this.layerNodes.cloudTone.set(this.settings.cloudTone);
+    if (this.layerNodes !== this.nodes) this.layerNodes.groundTone.set(this.settings.groundTone);
     updateUnlitDisplay(this.nodes, this.settings);
     if (this.layerNodes !== this.nodes) updateUnlitDisplay(this.layerNodes, this.settings);
     // Exposure is applied in the pipeline for every tone mapper.
@@ -1541,6 +1614,7 @@ export class HdRenderer {
   /** An airless scene retains the authored illuminant instead of acquiring a cinematic sky/shadow colour. */
   private updateGrade(airless: boolean): void {
     this.gradeAirless = airless;
+    if (this.settings.tone) this.finalTone.set(this.settings.tone, airless);
     if (airless) {
       this.gradeUniforms.gradeBalance.value.setScalar(1);
       this.gradeUniforms.gradeShadowTint.value.setScalar(1);
@@ -1553,6 +1627,24 @@ export class HdRenderer {
     this.gradeUniforms.gradeContrast.value = this.settings.gradeContrast;
     this.gradeUniforms.gradePivotLift.value = this.settings.gradePivotLift;
     this.gradeUniforms.gradeSaturation.value = this.settings.gradeSaturation;
+    this.updateCloudNeutralGrade();
+  }
+
+  /** Keep eligible neutral ground white through the active display grade; objects and water do not use this gain. */
+  private updateCloudNeutralGrade(): void {
+    const p = this.nodes.cloudTone;
+    p.neutralGradeTint.value.setScalar(1);
+    if (p.strength.value > 0 && p.snow.value > 0 && !this.gradeAirless && this.settings.debugView === 'none') {
+      const reference = p.neutralGradeLuma.value;
+      p.neutralGradeTint.value.fromArray(
+        cloudNeutralGradeTint(
+          reference,
+          cinematicGradeRgb([reference, reference, reference], this.settings),
+          this.gradeShare.value,
+        ),
+      );
+    }
+    if (this.layerNodes !== this.nodes) this.layerNodes.cloudTone.neutralGradeTint.value.copy(p.neutralGradeTint.value);
   }
 
   setState(state: RenderState): void {
@@ -1722,6 +1814,7 @@ export class HdRenderer {
     this.nodes.sceneObjectMul.value.fromArray(scene.objects).multiplyScalar(flash);
     this.nodes.sceneSunShadow.value = scene.sunShadow;
     this.gradeShare.value = (1 - nightGrade) * scene.gradeShare;
+    this.updateCloudNeutralGrade();
     this.darkLoss.value.fromArray(scene.darkLoss);
     this.lighting.sun.castShadow = this.settings.shadows && !this.world && scene.sunShadow > 0;
     if (scene.overcast > 0) this.lighting.applySceneOvercast(scene.overcast);
@@ -2103,6 +2196,8 @@ export class HdRenderer {
   }
 
   private renderPipeline(): void {
+    this.cloudCoverageMap?.update(this.renderer);
+    this.terrain.updateGradeMap?.(this.renderer);
     this.terrainDepth.setReference(this.view.camera, this.view.target);
     this.beforeDepthCapture?.();
     this.terrainDepth.render(this.renderer, this.scene, this.view.camera);
@@ -2387,6 +2482,7 @@ export class HdRenderer {
     this.terrain?.disposeWaterLooks?.();
     this.terrain?.surfaceSquares?.texture.dispose();
     this.terrain?.surfaceSquares?.front.dispose();
+    this.cloudCoverageMap?.dispose();
     if (this.nodes !== DEFAULT_ATMOSPHERE_NODES) this.nodes.dispose();
     if (this.layerNodes !== this.nodes && this.layerNodes !== DEFAULT_ATMOSPHERE_NODES) this.layerNodes.dispose();
     this.renderer.dispose();

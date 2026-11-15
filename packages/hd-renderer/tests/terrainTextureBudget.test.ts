@@ -14,6 +14,7 @@ import {
   type Texture,
 } from 'three/webgpu';
 import { AtmosphereNodes } from '../src/atmosphere';
+import { lushTheatre } from '../src/ra2/lushTone';
 import { applyMaterialFallbacks } from '../src/materialFallback';
 import { NO_TILE, type Ra2Cache } from '../src/ra2/cache';
 import { MapLightGrade } from '../src/ra2/mapLighting';
@@ -99,7 +100,9 @@ function fragmentBindings(geometry: Mesh['geometry'], material: Material): { tex
   };
 }
 
+const isGradeMap = (texture: Texture) => texture.name.startsWith('CloudToneMap.');
 const isMirror = (texture: Texture) =>
+  !isGradeMap(texture) &&
   !!(
     (texture as { isRenderTargetTexture?: boolean }).isRenderTargetTexture ||
     (texture as { isDepthTexture?: boolean }).isDepthTexture
@@ -179,6 +182,48 @@ function fullMap(levels: number, style: WaterStyle, waterBed = true, paintedWate
 }
 
 describe('terrain material texture budget', () => {
+  it.each(['clear', 'classic', 'enhanced'] as const)(
+    'builds lush ground, cliffs and both stand-ins within the existing texture budget (%s)',
+    (style) => {
+      for (const bed of [false, true]) {
+        const { build, ground, wall, cache } = fullMap(1, style, bed);
+        const disabled = fragmentBindings(build.mesh.geometry, ground);
+        cache.nodes!.groundTone.set(lushTheatre('temperate'));
+        const enabled = fragmentBindings(build.mesh.geometry, ground);
+        expect(enabled.textures.length).toBe(disabled.textures.length);
+        expect(enabled.samplers).toBe(disabled.samplers);
+        expect(enabled.textures.length).toBeLessThanOrEqual(MAX_SAMPLED_TEXTURES);
+        expect(fragmentBindings(build.mesh.geometry, wall).textures.length).toBeLessThanOrEqual(MAX_SAMPLED_TEXTURES);
+        expect((build.mesh.material as Material[])[0]).toBe(ground);
+        // Exercise both actual GPU-refusal replacements, retaining the same ground uniforms.
+        for (let pass = 0; pass < 2; pass++) {
+          const current = (build.mesh.material as Material[])[0]!;
+          applyMaterialFallbacks(build.mesh, new Set([(current as Material & { id: number }).id]));
+          const replacement = (build.mesh.material as Material[])[0]!;
+          expect(replacement).not.toBe(current);
+          expect(fragmentBindings(build.mesh.geometry, replacement).textures.length).toBeLessThanOrEqual(
+            MAX_SAMPLED_TEXTURES,
+          );
+          current.dispose();
+        }
+        // The whole-map input is optional; build the per-tile ground with the same live uniforms too.
+        cache.terrainMap = null;
+        cache.waterMask = cache.terrainAtlas;
+        const tile = buildRa2Terrain(cache);
+        try {
+          for (const material of tile.mesh.material as Material[])
+            expect(fragmentBindings(tile.mesh.geometry, material).textures.length).toBeLessThanOrEqual(
+              MAX_SAMPLED_TEXTURES,
+            );
+        } finally {
+          tile.disposeWaterLooks?.();
+          tile.mesh.geometry.dispose();
+          tile.heightTexture.dispose();
+        }
+      }
+    },
+  );
+
   it.each([
     ['enhanced', true],
     ['enhanced', false],
@@ -229,7 +274,7 @@ describe('terrain material texture budget', () => {
       return `${textures.length}/${samplers}`;
     });
     expect(new Set(counts).size).toBe(1);
-    // The original-water tile atlas uses the final available slot on fully dressed bed maps.
+    // The original-water tile atlas and grade targets use the final available slots on fully dressed bed maps.
     // Keep the hardware limit unchanged; any additional sampled layer now needs an extraction or fallback.
     expect(Number(counts[0]!.split('/')[0])).toBeLessThanOrEqual(MAX_SAMPLED_TEXTURES);
   });
@@ -286,7 +331,9 @@ describe('terrain material texture budget', () => {
     expect(second[0]).toEqual({ from: noMirrors, to: plain });
     const plainTextures = fragmentBindings(build.mesh.geometry, plain).textures;
     expect(plainTextures).toContain((build.mesh.userData.fixture as { art: Texture }).art);
-    expect(plainTextures.length).toBeLessThanOrEqual(3);
+    // The original three art/light inputs plus the shared grade atlas and cloud cache.
+    expect(plainTextures.filter(isGradeMap)).toHaveLength(1);
+    expect(plainTextures.length).toBeLessThanOrEqual(5);
 
     // Nothing lighter exists: a third refusal changes nothing (and does not throw or loop).
     expect(

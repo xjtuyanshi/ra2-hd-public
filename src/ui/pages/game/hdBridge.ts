@@ -1,3 +1,6 @@
+import { setSessionShortcutCode, trackGameChatEntry } from './gameInput';
+import { createChatEntryGuess } from './chatEntryGuess';
+import { RA2_CHAT_ENTRY_POLICY } from '../../../games/ra2/chatEntryPolicy';
 import { parseAliveParams } from '../../../../packages/hd-renderer/src/livingWorld';
 import { parseWaterStyle, WATER_STYLES, type WaterStyle } from '../../../../packages/hd-renderer/src/ra2/waterStyles';
 import type { VmShell } from '../../../adapter/vmShell';
@@ -561,6 +564,9 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
   host.screen.parentElement!.insertBefore(canvas, host.screen);
 
   let live: LiveView | null = null;
+  let tuningPanel: { dispose(): void } | null = null;
+  const chatEntry = createChatEntryGuess(RA2_CHAT_ENTRY_POLICY);
+  const stopChatTracking = trackGameChatEntry(host.screen, chatEntry);
   /** Map names below are keys: lower-cased, without the extension (see `mapKey`). */
   let liveMap: string | null = null;
   /** Last snapshot pushed to `live`; readers return the identical object while nothing changed. */
@@ -1415,11 +1421,17 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
       .get('hd-vproj')
       ?.trim()
       .replace(/^\/+|\/+$/g, '');
+    let tuningModule: typeof import('../../../../packages/hd-renderer/src/ra2/lush2Tuning') | null = null;
     void Promise.all([
       import('../../../../packages/hd-renderer/src/live/liveView'),
       preset ? import('../../../../packages/hd-renderer/src/HdRenderer') : null,
+      params.has('hd-tone') ? import('../../../../packages/hd-renderer/src/ra2/moistTone') : null,
+      import.meta.env.DEV && (params.get('hd-tone') === 'lush2' || params.get('hd-tune') === '1')
+        ? import('../../../../packages/hd-renderer/src/ra2/lush2Tuning')
+        : null,
     ])
-      .then(async ([{ LiveView }, renderer]) => {
+      .then(async ([{ LiveView }, renderer, tone, tuning]) => {
+        tuningModule = tuning;
         // A stopped bridge must not create a GPU device for its detached canvas.
         if (stopped) return null;
         const timeOfDay = params.has('hd-time') ? Number(params.get('hd-time')) : undefined;
@@ -1454,8 +1466,9 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
         });
         if (preset && renderer) {
           renderer.applyLookPreset(view.hd.settings, preset);
-          view.hd.applySettings();
         }
+        if (tone) tone.applyMoistTone(view.hd.settings, view.theater, tone.parseToneStyle(params.get('hd-tone')));
+        if (preset || tone) view.hd.applySettings();
         if (topEffects) view.hd.enableTopEffects();
         // A watched view never waits for a pipeline compiler: what is new appears a few frames later instead of the
         // whole picture standing still (?hd-pipelines=sync keeps three's own behaviour).
@@ -1472,6 +1485,9 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
             : null;
         if (stopped || loading !== mapId) return view.dispose();
         diagnostics?.cancelFrameCapture('HD view replaced');
+        tuningPanel?.dispose();
+        tuningPanel = null;
+        chatEntry.reset();
         live?.dispose();
         if (spriteTuning) {
           const panel = spriteTuning.mountSpriteIntegrationTuning(
@@ -1488,6 +1504,27 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
           };
         }
         live = view;
+        if (tuningModule) {
+          const panel = tuningModule.mountLush2Tuning(
+            canvas.parentElement!,
+            view.hd,
+            view.theater,
+            parseAliveParams(params, 'hd-alive'),
+            () => host.screen.focus({ preventScroll: true }),
+            chatEntry.isOpen,
+          );
+          // Input was installed before this async view. Reserve by physical code at its forwarding entry,
+          // rather than relying on registration order among window capture listeners.
+          // Chat is guessed from forwarded keys, not a native signal. Remapped KEYBOARD.INI bindings may
+          // desynchronise it; Escape always closes the estimate. Canvas mouse buttons leave chat open.
+          setSessionShortcutCode('Backquote', true);
+          tuningPanel = {
+            dispose() {
+              panel.dispose();
+              setSessionShortcutCode('Backquote', false);
+            },
+          };
+        }
         liveMap = mapId;
         viewHadState = stateMap === mapId && latestState !== null;
         viewHadObjects = viewHadState && !!latestState?.objects.length;
@@ -1622,6 +1659,7 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
     // same, starts out of sight again. A match that merely had no snapshot for a while (an in-game menu owned the
     // screen) goes on where it was: its view is complete, and hiding it would flash the original picture.
     if (state && mapId && (mapId !== matchMap || state.frame < matchFrame)) {
+      chatEntry.reset();
       const firstBattleFrameAt = matchMap === null ? timeline.firstBattleFrameAt : null;
       finishFadeOut();
       setHole(null, 'new-match');
@@ -2104,6 +2142,7 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
     ...(diagnostics ? { diagnostics: diagnostics.handle } : {}),
     toggle() {
       if (stopped) return enabled;
+      chatEntry.reset();
       enabled = !enabled;
       nativeDrawQueue.length = 0;
       if (native && !polling) {
@@ -2183,6 +2222,7 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
   const stop = () => {
     if (stopped) return;
     stopped = true;
+    stopChatTracking();
     diagnostics?.dispose();
     cancelAnimationFrame(frame);
     if (nativePollTimer !== null) clearTimeout(nativePollTimer);
@@ -2214,6 +2254,8 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
     host.frameRenderer.setTransparentKey(null);
     host.frameRenderer.setTransparentRect(null);
     host.frameRenderer.setOpacityRegion(null);
+    tuningPanel?.dispose();
+    tuningPanel = null;
     live?.dispose();
     live = null;
     governor = null;

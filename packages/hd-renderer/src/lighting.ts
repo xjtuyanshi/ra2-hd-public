@@ -11,7 +11,7 @@ import {
 import { Fn, If, float, sRGBTransferEOTF, sRGBTransferOETF, uniform } from 'three/tsl';
 import type { AtmosphereProfile } from './contract';
 import type { ShaderNode } from './tsl';
-import { LivingWorldNodes, shadeCloudColour } from './livingWorldNodes';
+import { LivingWorldNodes, shadeCloudColour, linearCloudFactor } from './livingWorldNodes';
 
 /** Renderer-local scene multipliers are independent of the authored map-grade weight and all adaptation inputs. */
 export class SceneLightingUniforms {
@@ -37,7 +37,7 @@ export function sceneLitColour(colour: ShaderNode, multiplier: ShaderNode): Shad
 /** Physical materials call this after sun/sky lighting and before three adds their separate emissive term. */
 export function finishSceneLighting(builder: NodeBuilder, multiplier: ShaderNode, cloud: ShaderNode = float(1)): void {
   const { outgoingLight } = builder.context as { outgoingLight: ShaderNode };
-  outgoingLight.assign(shadeCloudColour(sceneLitColour(outgoingLight, multiplier), cloud));
+  outgoingLight.assign(shadeCloudColour(sceneLitColour(outgoingLight, multiplier), linearCloudFactor(cloud).toVar()));
 }
 
 class SceneLightingModel extends PhysicalLightingModel {

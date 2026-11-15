@@ -1,5 +1,6 @@
 import { configureSpriteIntegration } from '../src/ra2/spriteIntegrationTuning';
 import { spriteIntegrationFor } from '../src/spriteIntegration';
+import { lush2Defaults, lush2Mapping } from '../src/ra2/lush2Tone';
 import { describe, expect, it } from 'vitest';
 import {
   AmbientLight,
@@ -52,6 +53,7 @@ import { faithfulToneMap } from '../src/post';
 import { MapLightGrade } from '../src/ra2/mapLighting';
 import type { Ra2Cache } from '../src/ra2/cache';
 import { syntheticModel, syntheticSection } from './fixtures/syntheticVoxels';
+import { assertCachedCloudReceiver, assertNoTextureLayoutFunctions } from './fixtures/cloudShader';
 
 const MAX_VERTEX_BUFFERS = 8;
 const MAX_UNIFORM_BYTES = 65536;
@@ -110,6 +112,8 @@ function layout(mesh: Mesh, uniformLimit = MAX_UNIFORM_BYTES, capture?: TerrainD
   builder.camera = new OrthographicCamera(-1, 1, 1, -1, 0.1, 400);
   builder.scene = new Scene();
   builder.build();
+  assertNoTextureLayoutFunctions(builder.vertexShader, mesh.name || 'vertex material');
+  assertNoTextureLayoutFunctions(builder.fragmentShader, mesh.name || 'fragment material');
   const attributes = builder.getAttributesArray().map((a) => a.node?.attribute ?? mesh.geometry.getAttribute(a.name));
   expect(attributes.every(Boolean)).toBe(true);
   const buffers = backend.attributeUtils.createShaderVertexBuffers({ getAttributes: () => attributes });
@@ -141,7 +145,7 @@ function layout(mesh: Mesh, uniformLimit = MAX_UNIFORM_BYTES, capture?: TerrainD
 
 function assertLimits(mesh: Mesh, uniformLimit = MAX_UNIFORM_BYTES, capture?: TerrainDepth) {
   const result = layout(mesh, uniformLimit, capture);
-  assertNeutralCloudFunction(result.fragmentShader);
+  assertNeutralCloudFunction(result.fragmentShader, mesh.name || 'material');
   expect(result.buffers.length, mesh.name).toBeGreaterThan(0);
   expect(result.buffers.length, mesh.name).toBeLessThanOrEqual(MAX_VERTEX_BUFFERS);
   expect(result.attributes.length, mesh.name).toBeLessThanOrEqual(16);
@@ -150,32 +154,12 @@ function assertLimits(mesh: Mesh, uniformLimit = MAX_UNIFORM_BYTES, capture?: Te
 }
 
 /** Audit every compiled material using clouds, including physical, sprite, water and reflection variants. */
-function assertNeutralCloudFunction(shader: string) {
-  if (!shader.includes('aliveCloudStrength')) return;
-  // A shared inline Fn can initialize inside one branch and leave zero in its sibling (the black-ore regression).
-  // A named function keeps the neutral assignment in the callee, before its strength-dependent branch.
-  const declaration = shader.match(/(?:fn|float) aliveCloudShadow\s*\([^)]*\)[^{]*\{/);
-  expect(declaration, 'cloud paths must call a scope-local shader function').not.toBeNull();
-  const start = declaration!.index! + declaration![0].length;
-  let depth = 1,
-    end = start;
-  for (; depth && end < shader.length; end++) {
-    if (shader[end] === '{') depth++;
-    if (shader[end] === '}') depth--;
-  }
-  const body = shader.slice(start, end - 1);
-  const neutral = body.indexOf('aliveCloudNeutral = 1.0;');
-  const branch = body.indexOf('if (');
-  expect(neutral).toBeGreaterThan(-1);
-  expect(branch).toBeGreaterThan(neutral);
-  expect(body).toMatch(/if \( \( strength > 0\.0 \) \)/);
-  expect(body.trimEnd()).toMatch(/return aliveCloudNeutral;$/);
-  expect(body.match(/aliveCloudNeutral = /g)).toHaveLength(2);
-  const calls = shader.match(/aliveCloudShadow\( [^\n]+aliveCloudStrength, [^\n]*aliveCloudForm \)/g) ?? [];
-  expect(calls, 'each material must evaluate the field once, shared by every optical term').toHaveLength(1);
+function assertNeutralCloudFunction(shader: string, label = 'cloud material') {
+  if (!shader.includes('aliveCoverageEnabled')) return;
+  assertCachedCloudReceiver(shader, label, undefined, label.includes('debugView'));
   const colour = shader.match(/(?:fn|vec3) aliveCloudColour\s*\([^)]*\)[^{]*\{([^}]+)\}/)?.[1];
   if (colour) {
-    // grey=1 -> cover=0 -> mix(1,tint,0)*1, so disabled clouds never tint a surface.
+    // Raw coverage 0 produces grey=1 -> cover=0 -> mix(1,tint,0)*1, so disabled clouds never tint a surface.
     expect(colour).toMatch(/clamp\( \( \( 1\.0 - grey \) \/ darkening \)/);
     expect(colour).toMatch(/return \( mix\( vec3(?:<f32>)?\( 1\.0(?:, 1\.0, 1\.0)? \)/);
     expect(colour).toMatch(/\* (?:vec3(?:<f32>)?\( )?grey/);
@@ -269,18 +253,24 @@ describe('r186 vertex and uniform binding budget', () => {
                 builder.scene = new Scene();
                 builder.build();
                 const shader = builder.fragmentShader;
-                assertNeutralCloudFunction(shader);
-                // One explicit base-stack VarNode serves every branch; a real function still owns identity.
-                // Sharing must not move initialization into a sibling branch (the black-ore regression).
-                const calls =
-                  shader.match(/aliveCloudShadow\( [^\n]+aliveCloudStrength, [^\n]*aliveCloudForm \)/g) ?? [];
-                expect(calls).toHaveLength(1);
+                const label = `${mesh.name || 'sprite'} (HD=${!!hd}, materials=${!!materials}, WebGL=${forceWebGL})`;
+                assertNoTextureLayoutFunctions(builder.vertexShader, label);
+                assertNoTextureLayoutFunctions(shader, label);
+                assertNeutralCloudFunction(shader, label);
+                // Count the guarded inline fetch, shared by every optical term and sprite branch.
+                const { branch } = assertCachedCloudReceiver(shader, label);
+                expect(branch.match(/\b(?:textureSample\w*|textureLoad|texture)\s*\(/g), label).toHaveLength(1);
                 const main = shader.slice(shader.search(/(?:fn|void) main\(/));
-                const assignment = main.indexOf('aliveCloudFactor = aliveCloudColour(');
+                const assignment = main.indexOf('aliveCloudFactor = ');
                 expect(assignment).toBeGreaterThan(-1);
                 // The initializer must be at main's top level, even when the first shaded path is skipped.
                 const prefix = main.slice(0, assignment);
                 expect((prefix.match(/\{/g)?.length ?? 0) - (prefix.match(/\}/g)?.length ?? 0)).toBe(1);
+                const linearAssignment = main.indexOf('aliveCloudLinearFactor = ');
+                expect(linearAssignment).toBeGreaterThan(assignment);
+                const linearPrefix = main.slice(0, linearAssignment);
+                expect((linearPrefix.match(/\{/g)?.length ?? 0) - (linearPrefix.match(/\}/g)?.length ?? 0)).toBe(1);
+                expect(shader.match(/pow\( [^\n]+2\.2/g)).toHaveLength(1);
                 expect(shader).not.toContain('aliveCloudMultiplier =');
                 expect(shader).not.toMatch(/\b(?:NaN|undefined)\b/);
               }
@@ -338,6 +328,17 @@ describe('r186 vertex and uniform binding budget', () => {
       const windy = assertLimits(layer.mesh);
       expect(windy.vertexShader).toBe(off.vertexShader);
       expect(windy.fragmentShader).toBe(off.fragmentShader);
+      for (const theater of ['temperate', 'snow']) {
+        const p = lush2Mapping({ ...lush2Defaults(theater), patchScale: 14, contact: 0, gold: 1 }, theater);
+        source.nodes!.cloudTone.set(p.tone);
+        alive.set(p.alive);
+        alive.update(10, 0.6, 0, 0, false);
+        const tuned = assertLimits(layer.mesh);
+        expect(tuned.fragmentShader).toBe(off.fragmentShader);
+        expect(tuned.vertexShader).toBe(off.vertexShader);
+        expect(tuned.sampledTextures).toEqual(off.sampledTextures);
+      }
+      source.nodes!.cloudTone.set(null);
       alive.set(false);
       alive.update(10, 0.6, 0, 0, false);
       const restored = assertLimits(layer.mesh);
@@ -368,16 +369,17 @@ describe('r186 vertex and uniform binding budget', () => {
     }
   });
 
-  it('switches raw cloud debug in the same display shader without any sampled textures', () => {
+  it('switches raw cloud debug in the same display shader with the shared coverage cache', () => {
     const nodes = new AtmosphereNodes();
     const material = new MeshBasicNodeMaterial();
     material.colorNode = nodes.alive.debugView(vec4(0.2, 0.4, 0.6, 1), vec2(85, 135), float(1));
     const mesh = new Mesh(new PlaneGeometry(1, 1), material);
+    mesh.name = 'raw cloud debug display (LivingWorldNodes.debugView)';
     try {
       const off = assertLimits(mesh);
       expect(off.fragmentShader).toContain('aliveDebugCloud');
       expect(off.fragmentShader).toContain('aliveCloudStrength');
-      expect(off.fragmentSampledTextures).toHaveLength(0);
+      expect(off.fragmentSampledTextures).toHaveLength(1);
       nodes.alive.set({ clouds: true, debugCloud: true });
       nodes.alive.update(8, 0.6, 0, 0, false);
       expect(assertLimits(mesh).fragmentShader).toBe(off.fragmentShader);
@@ -611,11 +613,16 @@ describe('r186 vertex and uniform binding budget', () => {
       camera: OrthographicCamera;
       scene: Scene;
       build(): void;
+      vertexShader: string;
+      fragmentShader: string;
       uniforms: Record<'vertex' | 'fragment', { node: { value: unknown } }[]>;
     };
     builder.camera = new OrthographicCamera(-1, 1, 1, -1, 0.1, 400);
     builder.scene = new Scene();
     builder.build();
+    assertNoTextureLayoutFunctions(builder.vertexShader, 'layer texture ownership vertex');
+    assertNoTextureLayoutFunctions(builder.fragmentShader, 'layer texture ownership fragment');
+    assertNeutralCloudFunction(builder.fragmentShader, 'layer texture ownership');
     const values = () => [...builder.uniforms.vertex, ...builder.uniforms.fragment].map((entry) => entry.node.value);
     const sizes = () =>
       values()
@@ -1310,6 +1317,9 @@ describe('r186 vertex and uniform binding budget', () => {
         builder.camera = new OrthographicCamera(-1, 1, 1, -1, 0.1, 400);
         builder.scene = new Scene();
         builder.build();
+        assertNoTextureLayoutFunctions(builder.vertexShader, `voxel reflection vertex (WebGL=${forceWebGL})`);
+        assertNoTextureLayoutFunctions(builder.fragmentShader, `voxel reflection fragment (WebGL=${forceWebGL})`);
+        assertNeutralCloudFunction(builder.fragmentShader, `voxel reflection (WebGL=${forceWebGL})`);
         expect(builder.vertexShader).not.toMatch(/\b(?:NaN|undefined)\b/);
         expect(builder.fragmentShader).not.toMatch(/\b(?:NaN|undefined)\b/);
         expect(builder.fragmentShader).toMatch(/\bsin\(/);
@@ -1399,7 +1409,8 @@ describe('r186 vertex and uniform binding budget', () => {
     // A physical material constructed without a living-world binding must still multiply by one, never undefined.
     const geometry = new PlaneGeometry();
     const neutralShader = assertLimits(new Mesh(geometry, plain)).fragmentShader;
-    expect(neutralShader).toMatch(/aliveCloudShade\( [^\n]+, vec3<f32>\( 1\.0(?:, 1\.0, 1\.0)? \) \)/);
+    expect(neutralShader).toMatch(/aliveCloudLinearFactor = vec3<f32>\( 1\.0(?:, 1\.0, 1\.0)? \)/);
+    expect(neutralShader).toContain('aliveCloudShade(');
     expect(neutralShader).not.toContain('aliveCloudStrength');
     const bound = plain.clone();
     bound.cloudShadow = source.nodes!.alive.shadow;
@@ -1416,7 +1427,13 @@ describe('r186 vertex and uniform binding budget', () => {
           // The atlas fallback mixes land and protected water-body factors by its existing water mask.
           expect(inputs.cloudShadow).toBeDefined();
           expect(inputs.cloudShadow).not.toBe(source.nodes!.alive.shadow);
-        } else expect(inputs.cloudShadow).toBe(source.nodes!.alive.shadow);
+        } else if (material === bound) {
+          expect(inputs.cloudShadow).toBe(source.nodes!.alive.shadow);
+        } else {
+          // Voxel physical lighting now shares a foot-sampled coverage/factor with its output grade.
+          expect(inputs.cloudShadow).toBeDefined();
+          expect(inputs.cloudShadow).not.toBe(source.nodes!.alive.shadow);
+        }
         const clone = material.clone() as typeof inputs;
         try {
           expect(clone.cloudShadow).toBe(inputs.cloudShadow);

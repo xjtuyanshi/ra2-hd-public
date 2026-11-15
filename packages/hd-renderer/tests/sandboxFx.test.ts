@@ -3,6 +3,8 @@ import { LiveView, type LiveSnapshot } from '../src/live/liveView';
 import { engineAnchor } from '../src/live/effectSprites';
 import { waveRings } from '../src/live/beams';
 import { Vector3 } from 'three/webgpu';
+import { neutralGrade } from '../src/post';
+import type { HdSettings } from '../src/HdRenderer';
 
 const random = Math.random;
 
@@ -33,7 +35,8 @@ async function bench(query: string) {
       },
     },
     // The bench reads the renderer's node set for the vehicle look state; undefined selects the default set.
-    hd: { nodes: undefined, stats: vi.fn() },
+    hd: { nodes: undefined, stats: vi.fn(), settings: { ...neutralGrade(), tone: null }, applySettings: vi.fn() },
+    theater: 'temperate',
     resize: vi.fn(),
     render: vi.fn(),
     push: (snapshot: LiveSnapshot) => snapshots.push(snapshot),
@@ -217,5 +220,18 @@ describe('native beam bench snapshots', () => {
         expect(centre.distanceTo(from.clone().lerp(to, t))).toBeLessThan(1e-10);
       }
     }
+  });
+});
+
+describe('sandbox final tone wiring', () => {
+  it('applies theatre tone after look/set overrides, then toneset overrides', async () => {
+    await bench('?look=cinematic&set=gradeContrast:0.2&tone=moist2&toneset=density:0.3,chroma:1.4/1.2/1');
+    const { hd } = (window as unknown as { __hd: { hd: { settings: HdSettings } } }).__hd;
+    expect(hd.settings.tone).toMatchObject({
+      density: 0.3,
+      chroma: [1.4, 1.2, 1],
+      // Temperate keeps the look's balance and replaces its shadow tint.
+      grade: { gradeContrast: 0.2, gradeBalance: hd.settings.gradeBalance, gradeShadowTint: [0.85, 1.1, 0.85] },
+    });
   });
 });

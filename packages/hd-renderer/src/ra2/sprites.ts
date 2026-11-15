@@ -8,6 +8,9 @@ import {
   softRangeNode,
   highlightRollNode,
 } from '../spriteIntegration';
+import { linearCloudFactor } from '../livingWorldNodes';
+import { objectCloudFactor } from '../objectCloudTone';
+import { cloudToneNode } from '../cloudTone';
 import type { TerrainDepth } from '../terrainDepth';
 import { NOT_CAPTURED_CODE } from '../objectDepth';
 import { DirtyAttribute } from '../dirtyAttribute';
@@ -892,11 +895,19 @@ class SpriteGraph {
         return select(hidden.greaterThan(0.5), aAnchor, enhanced);
       })();
     material.positionNode = placement('main');
+    const footCoverage = nodes.alive
+      .coverageAt(mix(positionWorld.xz, aAnchor.xz, nodes.cloudTone.strength.greaterThan(0).select(1, 0)))
+      .toVar('aliveCloudCoverage');
+    const footShadow = objectCloudFactor(nodes, footCoverage).toVar('aliveCloudFactor');
+    const linearFootShadow = linearCloudFactor(footShadow).toVar();
+    const shadeSurface = (colour: ShaderNode) => nodes.alive.shadeAt(colour, linearFootShadow);
     // One colour graph per material (the main pass and the enhanced look's ground passes below).
     const colourNode = (): ShaderNode =>
       Fn(() => {
         // Declare once before lit/unlit/relight siblings; a factor first used inside select's lit branch is unsafe.
-        nodes.alive.shadow.toStack();
+        footCoverage.toStack();
+        footShadow.toStack();
+        linearFootShadow.toStack();
         const texel = vec2(aRect.x.add(u.mul(aRect.z)), aRect.y.add(v.mul(aRect.w))).toVar();
         const atlasUv = texel.div(atlasSize);
         // Derivatives must be evaluated before any non-uniform control flow (including the look branch).
@@ -1084,7 +1095,7 @@ class SpriteGraph {
         const shade = (c: ShaderNode, paint: ShaderNode): ShaderNode => {
           const lit: ShaderNode = objectLit(c);
           const base = mix(moonlit(lit, nodes), lit, paint).mul(this.light);
-          const eventBase = nodes.alive.shade(sceneLitColour(base, sceneMultiplier));
+          const eventBase = shadeSurface(sceneLitColour(base, sceneMultiplier));
           return select(
             isUnlit.greaterThan(0.5),
             c.mul(look.unlitBaseLight),
@@ -1408,12 +1419,12 @@ class SpriteGraph {
               .mul(look.sunLight)
               .mul(gradeLight)
               .mul(look.glass.mul(core).mul(occlusion));
-            const sky: ShaderNode = nodes.alive.shade(
+            const sky: ShaderNode = shadeSurface(
               sceneLitColour(pane.sky.mul(occlusion).mul(gradeLight), sceneMultiplier),
             );
             const relit: ShaderNode = mix(base, sky, reflectance)
-              .add(nodes.alive.shade(sceneLitColour(highlight, sceneMultiplier)))
-              .add(nodes.alive.shade(sceneLitColour(glint, sceneMultiplier)));
+              .add(shadeSurface(sceneLitColour(highlight, sceneMultiplier)))
+              .add(shadeSurface(sceneLitColour(glint, sceneMultiplier)));
             result.assign(select(flatArt, result, vec4(relit.add(litGlow), litAlpha)));
             const isDecal: ShaderNode = step(0.5, aFlat).mul(float(1).sub(step(1.5, aFlat)));
             const crystal: ShaderNode = aFlags.w.mul(isDecal).mul(m.has);
@@ -1500,7 +1511,7 @@ class SpriteGraph {
         // Ore's authored self-light still bypasses map/night grading, but cloud cover is a surface shadow.
         // House-converter lamps remain emitted light and are mixed in separately below.
         If(isUnlit.greaterThan(0.5), () => {
-          result.rgb.assign(nodes.alive.shade(result.rgb));
+          result.rgb.assign(shadeSurface(result.rgb));
         });
         unlitShareOut.assign(unlitShare);
         // Black shadow/contact RGB naturally darkens the already transformed receiver. Only cast-shadow coverage
@@ -1522,7 +1533,23 @@ class SpriteGraph {
         // and never brightens them), so only the blitter's added colour applies there.
         const tintedLit: ShaderNode = applyObjectTint(result.rgb, aTint.x, aTint.y, grade.x, look.unlitBaseLight);
         const tintedUnlit: ShaderNode = applyObjectTint(unlitColour, float(1), aTint.y, 1, look.unlitBaseLight);
-        return vec4(mix(tintedLit, tintedUnlit, unlitShare), result.a.mul(bodyOpacity));
+        const finished = mix(tintedLit, tintedUnlit, unlitShare).toVar();
+        // Flat kinds are ground decals, shadows and reflections, not upright object pictures.
+        If(aFlat.lessThan(0.5), () => {
+          finished.assign(
+            cloudToneNode(
+              finished,
+              finished,
+              nodes.alive.gradeCoverage(footCoverage),
+              nodes.cloudTone,
+              nodes.night,
+              true,
+              float(0),
+              positionWorld.y.sub(aAnchor.y).max(0),
+            ),
+          );
+        });
+        return vec4(finished, result.a.mul(bodyOpacity));
       })();
     const mainColour = colourNode();
     if (capture) {

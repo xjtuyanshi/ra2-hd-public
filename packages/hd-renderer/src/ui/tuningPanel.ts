@@ -16,6 +16,10 @@ export interface TuningOptions<K extends string> {
   hotkey?: string;
   corner?: 'top-right' | 'bottom-right';
   title?: string;
+  /** Host-provided text-entry state, observed or inferred from forwarded input. */
+  textEntryActive?(): boolean;
+  /** Return keyboard ownership to the host after a completed control action. */
+  returnFocus?(): void;
 }
 /** Storage is optional, including environments where merely accessing localStorage throws. */
 export function tuningModel<K extends string>(
@@ -66,13 +70,15 @@ export function mountTuningPanel<K extends string>(host: HTMLElement, options: T
   const model = tuningModel(options);
   const root = document.createElement('section');
   root.setAttribute('aria-label', options.title ?? '画面调节');
-  if (options.title) root.title = options.title;
   Object.assign(root.style, {
     position: 'absolute',
-    ...(options.corner === 'bottom-right' ? { bottom: '12px' } : { top: '12px' }),
-    right: '12px',
+    ...(options.corner === 'bottom-right'
+      ? { bottom: '12px', right: '12px' }
+      : options.corner === 'top-right'
+        ? { top: '12px', right: '12px' }
+        : { top: '12px', left: '12px' }),
     zIndex: '10000',
-    width: '300px',
+    width: '260px',
     maxHeight: 'calc(100vh - 24px)',
     overflowY: 'auto',
     boxSizing: 'border-box',
@@ -92,9 +98,14 @@ export function mountTuningPanel<K extends string>(host: HTMLElement, options: T
   const state = document.createElement('strong');
   state.style.cssText = 'display:block;font-size:25px;margin-bottom:8px';
   const body = document.createElement('div');
+  body.hidden = true;
+  const release = (control: HTMLElement) => {
+    control.blur();
+    options.returnFocus?.();
+  };
   const inputs = new Map<K, { input: HTMLInputElement; output: HTMLOutputElement }>();
   const refresh = () => {
-    state.textContent = (options.names ?? ['润v2', '当前'])[model.isNew() ? 0 : 1];
+    state.textContent = (options.names ?? ['润r3', '当前'])[model.isNew() ? 0 : 1];
     const values = model.get();
     for (const [key, { input, output }] of inputs) {
       input.value = String(values[key]);
@@ -109,15 +120,10 @@ export function mountTuningPanel<K extends string>(host: HTMLElement, options: T
     listen(b, 'click', () => {
       action();
       refresh();
+      release(b);
     });
     return b;
   };
-  if (options.title) {
-    const title = document.createElement('div');
-    title.textContent = options.title;
-    title.style.cssText = 'font-weight:bold;margin-bottom:6px';
-    root.append(title);
-  }
   root.append(
     state,
     button('恢复推荐值', () => model.reset()),
@@ -143,6 +149,8 @@ export function mountTuningPanel<K extends string>(host: HTMLElement, options: T
       model.set({ [field.key]: Number(input.value) } as Partial<Record<K, number>>);
       refresh();
     });
+    listen(input, 'change', () => release(input));
+    listen(input, 'pointerup', () => release(input));
     inputs.set(field.key, { input, output });
     row.append(output, input);
     body.append(row);
@@ -153,10 +161,19 @@ export function mountTuningPanel<K extends string>(host: HTMLElement, options: T
     (event) => {
       const e = event as KeyboardEvent;
       const target = e.target as HTMLElement | null;
-      if (target?.closest?.('input,textarea,select,[contenteditable="true"]')) return;
+      const focused = document.activeElement as HTMLElement | null;
+      if (
+        e.isComposing ||
+        options.textEntryActive?.() ||
+        target?.isContentEditable ||
+        focused?.isContentEditable ||
+        target?.closest?.('input,textarea,select,[contenteditable]:not([contenteditable="false"])') ||
+        focused?.closest?.('input,textarea,select,[contenteditable]:not([contenteditable="false"])')
+      )
+        return;
       if (e.code !== (options.hotkey ?? 'Backquote') || e.altKey || e.ctrlKey || e.metaKey) return;
       e.preventDefault();
-      e.stopPropagation();
+      e.stopImmediatePropagation();
       if (e.repeat) return;
       if (e.shiftKey) root.hidden = !root.hidden;
       else model.ab(!model.isNew());

@@ -32,7 +32,7 @@ import { DEFAULT_ATMOSPHERE_NODES, moonlit, sampleLightField } from '../atmosphe
 import type { MirrorSource } from '../mirrorAtlas';
 import type { ShaderNode } from '../tsl';
 import type { WaterUniforms } from '../waterShading';
-import { RIPPLE_SLOPE_RANGE, WATER_TEXTURE_SIZE, waterTextures } from '../proceduralTextures';
+import { RIPPLE_SLOPE_RANGE, WATER_TEXTURE_SIZE, waterTextureNode } from '../proceduralTextures';
 import { CLIFF_FIELD_MAX } from './shoreField';
 import { clearNormal, clearSlope, clearReflectionOffset, clearWaterLook } from './clearWater';
 import { LEVEL_HEIGHT } from '../world';
@@ -571,9 +571,8 @@ const BREAKER_FAR = 0.42;
 
 /** 0..1 gust patches ("cat's paws") drifting downwind: rougher water that gathers the sun glitter. */
 function gustAt(p: ShaderNode): ShaderNode {
-  const tex = waterTextures();
   const drift = vec2(Math.cos(WIND_ANGLE), Math.sin(WIND_ANGLE)).mul(time.mul(0.045));
-  return smoothstep(0.36, 0.68, texture(tex.noise, p.div(18).sub(drift)).r).mul(tuning.gust);
+  return smoothstep(0.36, 0.68, waterTextureNode('noise', p.div(18).sub(drift)).r).mul(tuning.gust);
 }
 
 /** Surface slope (d height / dx, d height / dz) of scrolled ripple normal-map layers. */
@@ -586,8 +585,7 @@ function rippleSlope(
   source: 'ripple' | 'chop' = 'ripple',
 ): ShaderNode {
   wind = tunedWind(wind);
-  const tex = waterTextures();
-  const map = source === 'chop' ? tex.chop : tex.ripple;
+
   const norm = Math.sqrt(RIPPLE_LAYERS.reduce((sum, layer) => sum + layer[3] * layer[3], 0));
   let rough: ShaderNode = float(0.55)
     .add(wind.mul(1.3))
@@ -603,7 +601,10 @@ function rippleSlope(
     // Layer coordinates: u along the layer's wind axis (the texture's x, where its waves travel), v across.
     const u: ShaderNode = p.x.mul(c).add(p.y.mul(s));
     const v: ShaderNode = p.y.mul(c).sub(p.x.mul(s));
-    const texel: ShaderNode = texture(map, vec2(u.sub(time.mul(tuning.rippleDrift).mul(drift)), v).div(tile));
+    const texel: ShaderNode = waterTextureNode(
+      source,
+      vec2(u.sub(time.mul(tuning.rippleDrift).mul(drift)), v).div(tile),
+    );
     const du: ShaderNode = texel.r.mul(2).sub(1).mul(RIPPLE_SLOPE_RANGE);
     const dv: ShaderNode = texel.g.mul(2).sub(1).mul(RIPPLE_SLOPE_RANGE);
     const w = (weight * RIPPLE_SLOPE) / norm;
@@ -615,7 +616,6 @@ function rippleSlope(
 
 /** Crest sharpness (ripple A channel) of the two broadest ripple layers, at the same drifting coordinates. */
 function rippleCrest(p: ShaderNode): ShaderNode {
-  const tex = waterTextures();
   let crest: ShaderNode = float(0);
   RIPPLE_LAYERS.slice(0, 2).forEach(([offset, tile, drift], i) => {
     const angle = WIND_ANGLE + offset;
@@ -623,7 +623,10 @@ function rippleCrest(p: ShaderNode): ShaderNode {
     const s = Math.sin(angle);
     const u: ShaderNode = p.x.mul(c).add(p.y.mul(s));
     const v: ShaderNode = p.y.mul(c).sub(p.x.mul(s));
-    const a: ShaderNode = texture(tex.ripple, vec2(u.sub(time.mul(tuning.rippleDrift).mul(drift)), v).div(tile)).a;
+    const a: ShaderNode = waterTextureNode(
+      'ripple',
+      vec2(u.sub(time.mul(tuning.rippleDrift).mul(drift)), v).div(tile),
+    ).a;
     crest = crest.max(i === 0 ? a : a.mul(0.85));
   });
   return crest;
@@ -666,13 +669,21 @@ function sharpCrestPeak(sharp: number): number {
 function sheenTrains(p: ShaderNode, wind: ShaderNode, gust: ShaderNode): { slope: ShaderNode; crest: ShaderNode } {
   wind = tunedWind(wind);
   const S = WATER_SHEEN;
-  const tex = waterTextures();
-  const warpSample: ShaderNode = texture(tex.noise, p.div(S.warpScale).add(vec2(time.mul(0.004), time.mul(-0.003))));
-  const curlSample: ShaderNode = texture(tex.noise, p.div(S.curlScale).add(vec2(time.mul(-0.01), time.mul(0.007))));
+  const warpSample: ShaderNode = waterTextureNode(
+    'noise',
+    p.div(S.warpScale).add(vec2(time.mul(0.004), time.mul(-0.003))),
+  );
+  const curlSample: ShaderNode = waterTextureNode(
+    'noise',
+    p.div(S.curlScale).add(vec2(time.mul(-0.01), time.mul(0.007))),
+  );
   const q: ShaderNode = p
     .add(vec2(warpSample.g.sub(0.5), warpSample.r.sub(0.5)).mul(S.warp * 2))
     .add(vec2(curlSample.g.sub(0.5), curlSample.r.sub(0.5)).mul(S.curl * 2));
-  const envelope: ShaderNode = texture(tex.noise, p.div(S.envelopeScale).add(vec2(time.mul(-0.006), time.mul(0.008))));
+  const envelope: ShaderNode = waterTextureNode(
+    'noise',
+    p.div(S.envelopeScale).add(vec2(time.mul(-0.006), time.mul(0.008))),
+  );
   const channels: ShaderNode[] = [envelope.g, envelope.b, envelope.r, envelope.g.oneMinus(), envelope.b.oneMinus()];
   const strength: ShaderNode = float(0.55)
     .add(wind.mul(1.3))
@@ -720,15 +731,14 @@ function sheenTrains(p: ShaderNode, wind: ShaderNode, gust: ShaderNode): { slope
  */
 function sheenWeb(p: ShaderNode, bend: ShaderNode): ShaderNode {
   const W = WATER_SHEEN.web;
-  const tex = waterTextures();
   // Screen-aligned ground axes: x - z runs across the screen (30 engine px per unit), x + z down it (15 px per unit).
   const screen: ShaderNode = vec2(p.x.sub(p.y), p.x.add(p.y)).add(bend.mul(W.bend));
-  const a: ShaderNode = texture(
-    tex.caustics,
+  const a: ShaderNode = waterTextureNode(
+    'caustics',
     screen.div(vec2(W.tileAcross, W.tileDown)).add(vec2(time.mul(W.driftA[0]), time.mul(W.driftA[1]))),
   ).r;
-  const b: ShaderNode = texture(
-    tex.caustics,
+  const b: ShaderNode = waterTextureNode(
+    'caustics',
     screen
       .div(vec2(W.tileAcross * W.second, W.tileDown * W.second))
       .add(vec2(time.mul(W.driftB[0]), time.mul(W.driftB[1]))),
@@ -813,10 +823,9 @@ function waterSheen(
 
 /** Slope of rain rings: sparse cells, each an expanding ring with a random phase (seeds from the hash texture). */
 function rainSlope(p: ShaderNode, rain: ShaderNode): ShaderNode {
-  const tex = waterTextures();
   const cell: ShaderNode = p.mul(4.0).floor();
-  const seed: ShaderNode = texture(tex.noise, cell.add(0.5).div(WATER_TEXTURE_SIZE)).a;
-  const seed2: ShaderNode = texture(tex.noise, cell.add(vec2(97.5, 41.5)).div(WATER_TEXTURE_SIZE)).a;
+  const seed: ShaderNode = waterTextureNode('noise', cell.add(0.5).div(WATER_TEXTURE_SIZE)).a;
+  const seed2: ShaderNode = waterTextureNode('noise', cell.add(vec2(97.5, 41.5)).div(WATER_TEXTURE_SIZE)).a;
   const local: ShaderNode = p.mul(4.0).fract().sub(vec2(seed, seed2).mul(0.6).add(0.2));
   const phase: ShaderNode = time.mul(1.1).add(seed.mul(9.0)).fract();
   const r: ShaderNode = local.length().max(0.001);
@@ -843,7 +852,6 @@ function enhancedSlope(
 function enhancedWaterLook(inputs: WaterLookInputs, nodes = DEFAULT_ATMOSPHERE_NODES): WaterLook {
   const { night, sceneBrightness } = nodes;
   const { position: p, shore, waterness, art, uniforms } = inputs;
-  const tex = waterTextures();
   const xz: ShaderNode = p.xz;
   const surf: ShaderNode = float(1).sub(inputs.calm ?? float(0));
   const depth: ShaderNode = max(shore, 0);
@@ -869,15 +877,15 @@ function enhancedWaterLook(inputs: WaterLookInputs, nodes = DEFAULT_ATMOSPHERE_N
   // Caustics: two scrolled copies of the caustic web, bent by the ripples; their sum is a moving net of light lines,
   // brightest where the two cross (the minimum or product of two thin webs leaves only the crossings: white specks).
   const t: ShaderNode = time;
-  const c1: ShaderNode = texture(
-    tex.caustics,
+  const c1: ShaderNode = waterTextureNode(
+    'caustics',
     xz
       .div(1.35)
       .add(slope.mul(0.3))
       .add(vec2(t.mul(0.035), t.mul(0.021))),
   ).r;
-  const c2: ShaderNode = texture(
-    tex.caustics,
+  const c2: ShaderNode = waterTextureNode(
+    'caustics',
     xz
       .div(1.9)
       .sub(slope.mul(0.25))
@@ -938,11 +946,11 @@ function enhancedWaterLook(inputs: WaterLookInputs, nodes = DEFAULT_ATMOSPHERE_N
   // Shoreline. The swash laps between SWASH_MIN and SWASH_MAX, out of phase along the bank (broad noise); a thin broken
   // foam line rides its edge (brighter while it runs in), wet sand shows behind it as it drains back, a fainter breaker
   // line rolls in from BREAKER_FAR, and lace foam drifts in the surf zone.
-  const along: ShaderNode = texture(tex.noise, xz.mul(0.11)).r;
+  const along: ShaderNode = waterTextureNode('noise', xz.mul(0.11)).r;
   // Breakup of the foam line: medium noise, so the line has gaps a few tenths of a cell long rather than dots.
-  const lace: ShaderNode = texture(tex.noise, xz.mul(0.3).add(vec2(t.mul(0.012), t.mul(-0.009)))).g;
+  const lace: ShaderNode = waterTextureNode('noise', xz.mul(0.3).add(vec2(t.mul(0.012), t.mul(-0.009)))).g;
   // Surf-zone lace: foam patches a tenth of a cell or so across, drifting (the fine noise is 1/24 of its tile).
-  const lace2: ShaderNode = texture(tex.noise, xz.mul(0.3).sub(vec2(t.mul(0.012), t.mul(0.004)))).b;
+  const lace2: ShaderNode = waterTextureNode('noise', xz.mul(0.3).sub(vec2(t.mul(0.012), t.mul(0.004)))).b;
   const cycle: ShaderNode = t.mul((Math.PI * 2) / SWASH_PERIOD).add(along.mul(14));
   const swash: ShaderNode = mix(float(SWASH_MIN), float(SWASH_MAX), sin(cycle).mul(0.5).add(0.5));
   // d(swash)/dt ~ cos(cycle): negative while the edge runs up the bank.
@@ -1518,7 +1526,6 @@ export interface BedWaterLook extends WaterLook {
 export function bedWaterLook(inputs: BedWaterInputs, nodes = DEFAULT_ATMOSPHERE_NODES): BedWaterLook {
   const { position: p, shore, waterness, art, uniforms, bedAt, columnForDisplay, reflectionLevel, detail } = inputs;
   const { night, sceneBrightness } = nodes;
-  const tex = waterTextures();
   const xz: ShaderNode = p.xz;
   const surf: ShaderNode = float(1).sub(inputs.calm ?? float(0));
   const gust = gustAt(xz);
@@ -1526,7 +1533,7 @@ export function bedWaterLook(inputs: BedWaterInputs, nodes = DEFAULT_ATMOSPHERE_
   const slope = enhancedSlope(xz, uniforms.wind, uniforms.rain, gust, rough);
   const normal: ShaderNode = normalize(vec3(slope.x.negate(), 1, slope.y.negate()));
 
-  const along: ShaderNode = texture(tex.noise, xz.mul(BED_SWASH.phaseScale)).r;
+  const along: ShaderNode = waterTextureNode('noise', xz.mul(BED_SWASH.phaseScale)).r;
   const cycle: ShaderNode = time.mul((Math.PI * 2) / BED_SWASH.period).add(along.mul(BED_SWASH.phaseSpread));
   const rise: ShaderNode = sin(cycle).mul(0.5).add(0.5);
   const front: ShaderNode = mix(float(BED_SWASH.retreat), float(-BED_SWASH.runup), rise);
@@ -1536,7 +1543,7 @@ export function bedWaterLook(inputs: BedWaterInputs, nodes = DEFAULT_ATMOSPHERE_
     .mul(smoothstep(BED_SWASH.retreat, 0, shore))
     .mul(surf);
   const coverage: ShaderNode = waterness.max(sheet);
-  const wetNoise: ShaderNode = texture(tex.noise, xz.mul(BEACH_NOISE.wetScale)).r.mul(2).sub(1);
+  const wetNoise: ShaderNode = waterTextureNode('noise', xz.mul(BEACH_NOISE.wetScale)).r.mul(2).sub(1);
   const wetReach: ShaderNode = float(BEACH_WET.reach).add(wetNoise.mul(BEACH_WET.jitter));
   const wetness: ShaderNode = smoothstep(wetReach.negate(), -BEACH_WET.full, shore).mul(surf);
   const wetSand = (bed: ShaderNode): ShaderNode => {
@@ -1553,15 +1560,15 @@ export function bedWaterLook(inputs: BedWaterInputs, nodes = DEFAULT_ATMOSPHERE_
   const transmission: ShaderNode = exp(vec3(...BED_ABSORPTION).mul(depth.negate()));
   const offset: ShaderNode = slope.mul(depth).mul(BED_REFRACTION);
   const boundedOffset: ShaderNode = offset.mul(float(BED_REFRACTION_MAX).div(max(offset.length(), BED_REFRACTION_MAX)));
-  const c1: ShaderNode = texture(
-    tex.caustics,
+  const c1: ShaderNode = waterTextureNode(
+    'caustics',
     xz
       .div(1.35)
       .add(slope.mul(0.3))
       .add(vec2(time.mul(0.035), time.mul(0.021))),
   ).r;
-  const c2: ShaderNode = texture(
-    tex.caustics,
+  const c2: ShaderNode = waterTextureNode(
+    'caustics',
     xz
       .div(1.9)
       .sub(slope.mul(0.25))
@@ -1743,8 +1750,8 @@ export function bedWaterLook(inputs: BedWaterInputs, nodes = DEFAULT_ATMOSPHERE_
   }
 
   const drift: ShaderNode = vec2(time.mul(BEACH_NOISE.driftX), time.mul(BEACH_NOISE.driftZ));
-  const lace: ShaderNode = texture(tex.noise, xz.mul(BEACH_NOISE.laceScale).add(drift)).g;
-  const fine: ShaderNode = texture(tex.noise, xz.mul(BEACH_NOISE.laceScale).sub(drift)).b;
+  const lace: ShaderNode = waterTextureNode('noise', xz.mul(BEACH_NOISE.laceScale).add(drift)).g;
+  const fine: ShaderNode = waterTextureNode('noise', xz.mul(BEACH_NOISE.laceScale).sub(drift)).b;
   const gaps: ShaderNode = smoothstep(BED_FOAM.laceLow, BED_FOAM.laceHigh, lace);
   const bubbles: ShaderNode = smoothstep(BED_FOAM.bubbleLow, BED_FOAM.bubbleHigh, fine);
   const line: ShaderNode = smoothstep(BED_FOAM.frontWidth, 0, abs(shore.sub(front)))
@@ -1766,7 +1773,7 @@ export function bedWaterLook(inputs: BedWaterInputs, nodes = DEFAULT_ATMOSPHERE_
   // fine lace drifts between them.
   const laceTile: ShaderNode | null = tile ? tile.lace : null;
   const wobble: ShaderNode | number = laceTile
-    ? texture(tex.noise, xz.mul(BED_FOAM.wobbleScale).add(drift)).r.sub(0.5).mul(BED_FOAM.wobble)
+    ? waterTextureNode('noise', xz.mul(BED_FOAM.wobbleScale).add(drift)).r.sub(0.5).mul(BED_FOAM.wobble)
     : 0;
   const wavyShore: ShaderNode = laceTile ? shore.add(wobble) : shore;
   const breakerWidth: number = laceTile ? BED_FOAM.wavyBreakerWidth : BED_FOAM.breakerWidth;
@@ -1818,8 +1825,8 @@ export function bedWaterLook(inputs: BedWaterInputs, nodes = DEFAULT_ATMOSPHERE_
   let swirl: ShaderNode | number = 0;
   if (laceTile) {
     const F = BED_FOAM;
-    const field: ShaderNode = texture(tex.noise, xz.mul(F.swirlScale).add(drift.mul(F.swirlDrift))).g;
-    const patches: ShaderNode = texture(tex.noise, xz.mul(F.swirlScale * 0.37).sub(drift)).r;
+    const field: ShaderNode = waterTextureNode('noise', xz.mul(F.swirlScale).add(drift.mul(F.swirlDrift))).g;
+    const patches: ShaderNode = waterTextureNode('noise', xz.mul(F.swirlScale * 0.37).sub(drift)).r;
     swirl = smoothstep(F.swirlWidth, F.swirlWidth * 0.3, abs(field.sub(0.5)))
       .mul(smoothstep(F.swirlPatchLow, F.swirlPatchHigh, patches))
       .mul(smoothstep(0.02, 0.08, shore))
@@ -1886,7 +1893,7 @@ export function bedWaterLook(inputs: BedWaterInputs, nodes = DEFAULT_ATMOSPHERE_
       const S = WATER_SHEEN;
       const onCrest: ShaderNode = smoothstep(S.crestLow, S.crestHigh, crestLine);
       const dashUv: ShaderNode = vec2(xz.x.sub(xz.y).mul(0.35), xz.x.add(xz.y)).div(S.dashScale);
-      const dash: ShaderNode = smoothstep(S.dashLow, S.dashHigh, texture(tex.noise, dashUv).b);
+      const dash: ShaderNode = smoothstep(S.dashLow, S.dashHigh, waterTextureNode('noise', dashUv).b);
       glints = glints
         .mul(mix(float(0.3), float(1.2), onCrest))
         .add(onCrest.mul(dash).mul(mix(float(S.dashGain), float(S.dashGain * S.dashBoost), nearShore)));
@@ -1919,8 +1926,8 @@ export function bedWaterLook(inputs: BedWaterInputs, nodes = DEFAULT_ATMOSPHERE_
     // horizontal streak (the sun on a wave facet) and twinkling with its own phase; the cell jitter follows the slope.
     const glintUv: ShaderNode = vec2(xz.x.sub(xz.y), xz.x.add(xz.y).mul(0.5)).mul(WATER_SURFACE.sparkCells);
     const cell: ShaderNode = glintUv.floor();
-    const seed: ShaderNode = texture(tex.noise, cell.add(0.5).div(WATER_TEXTURE_SIZE)).a;
-    const seed2: ShaderNode = texture(tex.noise, cell.add(vec2(53.5, 117.5)).div(WATER_TEXTURE_SIZE)).a;
+    const seed: ShaderNode = waterTextureNode('noise', cell.add(0.5).div(WATER_TEXTURE_SIZE)).a;
+    const seed2: ShaderNode = waterTextureNode('noise', cell.add(vec2(53.5, 117.5)).div(WATER_TEXTURE_SIZE)).a;
     const local: ShaderNode = glintUv
       .fract()
       .sub(vec2(seed, seed2).mul(0.5).add(0.25))
@@ -1934,7 +1941,7 @@ export function bedWaterLook(inputs: BedWaterInputs, nodes = DEFAULT_ATMOSPHERE_
     );
     const glint: ShaderNode = smoothstep(WATER_SURFACE.sparkThreshold, 1, seed).mul(streak).mul(twinkle);
     // Whitecaps break into specks: only the hash's brighter points of a high crest turn white.
-    const capHash: ShaderNode = texture(tex.noise, xz.mul(WATER_SURFACE.sparkScale * 1.7).sub(slope)).a;
+    const capHash: ShaderNode = waterTextureNode('noise', xz.mul(WATER_SURFACE.sparkScale * 1.7).sub(slope)).a;
     const whitecap: ShaderNode = smoothstep(WATER_SURFACE.capLow, WATER_SURFACE.capHigh, crest.mul(windiness))
       .mul(smoothstep(WATER_SURFACE.capBreakup, 1, capHash))
       .mul(WATER_SURFACE.capAmount)

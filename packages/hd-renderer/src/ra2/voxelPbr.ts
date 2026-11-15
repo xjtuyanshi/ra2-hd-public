@@ -1,3 +1,4 @@
+import { objectCloudTone } from '../objectCloudTone';
 import {
   Color,
   DataTexture,
@@ -322,7 +323,8 @@ function createGraph(
   const state = voxelPbrFor(nodes);
   const material = nodes.own(setSilhouette(new RemasterMaterial()));
   material.sceneMultiplier = nodes.sceneObjectMul;
-  material.cloudShadow = nodes.alive.shadow;
+  const cloud = objectCloudTone(nodes);
+  material.cloudShadow = cloud.shadow;
   const lut = textureSlot();
   material.name = 'voxel-remaster';
   material.state = state;
@@ -445,7 +447,7 @@ function createGraph(
   material.outputNode = Fn(() =>
     vec4(
       applyObjectTint(
-        voxelLookFinish(output.rgb, voxelState, normalWorldGeometry),
+        cloud.grade(voxelLookFinish(output.rgb, voxelState, normalWorldGeometry)),
         meshObjectTint.x,
         meshObjectTint.y,
         level,
@@ -456,7 +458,12 @@ function createGraph(
   )();
   // Standard Lambert already divides irradiance by pi. HdRenderer's noon exposure is pi/E_noon; no emissive
   // daylight fill or second exposure factor belongs here. Metal energy conservation and GGX remain physical.
-  material.colorNode = mix(moonlit(lit, nodes), lit, house);
+  material.colorNode = Fn(() => {
+    cloud.coverage.toStack();
+    cloud.shadow.toStack();
+    cloud.linearShadow.toStack();
+    return mix(moonlit(lit, nodes), lit, house);
+  })();
   // Ground light fades with the model's height above the ground (vpl.ts meshLocalLight).
   const local: ShaderNode = objectLight(positionWorld.xz, nodes)
     .mul(1 / Math.PI)

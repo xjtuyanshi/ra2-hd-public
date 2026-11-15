@@ -812,6 +812,13 @@ vehicles take their own exposure, top gain and grade balance share, see "Vehicle
 retain their existing dusk/night art tone; see the capture workflow in `scripts/remaster/qa/WATER.md` and water notes
 in `packages/hd-renderer/README.md`); `hd-glints=off` leaves out the engine's ore/gem glints and `hd-sparkle=0..1`
 sets the HD star twinkle on crystals (0 by default while the glints are drawn);
+`hd-tone=off|moist1|moist2|moist3` selects the optional theatre-aware final colour stage after the look
+(default/unknown: off, also works without `hd-look`). Stage order: scene lighting (real lights / normals, scene pass)
+-> bloom -> tone map -> cinematic grade -> moist tone (last colour stage) -> emission/unlit add
+-> output encode + night toe -> grain cut -> clarity -> RCAS -> outline AA. Emission/unlit bypass the colour stage;
+water keeps the look colour, objects take most of the colour and all of the depth (foliage all of it), and night
+reduces the colour share.
+See "Moist final tone" in `packages/hd-renderer/README.md` for controls and unverified visual/performance scope.
 `hd-vlook=remaster` selects the remaster voxel look; `hd-vproj=<dir>` selects vehicle redraw projection atlases under
 the HD cache (e.g. `vehicles-hd`); `hd-rect=x,y,w,h`
 overrides the tactical rectangle (default: the frame minus YR's 168 px sidebar and 32 px command bar).
@@ -1333,3 +1340,31 @@ Run `pnpm exec node scripts/remaster/qa/water_boards.mjs "$WATER_MANIFEST"`, the
 See [Water review instructions](../../scripts/remaster/qa/WATER.md) for native save restoration, capture configuration,
 mask review, lossless/4 Mb/s encodes, per-gate metrics and the separate 60-second fleet logic-FPS runs. Captures and
 terrain artwork stay outside Git. Asset-free regressions do not establish GPU equivalence or visual acceptance.
+
+### Terrain-only lush selection
+
+`hd-tone=lush` uses the existing lazy tone import and leaves default startup unchanged. Unlike moist1–3,
+it selects `HdSettings.groundTone` (`src/groundTone.ts` in hd-renderer) plus an identity-colour final tone
+that only cuts grain and reduces ground/foliage clarity. RA2 theatre policy is in `src/ra2/lushTone.ts`:
+unknown theatres use temperate, lunar disables both stages, and every other tone selection clears the ground stage.
+The look selector preserves `groundTone` just as it preserves `tone`.
+
+Ground dressing runs on terrain albedo before contact shading and moonlight, using world xz (cells),
+with no camera/time inputs. Cliff faces share the dressing. Units/buildings keep their brightness.
+Water, lake beds and the wet shore retain the original water inputs, masked out of ground dressing.
+At night the change fades to the theatre's `nightKeep` share with cool moonlit patches (deeper, never brighter or
+yellower). The default null setting skips dressing at a uniform branch.
+
+The FX sandbox accepts `&tone=lush&ground=depth:0.56,scale:2.6,sunTint:1.32/1/0.62` after look/tone setup.
+`ground=` supports every numeric `GroundToneParams` field and the four tint triples; unknown keys throw.
+`&toneset=grain:0.3,groundClarity:0.7` tunes the final-pass grain and clarity share. `groundClarity` defaults
+to 1 and only affects the existing scratch-alpha ground/foliage mask while grain cutting is active.
+For live tuning, mutate `__fx.live.hd.settings.groundTone` and call `__fx.live.hd.applySettings()`;
+all ground parameters are uniforms, so this does not rebuild materials or pipelines. Parameter names,
+ranges and a console example are in [the renderer guide](../../packages/hd-renderer/README.md#lush-ground-stage).
+
+Sandbox acceptance (FX sandbox, same scenes as the moist rounds, 2026-11-14, second tuning): the XMP27T8 base
+frame median L* falls from 66 to 43 (the owner's reference 40), lit patches are golden orange (R/G about 1.2, as in
+the reference), clear water stays within dE 0.6 of the current look, and the night base frame goes from L* 30.5 to
+24 without turning yellow. The first tuning cost about 0.5-0.6 ms at 1920x1080 on the development Mac. Not yet seen
+live in a match on the owner's display.
