@@ -31,6 +31,7 @@ export function voxelLookParams(params: URLSearchParams): {
   voxelLook: 'engine' | 'remaster';
   smoothVoxel: Readonly<SmoothVoxelOptions>;
   voxelProjection?: string;
+  voxelCad?: string;
 } {
   const options: Partial<SmoothVoxelOptions> = {};
   for (const entry of (params.get('vsmooth') ?? '').split(',')) {
@@ -44,7 +45,17 @@ export function voxelLookParams(params: URLSearchParams): {
       (options as Record<string, unknown>)[key] = Number(value);
     }
   }
+  const cadDir = params
+    .get('vcad')
+    ?.trim()
+    .replace(/^\/+|\/+$/g, '');
   return {
+    voxelCad:
+      params.get('veh') === 'cad'
+        ? cadDir && !/\.\.|[\\:]/.test(cadDir)
+          ? `/${cadDir}`
+          : '/_library/vehicles-cad'
+        : undefined,
     voxelLook: params.get('vlook') === 'remaster' ? 'remaster' : 'engine',
     smoothVoxel: smoothVoxelOptions(options),
     voxelProjection: params.get('vproj')?.trim()

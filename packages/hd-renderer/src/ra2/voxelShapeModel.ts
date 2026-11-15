@@ -6,7 +6,7 @@ import {
   type VoxelShapeOptions,
   type VoxelShapeStats,
 } from '../voxelShapeMesh';
-import { VOXEL_TO_WORLD } from './voxelScale';
+import { voxelSectionFrame } from './voxelSectionFrame';
 
 /** Engine leptons per cell edge (art TurretOffset is in leptons; one world unit is one cell edge). */
 const LEPTONS_PER_CELL = 256;
@@ -46,40 +46,18 @@ export function buildVoxelShapeSection(
     { size: section.size, cells: decode(section.voxels), step, origin: section.minBounds },
     options,
   );
-  const m = section.transform;
-  // Normals transform by the inverse transpose of the matrix's linear part (HVA matrices may carry scale).
-  const inv = inverseTranspose3(m);
-  const p = mesh.positions;
-  const n = mesh.normals;
-  for (let i = 0; i < p.length; i += 3) {
-    const x = p[i]!,
-      y = p[i + 1]!,
-      z = p[i + 2]!;
-    const X = m[0]! * x + m[1]! * y + m[2]! * z + m[3]!;
-    const Y = m[4]! * x + m[5]! * y + m[6]! * z + m[7]!;
-    const Z = m[8]! * x + m[9]! * y + m[10]! * z + m[11]!;
-    // Voxel (X fwd, Y left, Z up) -> model (x fwd, y up, z right).
-    p[i] = X * VOXEL_TO_WORLD;
-    p[i + 1] = Z * VOXEL_TO_WORLD;
-    p[i + 2] = -Y * VOXEL_TO_WORLD;
-    const a = n[i]!,
-      b = n[i + 1]!,
-      c = n[i + 2]!;
-    const NX = inv[0]! * a + inv[1]! * b + inv[2]! * c;
-    const NY = inv[3]! * a + inv[4]! * b + inv[5]! * c;
-    const NZ = inv[6]! * a + inv[7]! * b + inv[8]! * c;
-    const len = Math.hypot(NX, NY, NZ) || 1;
-    n[i] = NX / len;
-    n[i + 1] = NZ / len;
-    n[i + 2] = -NY / len;
+  const frame = voxelSectionFrame(section);
+  for (let i = 0; i < mesh.positions.length; i += 3) {
+    mesh.positions.set(
+      frame.position(...(Array.from(mesh.positions.subarray(i, i + 3)) as [number, number, number]), false),
+      i,
+    );
+    mesh.normals.set(
+      frame.normal(...(Array.from(mesh.normals.subarray(i, i + 3)) as [number, number, number]), 'physical'),
+      i,
+    );
   }
-  // A mirroring matrix would turn the winding inside out; keep triangles counter-clockwise from outside.
-  const det =
-    m[0]! * (m[5]! * m[10]! - m[6]! * m[9]!) -
-    m[1]! * (m[4]! * m[10]! - m[6]! * m[8]!) +
-    m[2]! * (m[4]! * m[9]! - m[5]! * m[8]!);
-  // The axis swap (x, z, -y) is itself a proper rotation, so only the matrix's own determinant matters.
-  if (det < 0)
+  if (frame.mirrored)
     for (let t = 0; t < mesh.indices.length; t += 3) {
       const swap = mesh.indices[t + 1]!;
       mesh.indices[t + 1] = mesh.indices[t + 2]!;
@@ -148,32 +126,4 @@ function mergeStats(stats: readonly VoxelShapeStats[]): VoxelShapeStats {
     maxOffset: Math.max(0, ...stats.map((s) => s.maxOffset)),
     meanOffset: corners ? stats.reduce((s, x) => s + x.meanOffset * x.cornerVertices, 0) / corners : 0,
   };
-}
-
-function inverseTranspose3(m: readonly number[]): number[] {
-  const a = m[0]!,
-    b = m[1]!,
-    c = m[2]!,
-    d = m[4]!,
-    e = m[5]!,
-    f = m[6]!,
-    g = m[8]!,
-    h = m[9]!,
-    i = m[10]!;
-  const A = e * i - f * h,
-    B = f * g - d * i,
-    C = d * h - e * g;
-  const det = a * A + b * B + c * C || 1;
-  // Cofactor matrix / det = inverse transpose.
-  return [
-    A / det,
-    B / det,
-    C / det,
-    (c * h - b * i) / det,
-    (a * i - c * g) / det,
-    (b * g - a * h) / det,
-    (b * f - c * e) / det,
-    (c * d - a * f) / det,
-    (a * e - b * d) / det,
-  ];
 }

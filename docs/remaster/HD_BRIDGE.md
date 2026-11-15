@@ -797,7 +797,7 @@ Game art and derived images remain outside Git.
 
 ## Offline hard-surface reconstruction
 
-The research pipeline in `packages/hd-renderer/src/` is independent of the live voxel renderer:
+The research pipeline in `packages/hd-renderer/src/` supplies pure reconstruction helpers:
 `hardSurfaceSolid.ts` fills x-major dense grids with two-axis enclosure, exterior flood and one-cell recess
 restoration (negative Z is down by default; the down axis is configurable). `hardSurfaceFit.ts` fits seed regions
 with snapped halfspaces or cylinders, including exclusions, colour filters and manual overrides.
@@ -818,7 +818,8 @@ splits a cylinder into a shortened body and two inset discs with their own chamf
 pure decisions for parallel-seam combing, staircase rejection, panel grooves and AO halos, paint-region classes,
 levelled paint, edge wear, wall shading, hoops, hatch rings and painted-steel material defaults. Vehicle colours
 and named paint codes live in `ra2/hardSurfaceLook.ts`. The offline research renderer is the reference; fitted
-specs and renders stay outside Git. These helpers do not connect the look to live rendering.
+specs and renders stay outside Git. The opt-in CAD adapter below connects their geometry to live rendering;
+the offline look renderer remains a separate reference, not a second runtime material.
 
 `hardSurfaceMetrics.ts` compares the original halfspace union with the filled solid using 27 samples per cell.
 Surface metrics compare 3-by-3 exposed voxel-face samples with seeded triangle samples on the chamfered mesh,
@@ -1390,3 +1391,52 @@ Run `pnpm exec node scripts/remaster/qa/water_boards.mjs "$WATER_MANIFEST"`, the
 See [Water review instructions](../../scripts/remaster/qa/WATER.md) for native save restoration, capture configuration,
 mask review, lossless/4 Mb/s encodes, per-gate metrics and the separate 60-second fleet logic-FPS runs. Captures and
 terrain artwork stay outside Git. Asset-free regressions do not establish GPU equivalence or visual acceptance.
+
+## Opt-in CAD vehicles
+
+Live matches: `hd-veh=cad` requests `<libraryBase>/vehicles-cad/<MODEL_ID>.json`, with
+`libraryBase` currently `/hd-cache/_library` (for example `/hd-cache/_library/vehicles-cad/HTNK.json`).
+`hd-vcad=<dir>` overrides the directory beneath `/hd-cache` only when `hd-veh=cad` is present.
+Sandbox: `veh=cad`, optionally `vcad=<dir>` relative to the served HD cache root; the default is
+`_library/vehicles-cad`. Both overrides strip surrounding slashes and reject traversal, backslashes and colons.
+Keep specs in the external HD cache library, outside Git; neither entry fits specs or downloads game resources.
+
+Only models with a complete, valid spec change. While a spec loads and its mesh builds, the current engine,
+smooth or stand-in geometry stays visible. An HTTP 404 silently retains that look. A status-200 response with a
+non-JSON media type or a body beginning with `<` is also missing (development SPA fallbacks). Malformed JSON from
+a JSON response, invalid specs, HTTP failures and build/Worker failures warn once per model and retain it too.
+Failed requests are not retried within
+the library lifetime. Specs and build results are shared across house palettes. CAD uses the first section of
+each part, matching the offline lattice contract, and requires a spec for every model part. Alternate passenger
+turrets retain their current art because their geometry is not described by the base model's spec.
+
+`hardSurfaceLiveMesh.ts` samples directional exposed paint with separable distance transforms and computes cached
+eight-ray local AO over the CAD solid. Primitive AABBs bound solid rasterisation and coverage queries. Coverage
+uses the emitted chamfered convex hulls; the unchamfered AO union must not cull exposed bevels.
+`hardSurfaceAdaptive.ts` samples the same fine square lattice (`maxEdge / sqrt(2)`, default `maxEdge=0.5`), then
+unions equal palette regions per plate and triangulates their contours and holes. Float32 sampling and the
+reference cell diagonal preserve the original fine-triangle material ownership. Uniform plates and axial
+cylinder spans become large triangles; the cylinder's existing angular facets and radial normals remain.
+Shade and AO samples refine those triangles at the largest interpolation residual first: half a palette entry
+and 1/8 occlusion are the respective error thresholds. Flat plate and chamfer normals remain separate. Collinear
+edges are split at neighbouring vertices, including creases between plates/facets; convex ear clipping retains
+those boundary vertices without adding centre fans. This avoids geometric T-junctions across coarse/fine regions.
+The discrete palette/material index is constant per triangle, avoiding interpolation through unrelated ramps;
+shade varies only within that index's 16-entry ramp. The fine-sampling and emitted-mesh budgets each allow at most
+two million triangles, independently of merging.
+Curvature marks chamfers for the existing remaster wear/highlight response. Subvoxel paint boundaries remain
+approximations. Named cylinder paint labels remain spec metadata: this path uses the source palette and remaster
+PBR classification, rather than the offline reference's procedural wheel, drum, hatch or steel profiles.
+
+The RA2 adapter shares the bounds/HVA/model transform with the voxel paths, preserves role order and TurretOffset,
+and exchanges geometry and material in place, retaining the unit root, turret yaw, pose, tint, opacity and native
+depth. CAD always uses the remaster PBR palette material with scene sun/sky lighting, even alongside engine-look
+vehicles. It never receives image-based redraw projection. Shadow/foam silhouettes retain the original voxel
+outline through `withSilhouette`; water colour reflections follow the CAD source geometry/material normally.
+Other vehicles keep their existing look and projection behaviour.
+
+Browser builds run in short-lived CAD Workers owned by the library, terminated on completion, failure or disposal;
+late results cannot revive a disposed view. Worker creation failure keeps the current geometry. Non-browser
+CPU tooling without Worker support runs the same builder directly. Geometry budgets reject excessive specs.
+This is experimental opt-in rendering: CPU measurements and synthetic regressions do not establish rendered
+appearance, GPU performance, full-match stability or fidelity to the separate offline visual boards.

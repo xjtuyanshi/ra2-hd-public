@@ -1415,6 +1415,10 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
       .get('hd-vproj')
       ?.trim()
       .replace(/^\/+|\/+$/g, '');
+    const cadDir = params
+      .get('hd-vcad')
+      ?.trim()
+      .replace(/^\/+|\/+$/g, '');
     void Promise.all([
       import('../../../../packages/hd-renderer/src/live/liveView'),
       preset ? import('../../../../packages/hd-renderer/src/HdRenderer') : null,
@@ -1447,6 +1451,12 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
             ? { crystalSparkle: Number(params.get('hd-sparkle')) }
             : {}),
           ...(params.get('hd-vlook') === 'remaster' ? { voxelLook: 'remaster' } : {}),
+          ...(params.get('hd-veh') === 'cad'
+            ? {
+                voxelCad:
+                  cadDir && !/\.\.|[\\:]/.test(cadDir) ? `/hd-cache/${cadDir}` : '/hd-cache/_library/vehicles-cad',
+              }
+            : {}),
           ...(projectionDir && !/\.\.|[\\:]/.test(projectionDir)
             ? { voxelProjection: `/hd-cache/${projectionDir}` }
             : {}),

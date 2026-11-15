@@ -26,7 +26,7 @@ import {
 } from './vpl';
 import type { VoxelProjectionAsset } from './voxelProjection';
 import { CARD_CLEARANCE } from './cardDepth';
-import { VOXEL_TO_WORLD } from './voxelScale';
+import { voxelSectionFrame } from './voxelSectionFrame';
 import {
   createVoxelCardExtent,
   createVoxelNativeDepth,
@@ -331,10 +331,7 @@ function sectionCorners(
   keepLattice: boolean,
 ): { at: (cx: number, cy: number, cz: number) => number; positions: Float32Array; lattice: Float32Array | null } {
   const [sx, sy, sz] = section.size;
-  const step0 = (section.maxBounds[0] - section.minBounds[0]) / Math.max(1, sx);
-  const step1 = (section.maxBounds[1] - section.minBounds[1]) / Math.max(1, sy);
-  const step2 = (section.maxBounds[2] - section.minBounds[2]) / Math.max(1, sz);
-  const m = section.transform;
+  const frame = voxelSectionFrame(section);
   const cx1 = sx + 1;
   const cxy = cx1 * (sy + 1);
   const cornerDone = new Uint8Array(cxy * (sz + 1));
@@ -365,15 +362,7 @@ function sectionCorners(
       cornerLattice[p + 1] = ly;
       cornerLattice[p + 2] = lz;
     }
-    const bxp = section.minBounds[0] + lx * step0;
-    const byp = section.minBounds[1] + ly * step1;
-    const bzp = section.minBounds[2] + lz * step2;
-    const X = m[0]! * bxp + m[1]! * byp + m[2]! * bzp + m[3]!;
-    const Y = m[4]! * bxp + m[5]! * byp + m[6]! * bzp + m[7]!;
-    const Z = m[8]! * bxp + m[9]! * byp + m[10]! * bzp + m[11]!;
-    cornerPositions[p] = X * VOXEL_TO_WORLD;
-    cornerPositions[p + 1] = Z * VOXEL_TO_WORLD;
-    cornerPositions[p + 2] = -Y * VOXEL_TO_WORLD;
+    cornerPositions.set(frame.position(lx, ly, lz), p);
     cornerDone[k] = 1;
     return p;
   };
@@ -519,7 +508,7 @@ function buildPartGeometry(
     const { section, raw, filled, cells, faces, faceOffsets, px, pxy } = grid;
     // Each section has its own normal table; models such as the Rhino mix them (see voxelNormals.ts).
     const table = normalTableFor(sectionNormalsMode(section, raw));
-    const m = section.transform;
+    const frame = voxelSectionFrame(section);
     const corners = sectionCorners(grid, shape.cornerRelax, !!lattice);
     const cornerPositions = corners.positions;
     const cornerLattice = corners.lattice;
@@ -572,14 +561,7 @@ function buildPartGeometry(
         by += exposedNormal[q * 3 + 1]! * w;
         bz += exposedNormal[q * 3 + 2]! * w;
       }
-      // Rotate by the section transform, then voxel (X fwd, Y left, Z up) to model (x fwd, y up, z right).
-      const rx = m[0]! * bx + m[1]! * by + m[2]! * bz;
-      const ry = m[4]! * bx + m[5]! * by + m[6]! * bz;
-      const rz = m[8]! * bx + m[9]! * by + m[10]! * bz;
-      const nl = Math.hypot(rx, ry, rz) || 1;
-      const nx0 = rx / nl;
-      const ny0 = rz / nl;
-      const nz0 = -ry / nl;
+      const [nx0, ny0, nz0] = frame.normal(bx, by, bz, 'legacy');
       for (let f = 0; f < 6; f++) {
         if (!(mask & (1 << f))) continue;
         const outside = k + faceOffsets[f]!;
@@ -715,6 +697,17 @@ export class VoxelUnit extends Group {
     });
     if (changed) this.updateCaptureRadius();
     return changed;
+  }
+
+  /** Repaint originals only; retain opacity, native depth and the twins' own materials. */
+  replacePartMaterials(materials: MeshStandardNodeMaterial[]): void {
+    if (materials.length !== this.partMeshes.length) throw new Error('Incomplete voxel material set');
+    this.partMeshes.forEach((mesh, i) => {
+      const material = materials[i]!;
+      if (!material.depthNode) material.depthNode = voxelNativeDepthNode();
+      mesh.material = material;
+    });
+    setVoxelNativePass(this, this.nativeDepth.enabled !== 0);
   }
 
   setPainterBias(bias: number): void {

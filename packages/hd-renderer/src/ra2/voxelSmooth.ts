@@ -1,7 +1,7 @@
 import type { VoxelSection } from '../../../ra2-assets/src/manifest';
 import { sectionNormalsMode } from '../../../ra2-assets/src/voxelNormals';
 import { lookupNormal, normalTableFor } from '../../../ra2-formats/src/vxl/vxlNormals';
-import { VOXEL_TO_WORLD } from './voxelScale';
+import { voxelSectionFrame } from './voxelSectionFrame';
 
 export interface SmoothVoxelOptions {
   supersample: number;
@@ -451,6 +451,7 @@ export function buildSmoothSection(section: VoxelSection, options: SmoothVoxelOp
   const ao = new Float32Array(vertices);
   const curvature = new Float32Array(vertices);
   const m = section.transform;
+  const frame = voxelSectionFrame(section);
   const stepX = (section.maxBounds[0] - section.minBounds[0]) / Math.max(1, sx);
   const stepY = (section.maxBounds[1] - section.minBounds[1]) / Math.max(1, sy);
   const stepZ = (section.maxBounds[2] - section.minBounds[2]) / Math.max(1, sz);
@@ -503,19 +504,9 @@ export function buildSmoothSection(section: VoxelSection, options: SmoothVoxelOp
     b /= len;
     c /= len;
     curvature[v] = Math.max(-4, Math.min(4, (xp + xm + yp + ym + zp + zm - 6 * sample(x, y, z)) * s * s));
-    const bx = section.minBounds[0] + x * stepX;
-    const by = section.minBounds[1] + y * stepY;
-    const bz = section.minBounds[2] + z * stepZ;
-    modelP[p] = (m[0]! * bx + m[1]! * by + m[2]! * bz + m[3]!) * VOXEL_TO_WORLD;
-    modelP[p + 1] = (m[8]! * bx + m[9]! * by + m[10]! * bz + m[11]!) * VOXEL_TO_WORLD;
-    modelP[p + 2] = -(m[4]! * bx + m[5]! * by + m[6]! * bz + m[7]!) * VOXEL_TO_WORLD;
-    const rx = m[0]! * a + m[1]! * b + m[2]! * c;
-    const ry = m[4]! * a + m[5]! * b + m[6]! * c;
-    const rz = m[8]! * a + m[9]! * b + m[10]! * c;
-    len = Math.hypot(rx, ry, rz) || 1;
-    modelN[p] = rx / len;
-    modelN[p + 1] = rz / len;
-    modelN[p + 2] = -ry / len;
+    modelP.set(frame.position(x, y, z), p);
+    // Retain the smooth path's authored-normal convention; CAD uses inverse-transpose lattice normals.
+    modelN.set(frame.normal(a, b, c, 'legacy'), p);
     // Cosine-distributed deterministic rays. A hit at t contributes sqrt(1-t/length); distant occluders fade out.
     // Trace once per net vertex, before duplicating quads. Ground tests use the transformed model height, never
     // section z: translated/rotated turrets and barrels must not acquire a fictitious ground at their local origin.

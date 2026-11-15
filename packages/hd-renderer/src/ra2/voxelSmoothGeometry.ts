@@ -69,7 +69,7 @@ export function smoothPartGeometry(meshes: readonly SmoothMeshData[]): BufferGeo
  * exposed-face outline, with the stand-in mesh's corners, whichever mesh the part itself shows. The outline is the
  * same before and after the smooth mesh replaces the stand-in, so a shadow does not change when that happens.
  */
-function withSilhouette(
+export function withSilhouette(
   geometry: BufferGeometry,
   sections: readonly VoxelSection[],
   shape: Readonly<VoxelShape> = voxelShape,
