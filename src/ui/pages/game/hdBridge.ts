@@ -1,6 +1,4 @@
-import { setSessionShortcutCode, trackGameChatEntry } from './gameInput';
-import { createChatEntryGuess } from './chatEntryGuess';
-import { RA2_CHAT_ENTRY_POLICY } from '../../../games/ra2/chatEntryPolicy';
+import { setSessionShortcutCode } from './gameInput';
 import { parseAliveParams } from '../../../../packages/hd-renderer/src/livingWorld';
 import { parseWaterStyle, WATER_STYLES, type WaterStyle } from '../../../../packages/hd-renderer/src/ra2/waterStyles';
 import type { VmShell } from '../../../adapter/vmShell';
@@ -555,8 +553,6 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
 
   let live: LiveView | null = null;
   let tuningPanel: { dispose(): void } | null = null;
-  const chatEntry = createChatEntryGuess(RA2_CHAT_ENTRY_POLICY);
-  const stopChatTracking = trackGameChatEntry(host.screen, chatEntry);
   /** Map names below are keys: lower-cased, without the extension (see `mapKey`). */
   let liveMap: string | null = null;
   /** Last snapshot pushed to `live`; readers return the identical object while nothing changed. */
@@ -1456,7 +1452,6 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
         diagnostics?.cancelFrameCapture('HD view replaced');
         tuningPanel?.dispose();
         tuningPanel = null;
-        chatEntry.reset();
         live?.dispose();
         live = view;
         if (tuningModule) {
@@ -1466,12 +1461,11 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
             view.theater,
             parseAliveParams(params, 'hd-alive'),
             () => host.screen.focus({ preventScroll: true }),
-            chatEntry.isOpen,
           );
           // Input was installed before this async view. Reserve by physical code at its forwarding entry,
           // rather than relying on registration order among window capture listeners.
-          // Chat is guessed from forwarded keys, not a native signal. Remapped KEYBOARD.INI bindings may
-          // desynchronise it; Escape always closes the estimate. Canvas mouse buttons leave chat open.
+          // The bridge exposes no native RA2/YR chat/text-entry signal; do not guess it from keystrokes (live skirmish:
+          // Enter opens no chat line, so an Enter/Escape guess would wrongly block the toggle).
           setSessionShortcutCode('Backquote', true);
           tuningPanel = {
             dispose() {
@@ -1611,7 +1605,6 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
     // same, starts out of sight again. A match that merely had no snapshot for a while (an in-game menu owned the
     // screen) goes on where it was: its view is complete, and hiding it would flash the original picture.
     if (state && mapId && (mapId !== matchMap || state.frame < matchFrame)) {
-      chatEntry.reset();
       const firstBattleFrameAt = matchMap === null ? timeline.firstBattleFrameAt : null;
       finishFadeOut();
       setHole(null, 'new-match');
@@ -2092,7 +2085,6 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
     ...(diagnostics ? { diagnostics: diagnostics.handle } : {}),
     toggle() {
       if (stopped) return enabled;
-      chatEntry.reset();
       enabled = !enabled;
       nativeDrawQueue.length = 0;
       if (native && !polling) {
@@ -2172,7 +2164,6 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
   const stop = () => {
     if (stopped) return;
     stopped = true;
-    stopChatTracking();
     diagnostics?.dispose();
     cancelAnimationFrame(frame);
     if (nativePollTimer !== null) clearTimeout(nativePollTimer);

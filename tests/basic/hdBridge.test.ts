@@ -20,7 +20,6 @@ import type { VmFrame } from '../../src/vm86/win32';
 import { hdSidebar } from '../helpers/hdSidebar';
 import { createWebGpuFrameCapture } from '../../src/graphics/webGpuFrameCapture';
 import { initializeWorkerLocale } from '../../src/ui/shared/i18n/translate';
-import * as gameInput from '../../src/ui/pages/game/gameInput';
 
 // The bridge loads LiveView (three.js, WebGPU) through a dynamic import; a stub stands in for it.
 const liveView = vi.hoisted(() => ({ create: vi.fn() }));
@@ -1048,7 +1047,6 @@ describe('HD bridge look parameters', () => {
   });
 
   it('returns tuning focus to the game input canvas and releases the panel with the view', async () => {
-    const tracking = vi.spyOn(gameInput, 'trackGameChatEntry');
     const dispose = vi.fn();
     lushTuning.mount.mockReturnValueOnce({ dispose });
     const harness = setup('?hd=1&hd-tune=1');
@@ -1056,20 +1054,9 @@ describe('HD bridge look parameters', () => {
     await goLive(harness, view);
     expect(lushTuning.mount).toHaveBeenCalledTimes(1);
     const returnFocus = lushTuning.mount.mock.calls[0]![4] as () => void;
-    const textEntryActive = lushTuning.mount.mock.calls[0]![5] as () => boolean;
-    const chat = tracking.mock.calls[0]![1];
-    expect(tracking.mock.calls[0]![0]).toBe(harness.screen);
-    expect(textEntryActive()).toBe(false);
-    chat.forwardedKeyDown('Enter');
-    expect(textEntryActive()).toBe(true);
-    harness.stop.toggle();
-    expect(textEntryActive()).toBe(false);
-    chat.forwardedKeyDown('Backspace');
-    expect(textEntryActive()).toBe(true);
     returnFocus();
     expect(harness.screen.focus).toHaveBeenCalledExactlyOnceWith({ preventScroll: true });
     harness.stop();
-    expect(textEntryActive()).toBe(false);
     expect(dispose).toHaveBeenCalledTimes(1);
   });
 

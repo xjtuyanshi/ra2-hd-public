@@ -403,3 +403,35 @@ it('bounds the power-law approximation against exact sRGB attenuation in mid-ton
     -0.1, 0, 2,
   ]);
 });
+
+it('snow objects: cool bright snow is neutralised and lifted like the ground, warm or dark paint keeps its ratios', () => {
+  const params = lush2Mapping(lush2Defaults('snow'), 'snow').tone;
+  const p = new CloudToneUniforms();
+  p.set(params);
+  const lavenderSnow = [0.26, 0.24, 0.48] as const; // display ~ (140,137,185): snow on a tree under mission light
+  const warmPaint = [0.3, 0.06, 0.04] as const;
+  const darkNeedle = [0.02, 0.02, 0.035] as const;
+  const snow = cloudToneRgb(lavenderSnow, 0, params, 0, lavenderSnow, true);
+  expect(snow[2] / snow[0]).toBeLessThan(1.15);
+  expect(snow[1]).toBeGreaterThan(lavenderSnow[1] * 1.5);
+  // Compare against the same object step without the snow lift/neutralisation (bounce/tint still apply).
+  const noSnow = { ...params, snow: 0 };
+  const ratio = (v: readonly number[]) => v[2]! / v[0]!;
+  const paint = cloudToneRgb(warmPaint, 0, params, 0, warmPaint, true);
+  expect(ratio(paint)).toBeCloseTo(ratio(cloudToneRgb(warmPaint, 0, noSnow, 0, warmPaint, true)), 9);
+  const needle = cloudToneRgb(darkNeedle, 0, params, 0, darkNeedle, true);
+  expect(ratio(needle)).toBeCloseTo(ratio(cloudToneRgb(darkNeedle, 0, noSnow, 0, darkNeedle, true)), 2);
+  // Temperate objects are untouched by the snow step.
+  const temperate = lush2Mapping(lush2Defaults('temperate'), 'temperate').tone;
+  const q = new CloudToneUniforms();
+  q.set(temperate);
+  for (const rgb of [lavenderSnow, warmPaint, darkNeedle])
+    for (const [pp, uu] of [
+      [params, p],
+      [temperate, q],
+    ] as const)
+      for (const night of [0, 0.5])
+        (cloudToneNode(vector(...rgb), vector(...rgb), n(0.3), uu, n(night), true) as unknown as N)
+          .data()
+          .forEach((v, i) => expect(v).toBeCloseTo(cloudToneRgb(rgb, 0.3, pp, night, rgb, true)[i]!, 9));
+});

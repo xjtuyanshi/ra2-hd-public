@@ -181,6 +181,34 @@ export function cloudToneMeanNode(
   return sample(1).add(sample(-1)).mul(0.5);
 }
 
+/**
+ * Snow theater objects (trees, rocks, buildings) sit in the same light as the lifted white snow ground: every object
+ * pixel gets part of the snow lift (half of objectShare), and only bright, low-saturation pixels with a cool cast (the
+ * snow on trees and rocks) are neutralised and lifted like the ground. Warm or dark paint keeps its colour.
+ */
+export function cloudObjectSnow(
+  rgb: readonly [number, number, number],
+  p: CloudToneParams,
+  night = 0,
+): [number, number, number] {
+  if (p.snow <= 0) return [...rgb];
+  const d = displayRgb(rgb);
+  const y = Math.max(luma(rgb), 1e-6);
+  const hi = Math.max(...d),
+    lo = Math.min(...d);
+  const w =
+    p.snow *
+    smooth(0, 0.03, d[2]! - Math.min(d[0]!, d[1]!)) *
+    smooth(0.15, 0.35, luma(d)) *
+    (1 - smooth(p.snowGate[2], p.snowGate[3], (hi - lo) / Math.max(hi, 1e-6))) *
+    (1 - night);
+  const neutral = rgb.map((v) => blend(v, y, w * p.snowWhite));
+  const lifted = y * blend(1 + (p.snowLift - 1) * p.objectShare * 0.5, p.snowLift, w);
+  const excess = Math.max(0, lifted - p.neutralGradeLuma);
+  const scale = (lifted - excess ** 2 / (1 - p.neutralGradeLuma + excess)) / y;
+  return neutral.map((v) => v * blend(1, scale, 1 - night)) as [number, number, number];
+}
+
 /** CPU twin. RGB/mean are linear; classification and the chroma safety boundary are display-sRGB. */
 export function cloudToneRgb(
   rgb: readonly [number, number, number],
@@ -199,20 +227,22 @@ export function cloudToneRgb(
     my = Math.max(luma(mean), 1e-6),
     lit = 1 - shade;
   if (object) {
-    const tinted = rgb.map(
+    const src = cloudObjectSnow(rgb, p, night);
+    const tinted = src.map(
       (v, i) =>
         v *
         blend(1, p.shadeTint[i]!, shade) *
         blend(1, p.moonTint[i]!, night) *
         blend(1, p.grassSunTint[i]! ** 0.25, p.bounce * (1 - smooth(0, p.bounceHeight, height)) * (1 - night)),
     );
-    const shoulder = 1 - (p.objectShoulder * Math.max(0, y - p.objectHighlight)) / Math.max(y, 1e-6);
+    const sy = luma(src);
+    const shoulder = 1 - (p.objectShoulder * Math.max(0, sy - p.objectHighlight)) / Math.max(sy, 1e-6);
     return tinted.map((v, i) =>
       Math.max(
         0,
         blend(
           rgb[i]!,
-          ((v * y) / Math.max(luma(tinted), 1e-6)) *
+          ((v * sy) / Math.max(luma(tinted), 1e-6)) *
             Math.max(p.objectFloor, blend(1, p.grassLight, p.objectShare)) *
             shoulder,
           amount,
@@ -276,18 +306,37 @@ export function cloudToneNode(
     If(amount.greaterThan(0), () => {
       const y = dot(source, vec3(...W)).toVar();
       if (object) {
+        const src = source.toVar();
+        If(p.snow.greaterThan(0), () => {
+          // GPU twin of cloudObjectSnow.
+          const d: ShaderNode = (sRGBTransferOETF(source.max(0)) as ShaderNode).toVar();
+          const hi = d.r.max(d.g).max(d.b),
+            lo = d.r.min(d.g).min(d.b);
+          const w = p.snow
+            .mul(smoothstep(0, 0.03, d.b.sub(d.r.min(d.g))))
+            .mul(smoothstep(0.15, 0.35, dot(d, vec3(...W))))
+            .mul(float(1).sub(smoothstep(p.snowGate.z, p.snowGate.w, hi.sub(lo).div(hi.max(1e-6)))))
+            .mul(float(1).sub(night))
+            .toVar();
+          const sy = y.max(1e-6);
+          const lifted = sy.mul(mix(float(1).add(p.snowLift.sub(1).mul(p.objectShare).mul(0.5)), p.snowLift, w)).toVar();
+          const excess = lifted.sub(p.neutralGradeLuma).max(0);
+          const scale = lifted.sub(excess.pow(2).div(float(1).sub(p.neutralGradeLuma).add(excess))).div(sy);
+          src.assign(mix(source, vec3(y), w.mul(p.snowWhite)).mul(mix(float(1), scale, float(1).sub(night))));
+        });
+        const oy = dot(src, vec3(...W)).toVar();
         const bounce = p.bounce.mul(float(1).sub(smoothstep(0, p.bounceHeight, height))).mul(float(1).sub(night));
-        const tinted = source
+        const tinted = src
           .mul(mix(vec3(1), p.shadeTint, shade))
           .mul(mix(vec3(1), p.moonTint, night))
           .mul(mix(vec3(1), p.grassSunTint.pow(0.25), bounce))
           .toVar();
-        const shoulder = float(1).sub(p.objectShoulder.mul(y.sub(p.objectHighlight).max(0)).div(y.max(1e-6)));
+        const shoulder = float(1).sub(p.objectShoulder.mul(oy.sub(p.objectHighlight).max(0)).div(oy.max(1e-6)));
         result.assign(
           mix(
             source,
             tinted
-              .mul(y.div(dot(tinted, vec3(...W)).max(1e-6)))
+              .mul(oy.div(dot(tinted, vec3(...W)).max(1e-6)))
               .mul(p.objectFloor.max(mix(float(1), p.grassLight, p.objectShare)))
               .mul(shoulder),
             amount,

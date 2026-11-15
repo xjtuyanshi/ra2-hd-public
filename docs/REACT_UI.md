@@ -37,13 +37,10 @@ Only browser or frequent-input adapters such as canvas/WebGL, input-lock hints, 
 
 Modals share native `dialog.showModal()`, letting the browser constrain and restore focus. Esc closes web dialogs without synthesizing Esc for the game. Busy imports cannot be dismissed early.
 
-The HD tuning bridge owns a per-canvas chat-entry estimate (`chatEntryGuess.ts`), updated only at
-`gameInput.ts`'s native keydown forwarding entry. The pure state machine receives RA2/YR bindings from
-`src/games/ra2/chatEntryPolicy.ts`; repeated keys and canvas mouse buttons do not change its state.
-While chat is estimated open, Backquote bypasses page/session shortcut reservations and the tuning panel
-receives `textEntryActive` through `mountLush2Tuning`. View replacement, HD toggles, new matches and disposal
-reset the estimate. This is not a native chat signal: remapped `KEYBOARD.INI` bindings may desynchronise it;
-a forwarded, non-repeated Escape closes it.
+The lush2 tuning panel reserves Backquote by physical code. The bridge has no native RA2/YR chat signal and
+does not guess one from keystrokes: a live skirmish check showed Enter opens no chat line there (Escape went straight
+to the options menu), so an Enter/Escape estimate would wrongly block the toggle. Hosts that can observe real text
+entry pass `textEntryActive` through `mountLush2Tuning`.
 
 The lush2 tuning model stores values per theater under `hd-lush2-v4`. `goldReach` defaults to zero,
 preserving the existing highlight gate; increasing it lowers the two highlight thresholds. The `snowLift`

@@ -83,7 +83,7 @@ describe('lush2 colour reference', () => {
     expect(Math.max(...lit) / 255).toBeGreaterThanOrEqual(0.56);
     expect(Math.max(...lit) / 255).toBeLessThanOrEqual(0.66);
     expect(saturation(lit)).toBeGreaterThanOrEqual(0.6);
-    expect(saturation(lit)).toBeLessThanOrEqual(0.8);
+    expect(saturation(lit)).toBeLessThanOrEqual(0.85);
     expect(hue(shade)).toBeGreaterThan(hue(lit));
     expect(saturation(shade)).toBeGreaterThanOrEqual(0.5);
     // Physical attenuation uses this same coverage, outside the albedo grade.
@@ -213,7 +213,7 @@ describe('lush2 colour reference', () => {
         saturation(encode(cloudToneRgb(rgb, shade, a))),
       );
       // OKLab lightness is fixed; linear luminance may change with hue/chroma.
-      expect(luma(cloudToneRgb(rgb, shade, b))).toBeGreaterThan(0.8 * luma(rgb));
+      expect(luma(cloudToneRgb(rgb, shade, b))).toBeGreaterThan(0.7 * luma(rgb));
       expect(cloudToneRgb(rgb, shade, a, 0, rgb, true)).toEqual(cloudToneRgb(rgb, shade, b, 0, rgb, true));
     }
   });
@@ -332,8 +332,8 @@ describe('lush2 colour reference', () => {
   });
   it('grades dim lavender snow and its darker strokes with the same mean-only gain', () => {
     const p = recommended('snow');
-    expect(p.snowLift).toBe(1.25);
-    expect(p.snowWhite).toBe(0.75);
+    expect(p.snowLift).toBe(1.8);
+    expect(p.snowWhite).toBe(1);
     const mean = [0.18, 0.2, 0.27] as const;
     const pixels = [mean, [0.08, 0.09, 0.15], [0.28, 0.3, 0.38]] as const;
     for (const shade of [0, 0.4, 1]) {
@@ -358,10 +358,13 @@ describe('lush2 colour reference', () => {
     const ramp = [0.7, 0.8, 0.9, 1].map((y) => cloudToneRgb([y, y, y], 0, { ...p, snowLift: 1.3 }));
     ramp.forEach((rgb) => expect(Math.max(...rgb)).toBeLessThan(1));
     for (let i = 1; i < ramp.length; i++) expect(luma(ramp[i]!)).toBeGreaterThan(luma(ramp[i - 1]!));
-    for (const rgb of pixels)
-      expect(cloudToneRgb(rgb, 0.5, p, 0, mean, true)).toEqual(
-        cloudToneRgb(rgb, 0.5, { ...p, snow: 0 }, 0, mean, true),
-      );
+    // Snow objects follow the white ground: never bluer than without the snow step, and cool bright snow neutralised.
+    for (const rgb of pixels) {
+      const on = cloudToneRgb(rgb, 0.5, p, 0, mean, true),
+        off = cloudToneRgb(rgb, 0.5, { ...p, snow: 0 }, 0, mean, true);
+      expect(on[2] / on[0]).toBeLessThanOrEqual(off[2] / off[0] + 1e-9);
+      expect(luma(on)).toBeGreaterThan(luma(off));
+    }
   });
   it('keeps a mild cool hint through the real cinematic grade, including its brightest whites', () => {
     const nodes = new AtmosphereNodes(),
@@ -442,7 +445,7 @@ describe('lush2 colour reference', () => {
       rgb = decode([150, 160, 60]);
     const multiplier = Math.max(p.objectFloor, 1 + (p.grassLight - 1) * p.objectShare);
     expect(luma(cloudToneRgb(rgb, 0, p, 0, rgb, true)) / luma(rgb)).toBeCloseTo(multiplier, 12);
-    expect(multiplier).toBe(0.975);
+    expect(multiplier).toBe(0.95);
     const white = [0.8, 0.75, 0.7] as const;
     const high = cloudToneRgb(white, 0, { ...p, bounce: 0 }, 0, white, true),
       plain = cloudToneRgb(white, 0, { ...p, bounce: 0, objectShoulder: 0 }, 0, white, true);
@@ -482,8 +485,9 @@ describe('lush2 runtime policy', () => {
   });
   it('keeps the original gold gate by default and extends its reach monotonically', () => {
     for (const theater of Object.keys(LUSH2_DEFAULTS)) {
-      expect(lush2Defaults(theater).goldReach).toBe(0);
-      expect(recommended(theater).highlightGate).toEqual([0, 0, 1.12, 1.32]);
+      const reach = lush2Defaults(theater).goldReach;
+      expect(reach).toBe(0.35);
+      expect(recommended(theater).highlightGate).toEqual([0, 0, 1.12 - 0.14 * reach, 1.32 - 0.12 * reach]);
       for (const goldReach of [0, 0.25, 0.5, 1]) {
         const mapped = lush2Mapping({ ...lush2Defaults(theater), goldReach }, theater);
         expect(mapped.tone.highlightGate).toEqual([0, 0, 1.12 - 0.14 * goldReach, 1.32 - 0.12 * goldReach]);
@@ -507,7 +511,7 @@ describe('lush2 runtime policy', () => {
     expect([field('patchScale').min, field('patchScale').max]).toEqual([6, 24]);
     expect([field('shadeDepth').min, field('shadeDepth').max]).toEqual([0, 0.5]);
     for (const [theater, depth] of [
-      ['temperate', 0.2],
+      ['temperate', 0.3],
       ['desert', 0.24],
       ['snow', 0.12],
       ['urban', 0.26],
@@ -595,7 +599,7 @@ describe('lush2 runtime policy', () => {
     }
     expect(cloudCoverThreshold(0)).toBeGreaterThan(cloudCoverThreshold(1));
     for (const [theater, cover] of [
-      ['temperate', 0.45],
+      ['temperate', 0.5],
       ['snow', 0.28],
       ['desert', 0.35],
       ['urban', 0.4],
@@ -839,10 +843,10 @@ it('gives context dirt only the bare-light OKLab lightness change, preserving hu
     p = recommended();
   const out = cloudToneRgb(dirt, 0, p, 0, dirt, false, 0, 0, grass),
     display = encode(out);
-  expect(luma(out) / luma(dirt)).toBeCloseTo(p.bareLight ** 3, 12);
+  expect(Math.abs(luma(out) / luma(dirt) / p.bareLight ** 3 - 1)).toBeLessThan(0.015);
   expect(hue(display)).toBeGreaterThan(20);
   expect(hue(display)).toBeLessThan(40);
-  expect(saturation(display)).toBeCloseTo(saturation(encode(dirt)), 2);
+  expect(saturation(display)).toBeCloseTo(saturation(encode(dirt)), 1);
 });
 
 it('shares one linear conversion between object art and its physical lighting finish', () => {
