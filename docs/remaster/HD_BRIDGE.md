@@ -804,8 +804,12 @@ with snapped halfspaces or cylinders, including exclusions, colour filters and m
 `hardSurfaceMesh.ts` expands box/poly/cylinder specs, mirrors parts and builds deterministic typed-array meshes
 in lattice corner coordinates. Cylinders use area-corrected 48-gon prisms and radial side normals. Edge chamfers
 use the reference 20-degree threshold and outside-edge probes: a covering neighbour suppresses a chamfer;
-matching-width adjacent boxes can retain it because those probes lie outside both solids. Paint strings remain
-opaque metadata; these modules do not resolve palettes or apply paint volumes.
+matching-width adjacent boxes can retain it because those probes lie outside both solids. A part's optional `carve`
+list subtracts convex regions (boxes with optional cut planes, or halfspace lists) from every primitive after
+mirroring: each touched primitive is replaced by the convex pieces of its difference, which meet flush, so their
+shared faces get no chamfer and are buried in the metrics while the carved walls are bevelled like any other edge.
+`keep` exempts named primitives. Carves model slots, wheel gaps and shoulders that a union of additive primitives
+cannot. Paint strings remain opaque metadata; these modules do not resolve palettes or apply paint volumes.
 
 `hardSurfaceMetrics.ts` compares the original halfspace union with the filled solid using 27 samples per cell.
 Surface metrics compare 3-by-3 exposed voxel-face samples with seeded triangle samples on the chamfered mesh,
@@ -819,7 +823,10 @@ Run the RA2 cache adapter offline, with the output outside the checkout:
 
 ```bash
 pnpm exec tsx packages/hd-renderer/scripts/hardSurfaceSpec.ts <voxel-model.json> <seed.json> <out-spec.json> --metrics
+pnpm exec tsx packages/hd-renderer/scripts/hardSurfaceSpec.ts --evaluate <voxel-model.json> <spec.json>
 ```
+
+`--evaluate` prints the per-part metrics of an existing spec (for example a hand-corrected one) and writes nothing.
 
 The adapter reads the first section of each cache part as base64 quintuples, preserves seed paint labels and
 writes the spec to the requested file. It prints a JSON summary plus per-part metrics when `--metrics` is supplied. It performs no downloads

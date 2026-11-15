@@ -17,9 +17,17 @@ export type Primitive = PrimitiveOptions &
     | { type: 'poly'; planes: Plane[] }
     | { type: 'cyl'; axis: Axis; c: [number, number]; r: number; range: [number, number]; cuts?: Plane[] }
   );
+/**
+ * A convex region subtracted from every primitive of a part (applied after mirroring, in order). Primitives listed in
+ * `keep` (by name, mirrored copies included) are left whole.
+ */
+export type Carve = { keep?: string[] } & (
+  { type?: 'box'; min: Vec3; max: Vec3; cuts?: Plane[] } | { type: 'poly'; planes: Plane[] }
+);
 export interface PartSpec {
   mirror?: { axis: Axis; at: number };
   primitives: Primitive[];
+  carve?: Carve[];
 }
 export interface HardSurfaceSpec {
   units: string;
@@ -245,12 +253,51 @@ export function mirror(prim: ExpandedPrimitive, axis: Axis, at: number): Expande
   return { ...prim, name: (prim.name ?? '') + '_m', planes, cylinder };
 }
 export function partPrimitives(part: PartSpec): ExpandedPrimitive[] {
-  const out: ExpandedPrimitive[] = [];
+  let out: ExpandedPrimitive[] = [];
   for (const p of part.primitives) {
     if (p.off) continue;
     const q = expand(p);
     out.push(q);
     if (part.mirror && p.mirror !== false && !p.centred) out.push(mirror(q, part.mirror.axis, part.mirror.at));
+  }
+  for (const c of part.carve ?? []) out = carve(out, c);
+  return out;
+}
+function carvePlanes(c: Carve): Plane[] {
+  if (c.type === 'poly') return c.planes;
+  const [x, y, z] = c.min,
+    [X, Y, Z] = c.max;
+  return [[-1, 0, 0, -x], [1, 0, 0, X], [0, -1, 0, -y], [0, 1, 0, Y], [0, 0, -1, -z], [0, 0, 1, Z], ...(c.cuts ?? [])];
+}
+/** True when the halfspaces bound a solid with extent in all three axes (not empty, not a flat contact). */
+function solidPolytope(planes: readonly Plane[]): boolean {
+  const { vertices } = polytopeFaces(planes);
+  if (vertices.length < 4) return false;
+  for (let a = 0; a < 3; a++) {
+    const v = vertices.map((p) => p[a]);
+    if (Math.max(...v) - Math.min(...v) < 1e-4) return false;
+  }
+  return true;
+}
+/**
+ * Subtract a convex region C (halfspaces c_k.x <= e_k) from every primitive P: P - C is the union of the convex pieces
+ * P & {c_k.x >= e_k} & {c_j.x <= e_j, j < k}. The pieces touch flush, so their shared faces get no chamfer (the flush
+ * probe finds the neighbour) and are buried in the metrics; only the carved walls become new surface.
+ */
+export function carve(prims: readonly ExpandedPrimitive[], c: Carve): ExpandedPrimitive[] {
+  const C = normalisePlanes(carvePlanes(c)),
+    keep = new Set(c.keep ?? []),
+    out: ExpandedPrimitive[] = [];
+  for (const q of prims) {
+    const name = q.name ?? '';
+    if (keep.has(name) || keep.has(name.replace(/_m$/, '')) || !solidPolytope([...q.planes, ...C])) {
+      out.push(q);
+      continue;
+    }
+    C.forEach((ck, k) => {
+      const planes: Plane[] = [...q.planes, [-ck[0], -ck[1], -ck[2], -ck[3]], ...C.slice(0, k)];
+      if (solidPolytope(planes)) out.push({ ...q, name: `${name}#c${k}`, planes });
+    });
   }
   return out;
 }
