@@ -1390,7 +1390,7 @@ describe('YR 1.001 render state for the HD bridge', () => {
     let at = 0;
     const { read, readShroud, readEffects } = sources(memory, { cells: () => cells, now: () => at });
     const first = read()!;
-    expect(readEffects).toHaveBeenCalledWith({ fireWindow: 0 });
+    expect(readEffects).toHaveBeenCalledWith({ fireWindow: 0, particles: ['gas'] });
     const scratch = readShroud.mock.results[0]!.value as YrShroud;
     expect(first.shroud).toEqual({ originX: 1, originY: 2, width: 2, height: 2, cells: new Uint8Array(cells) });
     expect(first.shroud!.cells).not.toBe(scratch.cells);

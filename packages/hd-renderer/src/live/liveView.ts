@@ -1844,8 +1844,7 @@ export class LiveView {
     if (this.gpuFenceAt != null) return;
     // Optional: test stand-ins of the renderer have no backend.
     const backend = this.hd.renderer?.backend as
-      | { device?: { queue?: { onSubmittedWorkDone?(): Promise<void> } } }
-      | undefined;
+      { device?: { queue?: { onSubmittedWorkDone?(): Promise<void> } } } | undefined;
     const queue = backend?.device?.queue;
     if (typeof queue?.onSubmittedWorkDone !== 'function') return;
     this.gpuFenceAt = now;
@@ -2906,9 +2905,10 @@ export class LiveView {
           anchor: leptonAnchor(anim.x, anim.y, anim.z, 0, 0, this.particlePool.anchor()),
           frame,
           palette: 'fx:anim',
-          // Particles (ParticleClass, not AnimClass) take their type's constant Translucency; none of the YR particle
+          // Particles (ParticleClass, not AnimClass) start at their type's Translucency; a dissipating gas cloud's
+          // own value drops to 25/50 (ParticleClass::Translucency, reported per particle). None of the YR particle
           // types is Translucent=yes, the anim-only staged fade (animAlpha).
-          alpha: animAlpha({ translucency: found.art.translucency }),
+          alpha: animAlpha({ translucency: particle.translucency ?? found.art.translucency }),
           push: cardPush(frame),
           draw: 'card',
           pass: 'air',

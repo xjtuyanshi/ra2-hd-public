@@ -247,9 +247,12 @@ reachable (and checks what it imports); only a build shows that the bridge itsel
    Smoke particle systems (damaged and burning units and buildings, refinery chimneys) are drawn with their
    ParticleType's original SHP frames: the view runs the system's particles itself from its rules (spawn rate, cap,
    radius, velocity, deceleration, life; `SMOKE_SYSTEMS` in the table) with rise and drift measured on the engine's own
-   particles, because the page does not forward particle positions. Fire systems add a small HD flame; gas and spark
-   systems draw nothing. Projectiles with known art are drawn natively (`live/projectiles.ts`), others as small grey
-   dots. Lasers and electric bolts are rebuilt for changed logic frames or beam publications, including same-frame
+   particles, because the page does not forward smoke particle positions. Gas systems (the virus, toxin and psychic
+   clouds, which have no emitter the view could run from rules) are read particle by particle instead: each
+   particle's ParticleType, the SHP frame the engine draws and its current translucency (a dissipating cloud drops
+   to 25/50) reach the view, which draws the type's original frames at the particle's position by day and night.
+   Fire systems add a small HD flame; spark systems draw nothing. Projectiles with known art are drawn natively
+   (`live/projectiles.ts`), others as small grey dots. Lasers and electric bolts are rebuilt for changed logic frames or beam publications, including same-frame
    expiration, as soft-edged segments in the bolt's own colour. Zero-lifetime native bolts are omitted.
    The live view never shakes the camera, so the HD picture stays aligned with the game's own selection boxes, health
    bars and cursor. Atlas pages are single-channel R8 textures (they hold palette indices), uploaded from the decoded
