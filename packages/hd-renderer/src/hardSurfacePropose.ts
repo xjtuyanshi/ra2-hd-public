@@ -248,12 +248,28 @@ export function fitRegion(cells: Vec3[], id: string, whole: [Vec3, Vec3], option
       spans = uv.map((k) => hi[k] - lo[k]);
     if (Math.min(...spans) < 2 || Math.max(...spans) / Math.min(...spans) > 1.4) continue;
     if (options.category === 'tube' && axis !== (options.tubeAxis ?? 'x')) continue;
-    if (options.category !== 'tube' && axis === 'x') continue;
-    const cyl = cylinderProposal(cells, axis),
-      cs = classifyError(cells, bounds, cyl);
-    // Do not turn arbitrary convex hulls into drums; require a disk-like region and good occupancy evidence.
+
+    const cyl = cylinderProposal(cells, axis);
+    if (options.category !== 'tube' && cyl.type === 'cyl' && hi[a] - lo[a] >= Math.max(...spans) * 2)
+      cyl.r = Math.sqrt(cells.length / ((hi[a] - lo[a]) * Math.PI));
+    const cs = classifyError(cells, bounds, cyl);
+    const slices = new Map<number, Vec3[]>();
+    for (const p of cells) {
+      const row = slices.get(p[a]);
+      if (row) row.push(p);
+      else slices.set(p[a], [p]);
+    }
+    const curvedSections = [...slices.values()].filter((row) => {
+      const [l, h] = cellBounds(row),
+        spans = uv.map((k) => h[k] - l[k]);
+      return Math.min(...spans) >= 3 && row.length / (spans[0] * spans[1]) <= 0.94;
+    }).length;
+    const sourceCurvature = curvedSections >= slices.size / 2;
+
+    const elongated = hi[a] - lo[a] >= Math.max(...spans) * 2 && cs.error <= cells.length * 0.1 && cs.support >= 0.92;
+    // Long axial hypotheses need sampled source corners; the existing undersampled-disc policy remains separate.
     if (
-      (options.category === 'tube' || hi[a] - lo[a] <= Math.min(...spans) * 0.8) &&
+      (options.category === 'tube' || (sourceCurvature && elongated) || hi[a] - lo[a] <= Math.min(...spans) * 0.8) &&
       cs.error <= Math.max(cells.length * 0.12, score.error * 1.1) &&
       cs.support >= 0.85
     ) {

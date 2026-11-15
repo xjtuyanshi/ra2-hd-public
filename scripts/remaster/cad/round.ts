@@ -9,18 +9,20 @@ import {
   detectRoundFeatures,
   fitTaperedTube,
   fittedTubeAxis,
-  fitDome,
-  fitEllipsoidDome,
+  detectRoundCaps,
+  fitFilletedPipe,
   type RoundFeature,
 } from '../../../packages/hd-renderer/src/hardSurfaceRoundFit';
 import {
   patchRoundFeature,
   coplanarBoundaries,
   shiftCoplanarBoundary,
+  upperPipeContinuation,
+  patchUpperPipe,
 } from '../../../packages/hd-renderer/src/hardSurfaceRoundPatch';
 import { sweptCylinders, taperedCylinder } from '../../../packages/hd-renderer/src/hardSurfaceRound';
 import { tubeLanes, tubeSegments, circularTubeGroups } from '../../../packages/hd-renderer/src/hardSurfaceTube';
-import { occupiedCells, cellBounds, cylinderProposal } from '../../../packages/hd-renderer/src/hardSurfacePropose';
+import { occupiedCells, cylinderProposal } from '../../../packages/hd-renderer/src/hardSurfacePropose';
 import { evaluateHardSurface, type HardSurfaceMetrics } from '../../../packages/hd-renderer/src/hardSurfaceMetrics';
 import {
   compareSilhouettes,
@@ -183,6 +185,7 @@ const budget = (key: string) =>
 const phases: Record<string, number> = {},
   detections: Record<string, RoundFeature[]> = {},
   actions: unknown[] = [];
+const bendFeatures: Record<string, unknown[]> = {};
 for (const key of keys) {
   const t = performance.now();
   metrics[key] = measurements(key, spec.parts[key], partMasks[key]);
@@ -207,6 +210,10 @@ const cost = (assembly: SilhouetteComparison[], m: HardSurfaceMetrics, role: str
 const consider = (key: string, p: PartSpec, action: string, allowEqualRound = false) => {
   if (performance.now() - started > limit) return false;
   try {
+    if ((p.carve?.length ?? 0) > 32) {
+      history({ key, action, accepted: false, rejected: 'carve/schema budget' });
+      return false;
+    }
     const built = buildPart(p),
       count = built.primitives.length;
     if (ex.parts[key].role === 'barrel') {
@@ -370,10 +377,52 @@ for (const key of keys) {
       }
   } else {
     const features = detectRoundFeatures(solid);
-    detections[key] = features;
+    detections[key] = [...features];
     log(`${key}: ${features.length} cross-section-supported round features`);
     // Every operation starts at the best observed state and must survive unchanged formal evaluation.
+    const selectedUpperCells: Set<string>[] = [];
     for (const [i, f] of features.entries()) {
+      if (selectedUpperCells.some((set) => f.cells.filter((p) => set.has(p.join(','))).length > f.cells.length * 0.5)) {
+        history({
+          key,
+          action: `feature ${i}`,
+          accepted: false,
+          rejected: 'already covered by accepted source upper pipe',
+        });
+        continue;
+      }
+      const upper = upperPipeContinuation(solid, f);
+      if (upper) detections[key].push(upper);
+      const tryUpper = () => {
+        if (!upper) return false;
+        const accepted = consider(
+          key,
+          patchUpperPipe(spec.parts[key], upper, `upper_${i}`),
+          `source-supported upper pipe continuation ${i}; ${upper.evidence.slices} slices`,
+          true,
+        );
+        if (accepted) selectedUpperCells.push(new Set(upper.cells.map((p) => p.join(','))));
+        return accepted;
+      };
+      // Prefer a source-backed longer visible track over rounding only its short seed bend.
+      const preferUpper = upper && upper.evidence.slices > f.evidence.slices * 1.1;
+      if (preferUpper && tryUpper()) continue;
+      const bend = fitFilletedPipe(solid, f.points, f.radius);
+      if (bend) {
+        (bendFeatures[key] ??= []).push({ sourceFeature: i, ...bend });
+        if (
+          consider(
+            key,
+            patchRoundFeature(spec.parts[key], f, `bend_${i}`, bend.primitives),
+            `source-supported torus elbows ${i}; supports=${bend.joints.map((j) => j.support.toFixed(3)).join(',')}`,
+            true,
+          )
+        ) {
+          selectedUpperCells.push(new Set(f.cells.map((p) => p.join(','))));
+          continue;
+        }
+      }
+      if (!preferUpper && tryUpper()) continue;
       const original = structuredClone(spec.parts[key]);
       let best = structuredClone(original),
         bestMetrics = metrics[key],
@@ -393,52 +442,28 @@ for (const key of keys) {
       partMasks[key] = bestMasks;
       currentAssembly = bestAssembly;
     }
-    // Upper components with shrinking circular sections can support caps even when their base touches a wide hull.
-    const all = occupiedCells(solid),
-      bounds = cellBounds(all);
-    for (let cut = bounds[1][2] - 3; cut >= Math.max(bounds[0][2], bounds[1][2] - 12); cut--) {
-      const top = all.filter((p) => p[2] >= cut),
-        pending = new Set(top.map((p) => p.join(',')));
-      while (pending.size) {
-        const first = pending.values().next().value!,
-          queue = [first];
-        pending.delete(first);
-        for (let i = 0; i < queue.length; i++) {
-          const p = queue[i].split(',').map(Number);
-          for (let a = 0; a < 3; a++)
-            for (const d of [-1, 1]) {
-              const q = [...p];
-              q[a] += d;
-              const k = q.join(',');
-              if (pending.delete(k)) queue.push(k);
-            }
-        }
-        if (queue.length < 20) continue;
-        const region = queue.map((k) => k.split(',').map(Number) as Vec3),
-          dome = fitDome(region, 'z') ?? fitEllipsoidDome(region, 'z');
-        if (!dome) continue;
-        const f: RoundFeature = {
-          axis: 'z',
-          points: [],
-          radius: 0,
-          cells: region,
-          bounds: cellBounds(region),
-          primitives: [dome],
-          evidence: {
-            slices: 0,
-            exposedArc: 0,
-            radialResidual: 0,
-            sourceSupport: 0,
-            ambiguousSmallCrossSection: false,
-          },
-        };
-        consider(
-          key,
-          patchRoundFeature(spec.parts[key], f, `dome_${cut}`),
-          `source spherical cross-section regression z>=${cut}`,
-          true,
-        );
-      }
+    for (const [i, cap] of detectRoundCaps(solid).entries()) {
+      const f: RoundFeature = {
+        axis: cap.axis,
+        points: [],
+        radius: 0,
+        cells: cap.cells,
+        bounds: cap.bounds,
+        primitives: [cap.primitive],
+        evidence: {
+          slices: cap.sectionAreas.length,
+          exposedArc: 0,
+          radialResidual: 0,
+          sourceSupport: 0,
+          ambiguousSmallCrossSection: false,
+        },
+      };
+      consider(
+        key,
+        patchRoundFeature(spec.parts[key], f, `cap_${i}`),
+        `source cap profile ${i}; base=${cap.base}; areas=${cap.sectionAreas.join(',')}`,
+        true,
+      );
     }
   }
   if (ex.parts[key].role !== 'barrel') {
@@ -464,6 +489,7 @@ for (const key of keys) {
 await save('spec.json', spec);
 await save('metrics.json', metrics);
 await save('actions.json', actions);
+await save('bend_features.json', bendFeatures);
 await save('silhouette.json', {
   ...Object.fromEntries(keys.map((k) => [k, metrics[k].silhouettes])),
   assembled: currentAssembly,

@@ -10,6 +10,8 @@ import {
 } from '../src/hardSurfaceRound';
 import {
   detectRoundFeatures,
+  detectRoundCaps,
+  fitFilletedPipe,
   fitDome,
   fitEllipsoidDome,
   fitTaperedTube,
@@ -19,9 +21,15 @@ import {
   fittedTubeAxis,
 } from '../src/hardSurfaceRoundFit';
 import { occupiedCells, proposeHardSurface } from '../src/hardSurfacePropose';
+import type { RoundFeature } from '../src/hardSurfaceRoundFit';
 import { grid } from './hardSurfaceFixtures';
 import { parseHardSurfaceSpec } from '../src/hardSurfaceLiveMesh';
-import { coplanarBoundaries, shiftCoplanarBoundary } from '../src/hardSurfaceRoundPatch';
+import {
+  coplanarBoundaries,
+  shiftCoplanarBoundary,
+  upperPipeContinuation,
+  patchUpperPipe,
+} from '../src/hardSurfaceRoundPatch';
 import { fitHardSurface } from '../src/hardSurfaceFit';
 
 describe('source-supported curved patches', () => {
@@ -247,5 +255,94 @@ describe('source-supported curved patches', () => {
     const model = proposeHardSurface(source, { category: 'chassis', budget: 20, roundPipes: true });
     expect(model.part.primitives.some((q) => q.round?.type === 'taper')).toBe(true);
     expect(buildPart(model.part).primitives.length).toBeLessThanOrEqual(20);
+  });
+  it('rejects a small flat circular end face as a dome and finds lower round caps beside taller boxes', () => {
+    const flat = occupiedCells(grid([9, 9, 3], ([x, y]) => Math.hypot(x + 0.5 - 4.5, y + 0.5 - 4.5) < 2.1));
+    expect(fitDome(flat, 'z')).toBeUndefined();
+    const source = grid(
+      [28, 16, 32],
+      ([x, y, z]) =>
+        Math.hypot(x + 0.5 - 7, y + 0.5 - 8, z + 0.5 - 5) < 5 || (x >= 18 && x < 24 && y >= 2 && y < 14 && z < 30),
+    );
+    expect(detectRoundCaps(source).some((f) => f.bounds[1][0] < 15 && f.base < 8)).toBe(true);
+  });
+  it('recognizes a longitudinal circular solid without rounding an equally long rectangular box', () => {
+    const round = grid([24, 9, 9], ([, y, z]) => Math.hypot(y + 0.5 - 4.5, z + 0.5 - 4.5) < 3.5);
+    expect(proposeHardSurface(round, { category: 'chassis', budget: 1 }).part.primitives[0].type).toBe('cyl');
+    expect(proposeHardSurface(grid([24, 9, 9]), { category: 'chassis', budget: 1 }).part.primitives[0].type).toBe(
+      'poly',
+    );
+  });
+  it('continues a source-backed attached upper tube and keeps its parent below the axis intact', () => {
+    const source = grid(
+      [24, 16, 12],
+      ([x, y, z]) => z < (x < 10 ? 5 : 7) || (x >= 3 && x < 21 && Math.hypot(y + 0.5 - 8, z + 0.5 - 7) < 2),
+    );
+    const f: RoundFeature = {
+      axis: 'x',
+      points: [
+        [3, 8, 7],
+        [10, 8, 7],
+      ],
+      radius: 2,
+      cells: [],
+      bounds: [
+        [3, 6, 5],
+        [10, 10, 9],
+      ],
+      primitives: sweptCylinders(
+        [
+          [3, 8, 7],
+          [10, 8, 7],
+        ],
+        2,
+      ),
+      evidence: { slices: 7, exposedArc: 1, radialResidual: 0, sourceSupport: 1, ambiguousSmallCrossSection: false },
+    };
+    const extended = upperPipeContinuation(source, f)!;
+    expect(extended.evidence.slices).toBeGreaterThan(12);
+    const parent = {
+      primitives: [
+        { type: 'poly' as const, planes: expand({ type: 'box', min: [0, 0, 0], max: [24, 16, 9] }).planes, chamfer: 0 },
+      ],
+    };
+    const built = buildPart(patchUpperPipe(parent, extended, 'source_upper'));
+    expect(insideAny([15, 8, 6.5], built.primitives)).toBe(true);
+    expect(insideAny([15, 8, 8.5], built.primitives)).toBe(true);
+    expect(insideAny([15, 6.1, 8.5], built.primitives)).toBe(false);
+    expect(
+      upperPipeContinuation(
+        grid([24, 16, 12], ([, , z]) => z < 9),
+        f,
+      ),
+    ).toBeUndefined();
+  });
+  it('fits source-backed straight/torus elbows and refuses to round through an unsupported gap', () => {
+    const points: Vec3[] = [
+      [3, 5, 5],
+      [13, 5, 5],
+      [13, 15, 5],
+    ];
+    const distance = (p: Vec3, a: Vec3, b: Vec3) => {
+      const d = sub(b, a),
+        v = sub(p, a),
+        t = Math.max(0, Math.min(1, dot(d, v) / dot(d, d)));
+      return Math.hypot(...p.map((x, k) => x - a[k] - t * d[k]));
+    };
+    const source = grid([20, 20, 12], (p) => {
+      const q = p.map((x) => x + 0.5) as Vec3;
+      return Math.min(distance(q, points[0], points[1]), distance(q, points[1], points[2])) < 2;
+    });
+    const fit = fitFilletedPipe(source, points, 1.7)!;
+    expect(fit.joints).toHaveLength(1);
+    expect(fit.primitives.some((q) => q.round?.type === 'torus')).toBe(true);
+    expect(insideAny([12.5, 5.5, 5], buildPart({ primitives: fit.primitives }).primitives)).toBe(true);
+    expect(
+      fitFilletedPipe(
+        grid([20, 20, 12], () => false),
+        points,
+        1.7,
+      ),
+    ).toBeUndefined();
   });
 });

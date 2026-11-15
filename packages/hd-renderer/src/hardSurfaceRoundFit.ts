@@ -295,6 +295,13 @@ export function fitDome(cells: readonly Vec3[], axis: Axis): Primitive | undefin
     xs = [...new Set(cells.map((p) => p[a]))].sort((x, y) => x - y);
   if (xs.length < 3) return;
   const sections = xs.map((x) => cells.filter((p) => p[a] === x));
+  const areas = sections.map((s) => s.length);
+  if (
+    new Set(areas).size < 2 ||
+    areas[areas.length - 1] > Math.max(...areas) * 0.85 ||
+    areas.slice(-3).some((n, i, v) => i > 0 && n > v[i - 1] * 1.1 + 1)
+  )
+    return;
   const centres = sections.map((s) =>
     uv.map((u) => (Math.min(...s.map((p) => p[u])) + Math.max(...s.map((p) => p[u])) + 1) / 2),
   );
@@ -588,4 +595,132 @@ export function fitEllipsoidDome(cells: readonly Vec3[], axis: Axis): Primitive 
   direction[a] = 1;
   const q = ellipsoidCap(centre, radii, direction, Math.min(2 * rz, centre[a] + rz - xs[0]));
   return supportedRoundCandidate(cells, q, 0.83) ? q : undefined;
+}
+
+export interface RoundCapFeature {
+  axis: Axis;
+  bounds: [Vec3, Vec3];
+  cells: Vec3[];
+  primitive: Primitive;
+  sectionAreas: number[];
+  base: number;
+}
+/** Scan every source height, including lower local peaks beside taller payloads. Flat caps cannot seed domes. */
+export function detectRoundCaps(grid: SolidGrid, axis: Axis = 'z', maxCandidates = 48): RoundCapFeature[] {
+  validateGrid(grid);
+  const a = 'xyz'.indexOf(axis),
+    all: Vec3[] = [];
+  for (let x = 0; x < grid.size[0]; x++)
+    for (let y = 0; y < grid.size[1]; y++)
+      for (let z = 0; z < grid.size[2]; z++) if (gridCell(grid, [x, y, z])) all.push([x, y, z]);
+  if (!all.length) return [];
+  const min = Math.min(...all.map((p) => p[a])),
+    max = Math.max(...all.map((p) => p[a])) + 1,
+    out: RoundCapFeature[] = [];
+  const seen = new Set<string>();
+  for (let cut = max - 3; cut >= min + 2; cut--) {
+    const pending = new Set(all.filter((p) => p[a] >= cut).map((p) => p.join(',')));
+    while (pending.size) {
+      const first = pending.values().next().value!,
+        queue = [first];
+      pending.delete(first);
+      for (let i = 0; i < queue.length; i++) {
+        const p = queue[i].split(',').map(Number);
+        for (let k = 0; k < 3; k++)
+          for (const delta of [-1, 1]) {
+            const q = [...p];
+            q[k] += delta;
+            const key = q.join(',');
+            if (pending.delete(key)) queue.push(key);
+          }
+      }
+      if (queue.length < 20) continue;
+      const cells = queue.map((key) => key.split(',').map(Number) as Vec3),
+        primitive = fitDome(cells, axis) ?? fitEllipsoidDome(cells, axis);
+      if (!primitive) continue;
+      const lo: Vec3 = [Infinity, Infinity, Infinity],
+        hi: Vec3 = [-Infinity, -Infinity, -Infinity];
+      for (const p of cells)
+        for (let k = 0; k < 3; k++) {
+          lo[k] = Math.min(lo[k], p[k]);
+          hi[k] = Math.max(hi[k], p[k] + 1);
+        }
+      const key = JSON.stringify([lo, hi, primitive.round]);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const levels = [...new Set(cells.map((p) => p[a]))].sort((x, y) => x - y),
+        sectionAreas = levels.map((x) => cells.filter((p) => p[a] === x).length);
+      out.push({ axis, bounds: [lo, hi], cells, primitive, sectionAreas, base: cut });
+      if (out.length >= maxCandidates) return out;
+    }
+  }
+  return out;
+}
+
+export interface FilletedPipeFit {
+  primitives: Primitive[];
+  joints: { vertex: Vec3; centre: Vec3; radius: number; angle: number; support: number }[];
+}
+/** Fit straight/torus/straight elbows locally, instead of asking an entire offset pipe to lie on one circle. */
+export function fitFilletedPipe(grid: SolidGrid, points: readonly Vec3[], minor: number): FilletedPipeFit | undefined {
+  if (points.length < 3) return;
+  const joins: { entry: Vec3; exit: Vec3; arc: Primitive[]; evidence: FilletedPipeFit['joints'][number] }[] = [];
+  for (let i = 1; i < points.length - 1; i++) {
+    const vertex = points[i],
+      incoming = sub(vertex, points[i - 1]),
+      outgoing = sub(points[i + 1], vertex),
+      l0 = Math.hypot(...incoming),
+      l1 = Math.hypot(...outgoing),
+      u = unit(incoming),
+      v = unit(outgoing);
+    const angle = Math.acos(Math.max(-1, Math.min(1, dot(u, v))));
+    if (angle < 0.03 || angle > Math.PI * 0.8) return;
+    const tangent = Math.tan(angle / 2),
+      distance = Math.min(minor * 1.05 * tangent, l0 * 0.49, l1 * 0.49),
+      radius = distance / tangent;
+    if (radius <= minor * 1.005) return;
+    const axis = unit(cross(u, v)),
+      entry = sub(vertex, scale(u, distance)),
+      exit = add(vertex, scale(v, distance)),
+      centre = add(entry, scale(cross(axis, u), radius)),
+      radial = unit(sub(entry, centre)),
+      side = cross(axis, radial);
+    let hit = 0,
+      total = 0;
+    for (let j = 0; j <= 12; j++) {
+      const theta = (angle * j) / 12,
+        r = add(scale(radial, Math.cos(theta)), scale(side, Math.sin(theta))),
+        p = add(centre, scale(r, radius));
+      for (const [dr, dn] of [
+        [0, 0],
+        [0.65, 0],
+        [-0.65, 0],
+        [0, 0.65],
+        [0, -0.65],
+      ]) {
+        const q = add(p, add(scale(r, minor * dr), scale(axis, minor * dn))).map(Math.floor) as Vec3;
+        total++;
+        if (gridCell(grid, q)) hit++;
+      }
+    }
+    const support = hit / total;
+    if (support < 0.9) return;
+    joins.push({
+      entry,
+      exit,
+      arc: torusSegments(centre, axis, radial, radius, minor, angle),
+      evidence: { vertex: [...vertex], centre, radius, angle, support },
+    });
+  }
+  const primitives: Primitive[] = [];
+  let start = points[0];
+  for (const joint of joins) {
+    if (Math.hypot(...sub(joint.entry, start)) > 1e-5)
+      primitives.push(taperedCylinder(start, joint.entry, [minor, minor]));
+    primitives.push(...joint.arc);
+    start = joint.exit;
+  }
+  if (Math.hypot(...sub(points[points.length - 1], start)) > 1e-5)
+    primitives.push(taperedCylinder(start, points[points.length - 1], [minor, minor]));
+  return { primitives, joints: joins.map((j) => j.evidence) };
 }

@@ -123,10 +123,21 @@ export function torusSegments(
   const points = Array.from({ length: steps + 1 }, (_, i) =>
     add(centre, scale(add(scale(u, Math.cos((angle * i) / steps)), scale(v, Math.sin((angle * i) / steps))), major)),
   );
-  return sweptCylinders(points, minor).map((q) => ({
+  const patches = sweptCylinders(points, minor).map((q) => ({
     ...q,
-    round: { type: 'torus', centre: [...centre], axis: n, radius: major },
+    round: { type: 'torus' as const, centre: [...centre] as Vec3, axis: n, radius: major },
   }));
+  // Tangent end planes meet straight pipes flush; internal chord joints retain their bisectors.
+  const startTangent = scale(v, Math.sign(angle)),
+    endRadial = add(scale(u, Math.cos(angle)), scale(v, Math.sin(angle))),
+    endTangent = scale(cross(n, endRadial), Math.sign(angle));
+  const first = patches[0],
+    last = patches[patches.length - 1];
+  if (first.type === 'poly')
+    first.planes[first.planes.length - 2] = [...scale(startTangent, -1), -dot(startTangent, points[0])];
+  if (last.type === 'poly')
+    last.planes[last.planes.length - 1] = [...endTangent, dot(endTangent, points[points.length - 1])];
+  return patches;
 }
 
 /** A source-supported convex edge fillet, clipped to its two adjoining plate halfspaces. */

@@ -205,9 +205,11 @@ that metadata retain their geometry and normals.
 
 `hardSurfaceRoundFit.ts` owns source-only cross-section rays, exposed-arc and radial-residual
 checks, stable axial tracks, bounded centreline simplification, coherent taper regression,
-spherical/ellipsoidal area-profile regression, capsule-end and circular-quadrant hypotheses.
+spherical/ellipsoidal area-profile regression with explicit shrinking-section evidence, capsule-end and circular-quadrant hypotheses.
 A torus hypothesis additionally requires occupied source samples along the intervening arc;
-its endpoints alone cannot authorize a bend. Tiny cross sections are explicitly marked
+its endpoints alone cannot authorize a bend. Local straight/torus/straight elbow fits also test the intervening
+source arc, allowing an offset pipe to contain opposite bends instead of requiring its entire path to
+lie on one circle. Torus end planes follow the endpoint tangents to meet adjoining straight pipes flush. Tiny cross sections are explicitly marked
 ambiguous: a one-cell rail cannot prove its subvoxel cross-section is circular. Attached
 continuations require an established track and occupancy support; flat plates alone are not
 positive round evidence. The detector can still miss blended/occluded or rapidly changing
@@ -219,6 +221,13 @@ Insufficient evidence is an error, not an exact-cover fallback. Automatic propos
 into pipe extraction with `roundPipes: true` or `run.ts --round-pipes`. The default startup,
 library installation and live-cache paths are unchanged. Curved patches are not split or
 independently retuned as planar facets by refinement.
+
+Flat circular end faces cannot seed domes. Cap discovery scans lower local peaks alongside taller
+payloads, rather than only a fixed band beneath the global maximum. Longitudinal circular hypotheses
+require missing source cross-section corners and occupancy support; a long rectangular box is not
+round evidence. An established exposed pipe can additionally continue through attached source sections
+with occupied circular interiors and an exposed flank. The upper-pipe replacement carves only above
+its centreline planes, preserving the parent material below and avoiding floating seams.
 
 A separate offline round pass preserves an earlier automatic delivery's broad plates and
 tries source-supported curved replacements, source-profile circular barrel chains and
