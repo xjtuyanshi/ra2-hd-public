@@ -59,4 +59,40 @@ describe('mesh silhouette and acceptance-driven refinement', () => {
     expect(result.history[0].result).toBeDefined();
     expect(result.part.primitives.length).toBeLessThanOrEqual(1);
   });
+  it('moves every axial segment together when correcting a biased tube axis', () => {
+    const source = grid([12, 8, 8], ([, y, z]) => Math.hypot(y - 3, z - 3) < 2.3);
+    const base = proposeHardSurface(source, { category: 'tube', budget: 2 });
+    const region = base.regions[0],
+      primitive = region.primitive;
+    if (primitive.type !== 'cyl') throw new Error('Expected tube proposal');
+    const parts = [
+      {
+        ...structuredClone(primitive),
+        name: 'barrel_a',
+        range: [0, 6] as [number, number],
+        c: [primitive.c[0] + 0.45, primitive.c[1]] as [number, number],
+      },
+      {
+        ...structuredClone(primitive),
+        name: 'barrel_b',
+        range: [6, 12] as [number, number],
+        c: [primitive.c[0] + 0.45, primitive.c[1]] as [number, number],
+      },
+    ];
+    const model = {
+      ...base,
+      part: { primitives: parts },
+      regions: parts.map((p, i) => ({
+        ...structuredClone(region),
+        id: String(i),
+        primitive: p,
+        cells: region.cells.filter((c) => (i === 0 ? c[0] < 6 : c[0] >= 6)),
+      })),
+    };
+    const refined = refineHardSurface(source, model, views, { maxEvaluations: 8, maxMilliseconds: 10000 });
+    expect(refined.history.some((h) => h.action.startsWith('axis:') && h.accepted)).toBe(true);
+    const centres = refined.part.primitives.map((p) => (p.type === 'cyl' ? p.c : []));
+    expect(centres[0]).toEqual(centres[1]);
+    expect(centres[0][0]).toBeLessThan(primitive.c[0] + 0.45);
+  });
 });

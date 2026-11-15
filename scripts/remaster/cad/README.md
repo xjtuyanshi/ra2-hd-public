@@ -30,7 +30,9 @@ The generic modules in `packages/hd-renderer/src/` own:
 
 - `hardSurfacePropose.ts`: part-local mirror evidence, bounded broad BSP regions, snapped
   axis/1:1/1:2/2:1 planes plus configurable ratios, occupancy-supported circular hypotheses,
-  and disconnected parallel tube lanes with shared centres on axial refinements. Semantic
+  and disconnected parallel tube lanes with shared centres on axial refinements. Slice-median
+  axes prevent a short asymmetric base from displacing a long tube; centre search moves every
+  segment of one coaxial group together. Semantic
   names are geometric hypotheses, not recognition of a particular game's model.
 - `hardSurfaceSilhouette.ts`: source surface extraction, deterministic two-sided triangle
   rasterization at pixel centres, clipping rejection, and per-view overlap/residual counts.

@@ -127,7 +127,20 @@ export function cylinderProposal(cells: readonly Vec3[], axis: Axis): Primitive 
   const [lo, hi] = cellBounds(cells),
     a = 'xyz'.indexOf(axis),
     [u, v] = [0, 1, 2].filter((k) => k !== a);
-  const c: [number, number] = [(lo[u] + hi[u]) / 2, (lo[v] + hi[v]) / 2];
+  // A short asymmetric base must not displace the axis of the much longer tube.
+  // Give every axial slice one vote, rather than weighting its cells or the global bounding box.
+  const slices = new Map<number, Vec3[]>();
+  for (const p of cells) {
+    const row = slices.get(p[a]);
+    if (row) row.push(p);
+    else slices.set(p[a], [p]);
+  }
+  const centres = [...slices.values()].map(cellBounds).map(([l, h]) => [(l[u] + h[u]) / 2, (l[v] + h[v]) / 2]);
+  const median = (values: number[]) => {
+    values.sort((x, y) => x - y);
+    return (values[Math.floor((values.length - 1) / 2)] + values[Math.ceil((values.length - 1) / 2)]) / 2;
+  };
+  const c: [number, number] = [median(centres.map((p) => p[0])), median(centres.map((p) => p[1]))];
   // Equal-area circle is a useful start for square low-resolution samples; formal refinement remains necessary.
   const r = Math.sqrt(((hi[u] - lo[u]) * (hi[v] - lo[v])) / Math.PI);
   return { type: 'cyl', axis, c, r, range: [lo[a], hi[a]] };

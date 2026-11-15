@@ -194,6 +194,32 @@ export function refineHardSurface(
         break;
       }
     }
+    if (!candidate && model.options.category === 'tube') {
+      const groups = new Map<string, number[]>();
+      part.primitives.forEach((q, i) => {
+        if (q.type !== 'cyl') return;
+        const key = `${q.axis}:${q.c.join(',')}`;
+        const g = groups.get(key);
+        if (g) g.push(i);
+        else groups.set(key, [i]);
+      });
+      outer: for (const [group, indices] of groups)
+        for (const dimension of [0, 1])
+          for (const delta of [-0.15, 0.15, -0.075, 0.075]) {
+            const key = `axis:${group}:${dimension}:${delta}`;
+            if (tried.has(key)) continue;
+            tried.add(key);
+            candidate = structuredClone(part);
+            nextRegions = structuredClone(regions);
+            for (const i of indices) {
+              const q = candidate.primitives[i];
+              if (q.type === 'cyl') q.c[dimension] += delta;
+              nextRegions[i].primitive = q;
+            }
+            action = `${key}; shared by ${indices.length} coaxial segments`;
+            break outer;
+          }
+    }
     if (!candidate)
       for (const { r, i } of ranked) {
         const key = 'split:' + r.id;

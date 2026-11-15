@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { grid } from './hardSurfaceFixtures';
-import { detectMirror, proposeHardSurface } from '../src/hardSurfacePropose';
+import { detectMirror, proposeHardSurface, cylinderProposal, occupiedCells } from '../src/hardSurfacePropose';
 import { buildPart } from '../src/hardSurfaceMesh';
 
 describe('automatic source-supported broad regions', () => {
@@ -52,5 +52,14 @@ describe('automatic source-supported broad regions', () => {
     const model = proposeHardSurface(source, { category: 'chassis', budget: 1 });
     expect(model.part.primitives[0].type).toBe('cyl');
     expect(model.regions[0].support).toBeGreaterThanOrEqual(0.85);
+  });
+  it('estimates a shared tube axis from axial slices rather than a short asymmetric base', () => {
+    const source = grid(
+      [20, 9, 9],
+      ([x, y, z]) => x < 19 && (x < 4 ? Math.hypot(y - 4, z - 4) < 2.8 : Math.hypot(y - 3, z - 4) < 1.8),
+    );
+    const tube = cylinderProposal(occupiedCells(source), 'x');
+    expect(tube.type).toBe('cyl');
+    if (tube.type === 'cyl') expect(tube.c).toEqual([3.5, 4.5]);
   });
 });
