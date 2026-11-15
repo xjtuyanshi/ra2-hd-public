@@ -410,14 +410,23 @@ export function parseHardSurfaceSpec(value: unknown): HardSurfaceSpec {
       if (r.type === 'sphere' || r.type === 'ellipsoid') {
         if (!vector(r.centre, 3)) fail();
         if (r.type === 'ellipsoid' && (!vector(r.radii, 3) || (r.radii as number[]).some((v) => v <= 0))) fail();
-      } else if (r.type === 'capsule' || r.type === 'taper') {
+      } else if (r.type === 'capsule' || r.type === 'taper' || r.type === 'elliptic') {
         if (
           !vector(r.start, 3) ||
           !vector(r.end, 3) ||
           (r.start as number[]).every((v, a) => v === (r.end as number[])[a])
         )
           fail();
-        if (r.type === 'taper' && (!vector(r.radii, 2) || (r.radii as number[]).some((v) => v <= 0))) fail();
+        if (
+          (r.type === 'taper' || r.type === 'elliptic') &&
+          (!vector(r.radii, 2) || (r.radii as number[]).some((v) => v <= 0))
+        )
+          fail();
+        if (r.type === 'elliptic') {
+          if (!vector(r.radial, 3) || Math.abs(Math.hypot(...(r.radial as number[])) - 1) > 1e-6) fail();
+          const d = (r.end as number[]).map((v, a) => v - (r.start as number[])[a]);
+          if (Math.abs(d.reduce((s, v, a) => s + v * (r.radial as number[])[a], 0)) > 1e-6 * Math.hypot(...d)) fail();
+        }
       } else if (r.type === 'torus') {
         if (
           !vector(r.centre, 3) ||

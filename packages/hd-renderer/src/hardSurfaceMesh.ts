@@ -5,6 +5,7 @@ export type Plane = [number, number, number, number];
 export type RoundSurface =
   | { type: 'sphere'; centre: Vec3 }
   | { type: 'ellipsoid'; centre: Vec3; radii: Vec3 }
+  | { type: 'elliptic'; start: Vec3; end: Vec3; radial: Vec3; radii: [number, number] }
   | { type: 'capsule'; start: Vec3; end: Vec3 }
   | { type: 'taper'; start: Vec3; end: Vec3; radii: [number, number] }
   | { type: 'torus'; centre: Vec3; axis: Vec3; radius: number };
@@ -316,6 +317,7 @@ export function mirror(prim: ExpandedPrimitive, axis: Axis, at: number): Expande
       round.end[a] = 2 * at - round.end[a];
     }
     if ('axis' in round) round.axis[a] *= -1;
+    if ('radial' in round) round.radial[a] *= -1;
   }
   return { ...prim, name: (prim.name ?? '') + '_m', planes, cylinder, ...(round ? { round } : {}) };
 }
@@ -413,7 +415,20 @@ export function buildPoly(prim: ExpandedPrimitive, prims?: readonly ExpandedPrim
           const t = dot(sub(p, shape.start), direction);
           const near = add(shape.start, scale(direction, Math.max(0, Math.min(length, t))));
           rad = sub(p, near);
-          if (shape.type === 'taper') {
+          if (shape.type === 'elliptic') {
+            const v = cross(direction, shape.radial);
+            rad = add(
+              scale(shape.radial, dot(rad, shape.radial) / shape.radii[0] ** 2),
+              scale(v, dot(rad, v) / shape.radii[1] ** 2),
+            );
+            const correction = Math.sqrt((2 * Math.PI) / 48 / Math.sin((2 * Math.PI) / 48)) * Math.cos(Math.PI / 48);
+            const support = Math.hypot(dot(n, shape.radial) * shape.radii[0], dot(n, v) * shape.radii[1]);
+            if (
+              Math.abs(dot(n, direction)) > 1e-7 ||
+              Math.abs(prim.planes[f.plane][3] - dot(n, shape.start) - correction * support) > 1e-5
+            )
+              rad = n;
+          } else if (shape.type === 'taper') {
             // Preserve planar end caps and any caller's clipping faces.
             const slope = (shape.radii[1] - shape.radii[0]) / length;
             if (Math.abs(dot(n, direction)) > 0.999999) rad = n;

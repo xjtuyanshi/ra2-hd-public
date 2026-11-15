@@ -23,6 +23,7 @@ import {
   patchUpperPipe,
 } from '../../../packages/hd-renderer/src/hardSurfaceRoundPatch';
 import { sweptCylinders, taperedCylinder } from '../../../packages/hd-renderer/src/hardSurfaceRound';
+import { detectRoundShoulders } from '../../../packages/hd-renderer/src/hardSurfaceShoulder';
 import { tubeLanes, tubeSegments, circularTubeGroups } from '../../../packages/hd-renderer/src/hardSurfaceTube';
 import { occupiedCells, cylinderProposal } from '../../../packages/hd-renderer/src/hardSurfacePropose';
 import { evaluateHardSurface, type HardSurfaceMetrics } from '../../../packages/hd-renderer/src/hardSurfaceMetrics';
@@ -60,7 +61,7 @@ for (let i = 2; i < process.argv.length; i += 2) {
   flags.set(key, process.argv[i + 1]);
 }
 const mode = flags.get('--mode') ?? 'round';
-if (!['round', 'polish'].includes(mode)) throw new Error('Mode must be round or polish');
+if (!['round', 'polish', 'shoulder'].includes(mode)) throw new Error('Mode must be round, polish or shoulder');
 if (!flags.has('--input') || !flags.has('--out'))
   throw new Error('round.ts --input AUTOMATIC_DELIVERY --out FRESH_OUTPUT [--seconds 1800]');
 const here = dirname(fileURLToPath(import.meta.url)),
@@ -73,7 +74,7 @@ const started = performance.now(),
   date = new Date().toISOString(),
   limit = Number(flags.get('--seconds') ?? 1800) * 1000;
 if (!Number.isFinite(limit) || limit <= 0) throw new Error('Positive seconds required');
-const json = (v: unknown) =>
+const json = (v: unknown, spacing = 1) =>
   JSON.stringify(
     v,
     (_, x: unknown) =>
@@ -82,7 +83,7 @@ const json = (v: unknown) =>
         : ArrayBuffer.isView(x)
           ? Array.from(x as unknown as ArrayLike<number>)
           : x,
-    1,
+    spacing,
   ) + '\n';
 const save = async (name: string, value: unknown) => writeFile(join(out, name), json(value));
 const readJson = async (dir: string, name: string) => JSON.parse(await readFile(join(dir, name), 'utf8'));
@@ -201,7 +202,7 @@ await save('baseline_metrics.json', metrics);
 await save('baseline_silhouette.json', { assembled: currentAssembly });
 log(`${ex.id} baseline assembled min ${Math.min(...currentAssembly.map((s) => s.iou))}`);
 const history = (value: unknown) =>
-  appendFileSync(join(out, 'evaluations.jsonl'), json({ at: new Date().toISOString(), ...(value as object) }));
+  appendFileSync(join(out, 'evaluations.jsonl'), json({ at: new Date().toISOString(), ...(value as object) }, 0));
 const cost = (assembly: SilhouetteComparison[], m: HardSurfaceMetrics, role: string) => {
   const deficits = assembly.map((s) => Math.max(0, 0.97 - s.iou)),
     p99 = Math.max(m.dev_vox_to_cad.p99, m.dev_cad_to_vox.p99);
@@ -216,7 +217,10 @@ const cost = (assembly: SilhouetteComparison[], m: HardSurfaceMetrics, role: str
 const consider = (key: string, p: PartSpec, action: string, allowEqualRound = false) => {
   if (performance.now() - started > limit) return false;
   try {
-    if (mode === 'polish' && action.startsWith('source ridge')) {
+    if (
+      (mode === 'polish' && action.startsWith('source ridge')) ||
+      (mode === 'shoulder' && action.startsWith('source shoulder'))
+    ) {
       const merged = coalescePart(p);
       p = merged.part;
       (ridgeCoalescing[key] ??= []).push({ action, merges: merged.merges });
@@ -319,7 +323,40 @@ const consider = (key: string, p: PartSpec, action: string, allowEqualRound = fa
 for (const key of keys) {
   const t = performance.now(),
     solid = ex.parts[key].solid;
-  if (mode === 'polish') {
+  if (mode === 'shoulder') {
+    if (ex.parts[key].role !== 'barrel') {
+      const merged = coalescePart(spec.parts[key]);
+      coalescing[key] = {
+        merges: merged.merges,
+        before: buildPart(spec.parts[key]).primitives.length,
+        proposed: buildPart(merged.part).primitives.length,
+      };
+      if (merged.merges.length) consider(key, merged.part, `coalesce: ${merged.merges.length} exact convex unions`);
+      const features = detectRoundShoulders(solid);
+      detections[key] = features;
+      // Related shoulders may free each other's old clipping fragments; only the complete source-supported bundle is evaluated.
+      const groups = new Map<string, number[]>();
+      features.forEach((f, i) => {
+        const signature = f.axis + ':' + f.points.map((p) => p['xyz'.indexOf(f.axis)]).join(',');
+        const group = groups.get(signature) ?? [];
+        group.push(i);
+        groups.set(signature, group);
+      });
+      for (const indices of groups.values())
+        if (indices.length > 1) {
+          let candidate = structuredClone(spec.parts[key]);
+          for (const i of indices) candidate = patchRoundFeature(candidate, features[i], `shoulder_bundle_${i}`);
+          consider(key, candidate, `source shoulder bundle ${indices.join(',')}`, true);
+        }
+      for (const [i, f] of features.entries())
+        consider(
+          key,
+          patchRoundFeature(spec.parts[key], f, `shoulder_${i}`),
+          `source shoulder ${i}; section-height-error=${f.profileError}; ${f.evidence.slices} slices`,
+          true,
+        );
+    }
+  } else if (mode === 'polish') {
     if (ex.parts[key].role !== 'barrel') {
       const merged = coalescePart(spec.parts[key]);
       coalescing[key] = {

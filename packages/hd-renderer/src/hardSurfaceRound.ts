@@ -58,6 +58,23 @@ export function taperedCylinder(start: Vec3, end: Vec3, radii: [number, number])
   return patch(planes, { type: 'taper', start: [...start], end: [...end], radii: [...radii] });
 }
 
+/** Extruded ellipse with an explicit transverse frame; clipping faces remain flat. */
+export function ellipticCylinder(start: Vec3, end: Vec3, radial: Vec3, radii: [number, number]): Primitive {
+  radii.forEach(positive);
+  const axis = unit(sub(end, start));
+  const u = unit(sub(radial, scale(axis, dot(radial, axis)))),
+    v = cross(axis, u);
+  if (![...axis, ...u].every(Number.isFinite)) throw new Error('Independent finite ellipse axes required');
+  const correction = Math.sqrt((2 * Math.PI) / 48 / Math.sin((2 * Math.PI) / 48)) * Math.cos(Math.PI / 48);
+  const planes: Plane[] = Array.from({ length: 48 }, (_, i) => {
+    const theta = (2 * Math.PI * (i + 0.5)) / 48;
+    const n = add(scale(u, Math.cos(theta) / radii[0]), scale(v, Math.sin(theta) / radii[1]));
+    return [...n, dot(n, start) + correction];
+  });
+  planes.push([...scale(axis, -1), -dot(axis, start)], [...axis, dot(axis, end)]);
+  return patch(planes, { type: 'elliptic', start: [...start], end: [...end], radial: u, radii: [...radii] });
+}
+
 /** Polyline sweep with flush bisector joints, not overlapping discs or per-voxel boxes. */
 export function sweptCylinders(points: readonly Vec3[], radius: number): Primitive[] {
   positive(radius);

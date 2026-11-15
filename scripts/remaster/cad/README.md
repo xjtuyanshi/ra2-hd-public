@@ -303,3 +303,18 @@ expanded count. This is the same verified convex-union operation, not a compound
 `coalescing.json` retains the original neighbour names and every local merge. The ridge height-error
 field describes raw source profiles before centreline smoothing; it is a proposal diagnostic, not
 the delivered surface p99. Final mesh errors and every silhouette are always remeasured.
+
+`round.ts --mode shoulder` is an additional opt-in source pass. It fits stable
+exposed elliptic quarter profiles over at least six source slices, verifies the
+occupied interior, and rejects straight chamfers and featureless plates. The
+unobserved radius remains ambiguous and is marked in the evidence. An explicit
+elliptic extrusion supplies the actual halfspaces and analytic normals; axial caps
+and caller clipping planes retain flat normals. Related profiles sharing an axial
+range are also proposed as a complete bundle, with all resulting pieces charged
+to the same budget and the unchanged assembly floor applied to the complete
+candidate. This pass does not infer hidden parts or change paint.
+
+New round evaluation logs use one compact JSON object per line. Historical round
+artifacts produced before this correction contain a whitespace-separated stream
+of pretty-printed JSON objects; retain their original bytes and use a streaming
+JSON decoder when examining that historical evidence.
