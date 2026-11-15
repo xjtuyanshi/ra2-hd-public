@@ -9,6 +9,7 @@ import {
   externalOutputDirectory,
   sectionAffine,
   transformPoint,
+  sha256,
 } from '../../../scripts/remaster/cad/cache';
 import type { VoxelSection } from '../../ra2-assets/src/manifest';
 import { encodePng } from '../../ra2-assets/src/node/png';
@@ -98,6 +99,13 @@ describe('offline local cache export boundaries', () => {
       expect(Object.keys(searches['body:1'])).toEqual(['strict', 'broad']);
       const selection = JSON.parse(await readFile(join(out, 'search_selection.json'), 'utf8'));
       expect(selection).toEqual({ 'body:0': 'strict', 'body:1': 'strict' });
+      // Preserve the better complete search state even if the delivery's default choice is poor.
+      const degraded = structuredClone(spec);
+      degraded.parts['body:0'].primitives = [{ type: 'box', min: [0, 0, 0], max: [1, 1, 1], chamfer: 0 }];
+      const degradedBytes = JSON.stringify(degraded);
+      await writeFile(join(out, 'spec.json'), degradedBytes);
+      manifest.files['spec.json'] = { sha256: sha256(degradedBytes), bytes: Buffer.byteLength(degradedBytes) };
+      await writeFile(join(out, 'manifest.json'), JSON.stringify(manifest));
       const selected = join(dir, 'selected');
       execFileSync(
         process.execPath,
@@ -119,6 +127,9 @@ describe('offline local cache export boundaries', () => {
       const chosen = JSON.parse(await readFile(join(selected, 'selection.json'), 'utf8'));
       expect(chosen['body:0'].directory).toBe(await realpath(out));
       expect(chosen['body:1'].directory).toBe(await realpath(out));
+      expect(chosen['body:0'].variant).toBe('strict');
+      const selectedSpec = JSON.parse(await readFile(join(selected, 'spec.json'), 'utf8'));
+      expect(selectedSpec.parts['body:0']).toEqual(spec.parts['body:0']);
       // A stored spec/export mutation cannot enter selection under its old manifest hash.
       const stored = await readFile(join(out, 'export.json'), 'utf8');
       await writeFile(join(out, 'export.json'), stored + ' ');

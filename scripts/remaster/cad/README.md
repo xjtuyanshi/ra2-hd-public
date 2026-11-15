@@ -171,7 +171,7 @@ pnpm exec tsx scripts/remaster/cad/select.ts \
   --out "$FRESH_SELECTED_DELIVERY" --cell 256
 ```
 
-Inputs must be complete automatic deliveries with intact spec/export manifest hashes and
+Inputs must be complete automatic deliveries with intact spec/export (and optional search-log) manifest hashes and
 matching model source hash, palette hash, section set, solid lattice, affine, camera and
 explicit house colour. The output is fresh and cannot overwrite a candidate. Every eligible
 part is remeasured using the unchanged formal surface/silhouette implementation and current
@@ -180,7 +180,12 @@ failed independent gates, smaller worst normalized deviation/IoU shortfall, then
 formal diagnostic loss. Ties keep the first input. Expanded/per-tube budget violations are
 rejected before ranking. The tool never requests model coordinates or a hand-selected part.
 
-`selection.json` and `selection_evaluations.json` retain all origins, current measurements,
+Complete `searches.json` states are eligible alongside each delivery's default spec, so the
+outer ranking cannot lose a better automatic strict/broad trial. Identical part payloads are
+measured once with every alias retained. Original dirty/changed-source provenance is copied
+as evidence rather than represented as an immutable revision.
+
+`selection.json` and `selection_evaluations.json` retain all origins, variants, current measurements,
 rejections and ranks. The assembled silhouette and all boards are regenerated after automatic
 selection. This does not turn part passes into a vehicle pass, certify the look, or prove a
 global optimum. Upstream trial minutes and selection wall time remain separate in HOURS.md.

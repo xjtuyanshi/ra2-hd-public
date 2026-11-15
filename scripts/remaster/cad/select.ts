@@ -40,6 +40,8 @@ interface Candidate {
   proposals: Record<string, { options: Record<string, unknown> }>;
   revision: string;
   automaticMs: number;
+  searches: Record<string, Record<string, { part: PartSpec }>>;
+  sourceState: { status: unknown; changedFiles: unknown };
 }
 const args = process.argv.slice(2),
   inputs: string[] = [],
@@ -122,6 +124,13 @@ for (const input of inputs) {
   for (const name of ['export.json', 'spec.json'])
     if (sha256(await readFile(join(directory, name))) !== manifest.files[name]?.sha256)
       throw new Error(`Candidate manifest hash mismatch: ${name}`);
+  const searchBytes = await readFile(join(directory, 'searches.json')).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT') return undefined;
+    throw error;
+  });
+  if (searchBytes && sha256(searchBytes) !== manifest.files['searches.json']?.sha256)
+    throw new Error('Candidate manifest hash mismatch: searches.json');
+  const searches = searchBytes ? JSON.parse(searchBytes.toString()) : {};
   const exported = (await readJson(directory, 'export.json')) as Exported,
     spec = (await readJson(directory, 'spec.json')) as HardSurfaceSpec,
     timing = await readJson(directory, 'timing.json');
@@ -158,6 +167,11 @@ for (const input of inputs) {
     proposals: await readJson(directory, 'proposals.json'),
     revision: manifest.revision,
     automaticMs: timing.totalMs,
+    searches,
+    sourceState: {
+      status: manifest.sourceStatusAtStart ?? 'UNVERIFIED (legacy)',
+      changedFiles: manifest.sourceFilesChangedDuringRun ?? 'UNVERIFIED (legacy)',
+    },
   });
 }
 const base = candidates[0].exported,
@@ -191,39 +205,62 @@ for (const [key, part] of Object.entries(base.parts)) {
   viewsByKey[key] = views;
   const rows: Record<string, unknown>[] = [],
     partStart = performance.now();
-  let best: { candidate: Candidate; value: FitAcceptance; part: PartSpec } | undefined;
+  let best: { candidate: Candidate; variant: string; value: FitAcceptance; part: PartSpec } | undefined;
+  const seenParts = new Map<string, { directory: string; variant: string; value: FitAcceptance }>();
   for (const candidate of candidates) {
-    const fitted = candidate.spec.parts[key],
-      expanded = buildPart(fitted);
-    let reason = '';
-    if (expanded.primitives.length > budget) reason = 'expanded primitive budget';
-    if (part.role === 'barrel') {
-      const groups = new Map<string, number>();
-      for (const q of fitted.primitives) {
-        if (q.type !== 'cyl') {
-          reason = 'non-cylinder tube';
-          break;
+    const variants = [
+      { variant: 'selected', part: candidate.spec.parts[key] },
+      ...Object.entries(candidate.searches[key] ?? {}).map(([variant, trial]) => ({ variant, part: trial.part })),
+    ];
+    for (const variant of variants) {
+      const fitted = variant.part,
+        expanded = buildPart(fitted);
+      let reason = '';
+      if (expanded.primitives.length > budget) reason = 'expanded primitive budget';
+      if (part.role === 'barrel') {
+        const groups = new Map<string, number>();
+        for (const q of fitted.primitives) {
+          if (q.type !== 'cyl') {
+            reason = 'non-cylinder tube';
+            break;
+          }
+          const g = `${q.axis}:${q.c}`;
+          groups.set(g, (groups.get(g) ?? 0) + 1);
         }
-        const g = `${q.axis}:${q.c}`;
-        groups.set(g, (groups.get(g) ?? 0) + 1);
+        if ([...groups.values()].some((n) => n > 3) || groups.size !== budget / 3) reason = 'per-tube/coaxial budget';
       }
-      if ([...groups.values()].some((n) => n > 3) || groups.size !== budget / 3) reason = 'per-tube/coaxial budget';
+      if (reason) {
+        rows.push({ directory: candidate.directory, variant: variant.variant, rejected: reason });
+        continue;
+      }
+      const fingerprint = sha256(json(fitted)),
+        previous = seenParts.get(fingerprint);
+      if (previous) {
+        rows.push({
+          directory: candidate.directory,
+          variant: variant.variant,
+          duplicateOf: { directory: previous.directory, variant: previous.variant },
+          rank: candidateRank(previous.value),
+          result: previous.value,
+        });
+        continue;
+      }
+      const value = measureCandidate(part.solid, fitted, views, budget);
+      seenParts.set(fingerprint, { directory: candidate.directory, variant: variant.variant, value });
+      rows.push({
+        directory: candidate.directory,
+        revision: candidate.revision,
+        variant: variant.variant,
+        sourceState: candidate.sourceState,
+        rank: candidateRank(value),
+        result: value,
+      });
+      if (!best || compareCandidates(value, best.value) < 0)
+        best = { candidate, variant: variant.variant, value, part: fitted };
+      await log(
+        `Measured ${key}/${variant.variant} from ${candidate.directory}; pass=${value.pass}; rank=${candidateRank(value).join('/')}`,
+      );
     }
-    if (reason) {
-      rows.push({ directory: candidate.directory, rejected: reason });
-      continue;
-    }
-    const value = measureCandidate(part.solid, fitted, views, budget);
-    rows.push({
-      directory: candidate.directory,
-      revision: candidate.revision,
-      rank: candidateRank(value),
-      result: value,
-    });
-    if (!best || compareCandidates(value, best.value) < 0) best = { candidate, value, part: fitted };
-    await log(
-      `Measured ${key} from ${candidate.directory}; pass=${value.pass}; rank=${candidateRank(value).join('/')}`,
-    );
   }
   if (!best) throw new Error(`No eligible candidate for ${key}`);
   spec.parts[key] = structuredClone(best.part);
@@ -237,6 +274,8 @@ for (const [key, part] of Object.entries(base.parts)) {
   selection[key] = {
     directory: best.candidate.directory,
     revision: best.candidate.revision,
+    variant: best.variant,
+    sourceState: best.candidate.sourceState,
     rank: candidateRank(best.value),
   };
   phases[`measure:${key}`] = performance.now() - partStart;
@@ -329,6 +368,6 @@ await writeDeliveryManifest(out, {
   metricPass: numericPass,
   visualAcceptance: 'UNVERIFIED until author opens boards',
   runtime: 'UNVERIFIED; offline only',
-  candidates: candidates.map((c) => ({ directory: c.directory, revision: c.revision })),
+  candidates: candidates.map((c) => ({ directory: c.directory, revision: c.revision, sourceState: c.sourceState })),
   selection,
 });
