@@ -56,6 +56,8 @@ export class VoxelProjectionInputs {
   readonly atlasSize = uniform(new Vector2(1, 1));
   /** Page exposure (see VoxelProjectionManifest.exposure); 1 for pages stored without headroom. */
   readonly exposure = uniform(1);
+  /** 1 for pages with baked form light (VoxelProjectionManifest.shading), which skip the mesh form terms. */
+  readonly baked = uniform(0);
   /** Bake frames per turn, facing units (of 256) between two frames, and the same step in radians. */
   readonly frameCount = uniform(16);
   readonly facingStep = uniform(16);
@@ -70,6 +72,7 @@ export class VoxelProjectionInputs {
     (this.jacobianY.value as Vector3).fromArray(manifest.jacobian[1]);
     (this.atlasSize.value as Vector2).fromArray(spec.size);
     this.exposure.value = manifest.exposure ?? 1;
+    this.baked.value = manifest.shading === 'baked' ? 1 : 0;
     this.frameCount.value = manifest.frames;
     this.facingStep.value = manifest.facingStep;
     this.frameAngle.value = (manifest.facingStep * 2 * Math.PI) / 256;

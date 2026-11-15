@@ -201,6 +201,13 @@ describe('projection manifest validation', () => {
     for (const exposure of [0.5, 4.5, NaN, '1.6', null])
       expect(() => parseVoxelProjectionManifest({ ...spec, exposure })).toThrow('exposure');
   });
+  it('accepts baked page shading and rejects other shading values', () => {
+    const spec = manifest();
+    expect(parseVoxelProjectionManifest(spec).shading).toBeUndefined();
+    expect(parseVoxelProjectionManifest({ ...spec, shading: 'baked' }).shading).toBe('baked');
+    for (const shading of ['lit', 1, null])
+      expect(() => parseVoxelProjectionManifest({ ...spec, shading })).toThrow('shading');
+  });
   it('rejects invalid dimensions, geometry values and escaping asset paths', () => {
     const bad = manifest();
     bad.parts.body!.frames[0]!.rect = [319, 0, 16, 16];
@@ -381,6 +388,17 @@ describe('projected materials and shader compilation', () => {
     expect(exposed.main.fragment).not.toContain('1.625');
     expect(exposed.main.fragment).toBe(plain.main.fragment);
     expect(exposed.main.fragment).not.toMatch(/\b(?:NaN|undefined)\b/);
+  });
+
+  it('binds baked page shading as a slot value, not shader text', () => {
+    const baked = shaders({ ...manifest(), shading: 'baked' });
+    const plain = shaders(manifest());
+    const inputs = new VoxelProjectionInputs();
+    inputs.bind(baked.part);
+    expect(inputs.baked.value).toBe(1);
+    inputs.bind(plain.part);
+    expect(inputs.baked.value).toBe(0);
+    expect(baked.main.fragment).toBe(plain.main.fragment);
   });
 
   /** A second manifest with the numbers of a real library type: another Jacobian, atlas sizes and an exposure. */
