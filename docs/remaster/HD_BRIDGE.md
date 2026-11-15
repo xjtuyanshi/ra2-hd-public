@@ -1347,6 +1347,15 @@ See [Water review instructions](../../scripts/remaster/qa/WATER.md) for native s
 mask review, lossless/4 Mb/s encodes, per-gate metrics and the separate 60-second fleet logic-FPS runs. Captures and
 terrain artwork stay outside Git. Asset-free regressions do not establish GPU equivalence or visual acceptance.
 
+### Cloud-driven lush2 selection
+
+`hd-tone=lush2` (the owner look since the Build 13 Sunday build, from `scripts/remaster/play-options.mjs`) sets
+`HdSettings.cloudTone` and clears `groundTone` and the final `tone`. Its grade interpolates between the lit and the
+cloud-shaded ends, so `applyMoistTone` also returns lush2's cloud options and the bridge applies them with
+`setAlive` before the first `applySettings`; they replace the entry's `alive-preset` while lush2 is on.
+`shoreKeep` 1 leaves the shore band as the untoned look draws it. The tuning panel is opt-in through the
+development flag `hd-tune=1`.
+
 ### Terrain-only lush selection
 
 `hd-tone=lush` uses the existing lazy tone import and leaves default startup unchanged. Unlike moist1–3,

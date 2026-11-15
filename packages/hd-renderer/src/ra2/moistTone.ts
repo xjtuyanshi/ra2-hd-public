@@ -1,6 +1,7 @@
 import { applyLush2 } from './lush2Tone';
 import { lushFinalTone, lushTheatre } from './lushTone';
 import type { HdSettings } from '../HdRenderer';
+import type { AliveOptions } from '../livingWorld';
 import type { Theater } from '../contract';
 import { hasCinematicGrade, type CinematicGradeParams } from '../post';
 import type { FinalToneParams, ToneHueShift } from '../tone';
@@ -177,12 +178,19 @@ export function moistTone(
   };
 }
 
-export function applyMoistTone(settings: HdSettings, theater: string | undefined, style: ToneStyle): void {
-  if (style === 'lush2') {
-    applyLush2(settings, theater);
-    return;
-  }
+/**
+ * Applies a tone style to the settings. lush2 is graded through its own drifting cloud patches, so it also returns
+ * the cloud options its grade was tuned against; the caller hands them to `HdRenderer.setAlive` (they replace the
+ * entry's cloud preset). Every other style returns null and leaves the clouds alone.
+ */
+export function applyMoistTone(
+  settings: HdSettings,
+  theater: string | undefined,
+  style: ToneStyle,
+): AliveOptions | null {
+  if (style === 'lush2') return applyLush2(settings, theater);
   settings.cloudTone = null;
   settings.groundTone = style === 'lush' ? lushTheatre(theater) : null;
   settings.tone = moistTone(theater, style, settings);
+  return null;
 }

@@ -322,6 +322,8 @@ comparisons) and `atmoperf` (frame cost, see below).
 
 Opt in to **clouds only** with `hd-alive=1` on the live game URL, or `alive=1` in either sandbox.
 The owner launchers (`scripts/remaster/play-options.mjs`) turn it on with `alive-preset=deep` since Build 13.
+Since the Build 13 Sunday build they also set `hd-tone=lush2`, whose own cloud mapping (preset `lush`, see
+[Lush2 live ground tuning](#lush2-live-ground-tuning)) replaces the deep shape while that tone is on.
 Tree sway and grass ripple require the additional `alive-wind=1`; that flag alone enables nothing.
 The renderer default stays off. Like `hd-water`, these are URL options, without INI settings.
 Tunables in both entries: `alive-cloud=1` (shadow strength scale, 0..2; 0 disables clouds),
@@ -1870,7 +1872,10 @@ water dE, visual quality or GPU performance. Those require same-scene visual/pix
 
 ### Lush2 live ground tuning
 
-Development game flags `hd-tone=lush2` (or `hd-tune=1`) mount the Chinese tuning overlay. The FX bench
+`hd-tone=lush2` in the game bridge applies the recommended theatre values (`applyMoistTone` returns lush2's cloud
+options and the bridge passes them to `setAlive`, as the FX bench does for `tone=lush2`); the owner launchers set it
+by default. Only the development flag `hd-tune=1` mounts the Chinese tuning overlay, so the default look never
+reserves Backquote or reads values saved in this browser. The FX bench
 uses `tone=lush2`; add `tune=1` for the panel and `__fx.tune.get()`, `.set(partial)`, `.ab(true|false)`.
 Backquote toggles **润v2 / 当前**; Shift+Backquote hides/shows the panel. Inputs, textareas, selects,
 editable elements and IME composition keep their keys. Hosts can provide `textEntryActive()` for native

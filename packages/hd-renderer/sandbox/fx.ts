@@ -1,4 +1,3 @@
-import { applyLush2 } from '../src/ra2/lush2Tone';
 import { mountLush2Tuning } from '../src/ra2/lush2Tuning';
 import { parseAliveParams } from '../src/livingWorld';
 /**
@@ -195,8 +194,8 @@ if (overrides.length) {
 }
 // Tone follows all look overrides, so its theatre grade starts from the actual look.
 if (params.has('tone')) {
-  applyMoistTone(live.hd.settings, live.theater, parseToneStyle(params.get('tone')));
-  if (params.get('tone') === 'lush2') live.hd.setAlive(applyLush2(live.hd.settings, live.theater));
+  const toneAlive = applyMoistTone(live.hd.settings, live.theater, parseToneStyle(params.get('tone')));
+  if (toneAlive) live.hd.setAlive(toneAlive);
   applyToneOverrides(live.hd.settings.tone, params.get('toneset'));
   live.hd.applySettings();
 }

@@ -27,6 +27,7 @@ describe.skipIf(process.platform === 'win32')('scripts/remaster/play.sh', () => 
       'hd-ui': '1',
       'hd-alive': '1',
       'alive-preset': 'deep',
+      'hd-tone': 'lush2',
       'play-start': '1',
       sr: '1',
       'game-speed': '3',

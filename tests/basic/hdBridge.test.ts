@@ -89,6 +89,7 @@ function fakeView() {
       enableTopEffects: vi.fn(),
       settings: {},
       applySettings: vi.fn(),
+      setAlive: vi.fn(),
       qualityTiers: 4,
       quality: 0,
       enableAsyncPipelines: vi.fn(() => true),
@@ -335,6 +336,7 @@ afterEach(() => {
   hdRenderer.applyLookPreset.mockReset();
   hdUi.start.mockReset();
   stallMonitor.start.mockReset();
+  lushTuning.mount.mockReset();
 });
 
 describe('HD bridge control', () => {
@@ -1061,6 +1063,20 @@ describe('HD bridge look parameters', () => {
     expect(harness.screen.focus).toHaveBeenCalledExactlyOnceWith({ preventScroll: true });
     harness.stop();
     expect(dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it('applies hd-tone=lush2 with its own cloud patches and leaves the tuning panel opt-in', async () => {
+    const harness = setup('?hd=1&hd-tone=lush2&hd-alive=1&alive-preset=deep');
+    const view = fakeLookView();
+    await goLive(harness, view);
+    expect(lushTuning.mount).not.toHaveBeenCalled();
+    expect(view.hd.settings).toMatchObject({ groundTone: null, tone: null, cloudTone: { shoreKeep: 1 } });
+    expect(view.hd.setAlive).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ clouds: true, preset: 'lush' }));
+    expect(view.hd.setAlive.mock.invocationCallOrder[0]).toBeLessThan(
+      view.hd.applySettings.mock.invocationCallOrder[0]!,
+    );
+    expect(view.hd.applySettings).toHaveBeenCalledTimes(1);
+    harness.stop();
   });
 
   it('applies hd-tone=lush through the lazy tone path before the first snapshot', async () => {
@@ -2114,7 +2130,11 @@ describe('HD bridge match start', () => {
     await vi.waitFor(() => expect(harness.bridge()?.live).toBe(view));
     await advance(17, 2);
     // A stateless loading screen: unpaced builds and two upload strips per frame, as behind an empty prematch state.
-    expect([view.newArtPerFrame, view.hiddenUploadPixels, view.hiddenGpuBacklogMs]).toEqual([Infinity, 2 * (8 << 20), 50]);
+    expect([view.newArtPerFrame, view.hiddenUploadPixels, view.hiddenGpuBacklogMs]).toEqual([
+      Infinity,
+      2 * (8 << 20),
+      50,
+    ]);
     expect(view.hiddenWarmPace).toEqual({ budgetMs: 100, maxGroups: 64, maxNew: 8 });
     expect(harness.bridge()!.timeline.firstStateAt).toBeNull();
     // No state has arrived, but the larger native picture is already playable.
@@ -2244,7 +2264,11 @@ describe('HD bridge match start', () => {
     // Complete (there is nothing to draw yet), but the match has not started.
     expect(view.outOfSight).toBe(true);
     // Nothing moves behind the loading screen: no pacing of builds; uploads two strips per frame, GPU-paced.
-    expect([view.newArtPerFrame, view.hiddenUploadPixels, view.hiddenGpuBacklogMs]).toEqual([Infinity, 2 * (8 << 20), 50]);
+    expect([view.newArtPerFrame, view.hiddenUploadPixels, view.hiddenGpuBacklogMs]).toEqual([
+      Infinity,
+      2 * (8 << 20),
+      50,
+    ]);
     expect(view.hiddenWarmPace).toEqual({ budgetMs: 100, maxGroups: 64, maxNew: 8 });
     expect(harness.hdCanvas.style.display).toBe('none');
     expect(harness.vm.setTacticalPassthrough).not.toHaveBeenCalled();

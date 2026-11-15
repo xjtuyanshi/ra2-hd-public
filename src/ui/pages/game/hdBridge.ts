@@ -1432,7 +1432,9 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
       import('../../../../packages/hd-renderer/src/live/liveView'),
       preset ? import('../../../../packages/hd-renderer/src/HdRenderer') : null,
       params.has('hd-tone') ? import('../../../../packages/hd-renderer/src/ra2/moistTone') : null,
-      import.meta.env.DEV && (params.get('hd-tone') === 'lush2' || params.get('hd-tune') === '1')
+      // The tuning panel is opt-in even though the owner look sets hd-tone=lush2: it reserves the backquote key and
+      // can restore values saved in this browser, so the default look never depends on it.
+      import.meta.env.DEV && params.get('hd-tune') === '1'
         ? import('../../../../packages/hd-renderer/src/ra2/lush2Tuning')
         : null,
     ])
@@ -1472,7 +1474,15 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
         if (preset && renderer) {
           renderer.applyLookPreset(view.hd.settings, preset);
         }
-        if (tone) tone.applyMoistTone(view.hd.settings, view.theater, tone.parseToneStyle(params.get('hd-tone')));
+        if (tone) {
+          // lush2 grades through its own cloud patches; without them its shade side would follow the entry's preset.
+          const toneAlive = tone.applyMoistTone(
+            view.hd.settings,
+            view.theater,
+            tone.parseToneStyle(params.get('hd-tone')),
+          );
+          if (toneAlive) view.hd.setAlive(toneAlive);
+        }
         if (preset || tone) view.hd.applySettings();
         if (topEffects) view.hd.enableTopEffects();
         // A watched view never waits for a pipeline compiler: what is new appears a few frames later instead of the

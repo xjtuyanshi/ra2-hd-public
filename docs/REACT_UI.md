@@ -38,7 +38,8 @@ Only browser or frequent-input adapters such as canvas/WebGL, input-lock hints, 
 
 Modals share native `dialog.showModal()`, letting the browser constrain and restore focus. Esc closes web dialogs without synthesizing Esc for the game. Busy imports cannot be dismissed early.
 
-The lush2 tuning panel reserves Backquote by physical code. The bridge has no native RA2/YR chat signal and
+The lush2 tuning panel mounts only with the development flag `hd-tune=1` (the owner look's `hd-tone=lush2` alone
+does not mount it) and reserves Backquote by physical code. The bridge has no native RA2/YR chat signal and
 does not guess one from keystrokes: a live skirmish check showed Enter opens no chat line there (Escape went straight
 to the options menu), so an Enter/Escape estimate would wrongly block the toggle. Hosts that can observe real text
 entry pass `textEntryActive` through `mountLush2Tuning`.
