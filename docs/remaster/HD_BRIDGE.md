@@ -795,6 +795,39 @@ installation preserves other library entries under a compose lock. Commands and 
 [the asset tools guide](../../packages/ra2-assets/README.md#ore-and-gem-field-redraw-python-experimental).
 Game art and derived images remain outside Git.
 
+## Offline hard-surface reconstruction
+
+The research pipeline in `packages/hd-renderer/src/` is independent of the live voxel renderer:
+`hardSurfaceSolid.ts` fills x-major dense grids with two-axis enclosure, exterior flood and one-cell recess
+restoration (negative Z is down by default; the down axis is configurable). `hardSurfaceFit.ts` fits seed regions
+with snapped halfspaces or cylinders, including exclusions, colour filters and manual overrides.
+`hardSurfaceMesh.ts` expands box/poly/cylinder specs, mirrors parts and builds deterministic typed-array meshes
+in lattice corner coordinates. Cylinders use area-corrected 48-gon prisms and radial side normals. Edge chamfers
+use the reference 20-degree threshold and outside-edge probes: a covering neighbour suppresses a chamfer;
+matching-width adjacent boxes can retain it because those probes lie outside both solids. Paint strings remain
+opaque metadata; these modules do not resolve palettes or apply paint volumes.
+
+`hardSurfaceMetrics.ts` compares the original halfspace union with the filled solid using 27 samples per cell.
+Surface metrics compare 3-by-3 exposed voxel-face samples with seeded triangle samples on the chamfered mesh,
+filtering blocked voxel rays and CAD samples buried in other primitives. Nearest neighbours use the reference
+five-bucket search width per axis; an unmatched sample has infinite distance. Even coincident analytic surfaces
+have small nonzero sample distances. Triangle sampling uses Mulberry32 per triangle rather than NumPy's PCG64,
+so sample counts after burial filtering, deviation statistics and sample-weighted area shares can differ slightly
+from Python. `planar` includes chamfers; `chamfer` is also reported separately, as in the research reference.
+
+Run the RA2 cache adapter offline, with the output outside the checkout:
+
+```bash
+pnpm exec tsx packages/hd-renderer/scripts/hardSurfaceSpec.ts <voxel-model.json> <seed.json> <out-spec.json> --metrics
+```
+
+The adapter reads the first section of each cache part as base64 quintuples, preserves seed paint labels and
+writes the spec to the requested file. It prints a JSON summary plus per-part metrics when `--metrics` is supplied. It performs no downloads
+and rejects output paths within the repository, including resolved symlinks. In sandboxes that prohibit the tsx
+CLI's IPC socket, use `pnpm exec node --import tsx` in place of `pnpm exec tsx`. Synthetic regressions run with
+`pnpm exec vitest run packages/hd-renderer/tests/hardSurface`; game-derived caches, seeds and output specs stay
+outside Git. This pipeline does not change live rendering or establish visual acceptance of reconstructed art.
+
 ## Running it
 
 Start a development server whose game root holds a skirmish setup (a scratch copy of the installation with an edited
