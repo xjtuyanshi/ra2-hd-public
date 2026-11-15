@@ -43,6 +43,11 @@ The generic modules in `packages/hd-renderer/src/` own:
   selection. It fixes partition planes to avoid opening cracks and never invokes an exact
   or per-voxel cuboid cover. Once both surface gates pass, silhouette search cannot reopen
   them. Non-finite formal values remain visible and cannot satisfy the corresponding gate.
+- `hardSurfaceRecess.ts`: broad connected overfill pockets with source occupancy on opposite
+  sides. Convex subtraction candidates need at least twelve source-empty cells, a long span
+  of six cells, and at most one percent source overlap. Tiny dimples, paint-only marks and
+  unconstrained exterior space cannot become residual-cell cuts. Every subtraction still
+  goes through the same expanded primitive, surface and silhouette gates.
 
 The RA2 composition script maps chassis/crown/tube policy and applies expanded primitive
 budgets 130/35/3. A multi-section part divides its budget between sections. Lateral reflection

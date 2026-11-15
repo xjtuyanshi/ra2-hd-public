@@ -17,6 +17,7 @@ import {
   type SilhouetteView,
 } from './hardSurfaceSilhouette';
 import type { SolidGrid } from './hardSurfaceSolid';
+import { proposeRecesses } from './hardSurfaceRecess';
 
 export interface RefinementOptions {
   maxEvaluations: number;
@@ -148,7 +149,10 @@ export function refineHardSurface(
       );
       surfaceWeights = regions.map(() => 0);
       samples.forEach((s, i) => {
-        if (cadDistances[i] > p99) surfaceWeights[s.primitive]++;
+        if (cadDistances[i] <= p99) return;
+        const name = built.primitives[s.primitive].name?.split('#')[0];
+        const owner = regions.findIndex((r) => r.primitive.name === name);
+        if (owner >= 0) surfaceWeights[owner]++;
       });
       // Normalize the two sample populations so dense CAD triangles do not hide missing source regions.
       const voxelWeight = samples.length / Math.max(1, visibleSamples.length);
@@ -180,18 +184,29 @@ export function refineHardSurface(
     let candidate: PartSpec | undefined,
       action = '',
       nextRegions = regions;
-    for (const { r, i } of ranked) {
-      const key = 'split:' + r.id;
-      if (tried.has(key) || part.primitives.length >= model.options.budget) continue;
-      tried.add(key);
-      const children = splitRegion(r, whole, model.options);
-      if (children) {
-        nextRegions = [...regions.slice(0, i), ...children, ...regions.slice(i + 1)];
-        candidate = { primitives: nextRegions.map((r) => r.primitive) };
-        action = `${key}; worst facing ${worst}`;
+    if (model.options.category !== 'tube' && (part.carve?.length ?? 0) < 8) {
+      for (const recess of proposeRecesses(solid, buildPart(part).primitives)) {
+        const key = `recess:${recess.id}`;
+        if (tried.has(key)) continue;
+        tried.add(key);
+        candidate = { ...structuredClone(part), carve: [...(part.carve ?? []), recess.carve] };
+        action = `${key}; ${recess.cells} residual cells, source overlap ${recess.sourceOverlap}, enclosed axes ${recess.enclosedAxes.join(',')}`;
         break;
       }
     }
+    if (!candidate)
+      for (const { r, i } of ranked) {
+        const key = 'split:' + r.id;
+        if (tried.has(key) || part.primitives.length >= model.options.budget) continue;
+        tried.add(key);
+        const children = splitRegion(r, whole, model.options);
+        if (children) {
+          nextRegions = [...regions.slice(0, i), ...children, ...regions.slice(i + 1)];
+          candidate = { ...part, primitives: nextRegions.map((r) => r.primitive) };
+          action = `${key}; worst facing ${worst}`;
+          break;
+        }
+      }
     if (!candidate && !model.options.tunePlanes)
       for (const { r, i } of ranked) {
         const key = `tune:${r.id}`;
