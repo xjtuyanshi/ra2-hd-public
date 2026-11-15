@@ -2072,3 +2072,18 @@ terrain/wall/fallback bindings, cloud/object sharing and DOM focus/storage/A/B c
 workspace types, asset-free regressions and the production build. These checks do not establish GPU numeric
 execution, real UI acceptance, 1:1 visual quality or the <=+1.0 ms budget at 3456x1926; those remain **UNVERIFIED**
 until a same-scene runtime review.
+
+## Opt-out cloud graph compatibility
+
+World creation selects the cloud graph before materials are built. `modernClouds: true` enables the cached
+coverage/ground-tone pilot; the native bridge selects it only for an explicit `hd-tone` or `hd-blend=1` option.
+Unflagged worlds and the procedural renderer retain the Build 13 analytic graph in `src/livingWorldLegacy.ts`.
+That module preserves shader expressions, transfer functions and uniform names; it is a compatibility boundary,
+not another scene owner. The modern controller owns and disposes its coverage texture. Default worlds allocate
+neither the coverage target nor the extra voxel contact mesh. A runtime A/B does not change this construction choice.
+
+`surfaceClasses: true` (`hd-mask=1` in the development bridge) packs semantic category bits into the existing
+silhouette attachment. `hd.surfaceDebug.value = 1` displays categories as exact multiples of 1/8: ground 0,
+buildings 1, vehicles 2, infantry 3, trees 4, ore 5. Reset to zero to restore the picture. Categories come from
+instance metadata; no scene colour classifier is used. This is diagnostic output, not artwork or a new attachment.
+Ordinary worlds leave both code packing and the diagnostic branch out of their shader graphs.

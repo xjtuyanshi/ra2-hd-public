@@ -1,5 +1,5 @@
 import { LinearMipmapLinearFilter } from 'three/webgpu';
-import { waterTextures, waterTextureNode } from '../src/proceduralTextures';
+import { waterTextures, layeredWaterTextureNode as waterTextureNode } from '../src/proceduralTextures';
 import { describe, expect, it } from 'vitest';
 import { vec2, vec3, float } from 'three/tsl';
 import {

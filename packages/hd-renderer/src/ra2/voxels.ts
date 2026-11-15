@@ -946,6 +946,6 @@ export function instantiateVoxel(
     for (const mesh of meshes) root.add(new VoxelWaterMesh(mesh, nodes, 'foam', copy));
   for (const mesh of meshes) root.add(new VoxelWaterMesh(mesh, nodes, 'reflection'));
   const hull = meshes.find((mesh) => mesh.parent === root);
-  if (hull) root.add(new VoxelSoftContactMesh(hull, nodes));
+  if (hull && nodes?.alive.modern) root.add(new VoxelSoftContactMesh(hull, nodes));
   return { root, turret };
 }

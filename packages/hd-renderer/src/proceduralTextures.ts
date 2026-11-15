@@ -1,7 +1,8 @@
-import { float, int, texture as textureNode } from 'three/tsl';
+import { Fn, float, int, texture as textureNode } from 'three/tsl';
 import type { ShaderNode } from './tsl';
 import {
   DataTexture,
+  type NodeBuilder,
   DataArrayTexture,
   LinearFilter,
   LinearMipmapLinearFilter,
@@ -285,11 +286,17 @@ export function waterTextures(): WaterTextures {
 }
 
 /** Separate array layers preserve the original bytes, UVs, repeat filtering and per-layer mip chains. */
-export function waterTextureNode(kind: 'ripple' | 'chop' | 'caustics' | 'noise', uv: ShaderNode): ShaderNode {
+export function layeredWaterTextureNode(kind: 'ripple' | 'chop' | 'caustics' | 'noise', uv: ShaderNode): ShaderNode {
   const layer = { ripple: 0, chop: 1, caustics: 2, noise: 3 }[kind];
   const sample = textureNode(waterTextures().layers, uv).depth(int(layer));
-  // The original noise uses bilinear base-level filtering; never blend its hash channel across mips.
   return kind === 'noise' ? sample.level(float(0)) : sample;
+}
+
+/** Material-local choice keeps default shaders unchanged without mutable global sampling state. */
+export function waterTextureNode(kind: 'ripple' | 'chop' | 'caustics' | 'noise', uv: ShaderNode): ShaderNode {
+  return Fn(([], builder: NodeBuilder) =>
+    builder.material.userData.modernWater ? layeredWaterTextureNode(kind, uv) : textureNode(waterTextures()[kind], uv),
+  )();
 }
 
 /** Candidate A: integer Fourier modes repeat over one tile; all distances below are tile fractions. */

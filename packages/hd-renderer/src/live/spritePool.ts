@@ -7,6 +7,7 @@ import type { PainterObject } from '../ra2/painterOrder';
 export class SpritePool {
   /** Painter owner of subsequent upright records; reset by begin so reused records never keep an old owner. */
   painter?: PainterObject;
+  surfaceClass = 0;
   deckHeight?: number;
   /**
    * Picture tint of the object whose cards are being taken (objectTint.ts: light factor and packed colour); reset
@@ -22,6 +23,7 @@ export class SpritePool {
   begin(): void {
     this.used = this.anchorsUsed = 0;
     this.painter = undefined;
+    this.surfaceClass = 0;
     this.deckHeight = undefined;
     this.tintLight = 1;
     this.tintColour = 0;
@@ -55,6 +57,7 @@ export class SpritePool {
     instance.indexedHousePaint = undefined;
     instance.houseConverter = undefined;
     instance.windSway = undefined;
+    instance.surfaceClass = this.surfaceClass;
     instance.push = push;
     instance.shadow = shadow;
     instance.opacity = undefined;

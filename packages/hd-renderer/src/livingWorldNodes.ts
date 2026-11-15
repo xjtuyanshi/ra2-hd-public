@@ -1,3 +1,5 @@
+import { LegacyLivingWorldNodes, shadeCloudColour as legacyShade } from './livingWorldLegacy';
+const legacyFactors = new WeakSet<object>();
 import { Texture, Vector2, Vector4 } from 'three/webgpu';
 import {
   Fn,
@@ -124,6 +126,7 @@ const linearCloudFactorNode = Fn(([factor]: ShaderNode[]) => {
 // A factor can feed both an emissive art term and a physical lighting finish. Share its conversion as well.
 const linearFactors = new WeakMap<ShaderNode, ShaderNode>();
 export function linearCloudFactor(factor: ShaderNode): ShaderNode {
+  if (legacyFactors.has(factor)) return factor;
   let linear = linearFactors.get(factor);
   if (!linear) {
     linear = linearCloudFactorNode(factor).toVar();
@@ -133,7 +136,7 @@ export function linearCloudFactor(factor: ShaderNode): ShaderNode {
 }
 
 /** Power-law palette attenuation. The input factor is already linear, including its exact off identity. */
-export const shadeCloudColour = Fn(([source, factor]: ShaderNode[]) => {
+const modernShade = Fn(([source, factor]: ShaderNode[]) => {
   const result = source.toVar('aliveCloudLit');
   If(factor.x.notEqual(1).or(factor.y.notEqual(1)).or(factor.z.notEqual(1)), () => {
     result.assign(source.mul(factor));
@@ -149,7 +152,27 @@ export const shadeCloudColour = Fn(([source, factor]: ShaderNode[]) => {
 });
 
 /** Uniform-only switches: the graph exists from its first warm frame, even with every part off. */
+export function shadeCloudColour(source: ShaderNode, factor: ShaderNode): ShaderNode {
+  return legacyFactors.has(factor) ? legacyShade(source, factor) : modernShade(source, factor);
+}
+
 export class LivingWorldNodes {
+  readonly modern: boolean;
+  constructor(modern = true) {
+    this.modern = modern;
+    if (!modern) {
+      const legacy = new LegacyLivingWorldNodes();
+      Object.assign(this, legacy);
+      legacyFactors.add(this.shadow);
+      for (const key of ['set', 'update', 'shade', 'shadeWith', 'debugView', 'grass', 'sway', 'gust'] as const)
+        (this as unknown as Record<string, unknown>)[key] = legacy[key].bind(legacy);
+      this.shadowWith = (weight) => {
+        const factor = legacy.shadowWith(weight);
+        legacyFactors.add(factor);
+        return factor;
+      };
+    }
+  }
   private options: AliveOptions = { ...ALIVE_DEFAULTS };
   readonly clock = uniform(0).setName('aliveClock');
   readonly windDirection = uniform(new Vector2(Math.cos(0.6), Math.sin(0.6))).setName('aliveWindDirection');

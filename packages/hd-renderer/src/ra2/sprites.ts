@@ -132,6 +132,7 @@ export interface SpriteInstance {
   houseConverter?: boolean;
   /** Explicit tree-class eligibility from the game adapter; no other cards bend. */
   windSway?: boolean;
+  surfaceClass?: number;
   /** World units to pull the card towards the camera so terrain around the base never cuts it (see cardPush). */
   push: number;
   shadow: boolean;
@@ -612,8 +613,10 @@ class SpriteGraph {
       'either',
     );
     // Four independent bits share this component; wind adds no vertex buffer or binding.
-    const treeWind: ShaderNode = step(7.5, aLighting.z).toVar('spriteTreeWind');
-    const converterBits: ShaderNode = aLighting.z.sub(treeWind.mul(8)).toVar('spriteConverterBits');
+    const surfaceClass: ShaderNode = nodes.surfaceClasses ? floor(aLighting.z.div(16)) : float(0);
+    const lightingCode: ShaderNode = nodes.surfaceClasses ? aLighting.z.sub(surfaceClass.mul(16)) : aLighting.z;
+    const treeWind: ShaderNode = step(7.5, lightingCode).toVar('spriteTreeWind');
+    const converterBits: ShaderNode = lightingCode.sub(treeWind.mul(8)).toVar('spriteConverterBits');
     const houseConverter: ShaderNode = step(3.5, converterBits).toVar('spriteHouseConverter');
     const lightingBits: ShaderNode = converterBits.sub(houseConverter.mul(4)).toVar('spriteLightingBits');
     const indexedHousePaint: ShaderNode = step(1.5, lightingBits).toVar('spriteIndexedHousePaint');
@@ -898,16 +901,21 @@ class SpriteGraph {
     const footCoverage = nodes.alive
       .coverageAt(mix(positionWorld.xz, aAnchor.xz, nodes.cloudTone.strength.greaterThan(0).select(1, 0)))
       .toVar('aliveCloudCoverage');
-    const footShadow = objectCloudFactor(nodes, footCoverage).toVar('aliveCloudFactor');
+    const footShadow = nodes.alive.modern
+      ? objectCloudFactor(nodes, footCoverage).toVar('aliveCloudFactor')
+      : nodes.alive.shadow;
     const linearFootShadow = linearCloudFactor(footShadow).toVar();
-    const shadeSurface = (colour: ShaderNode) => nodes.alive.shadeAt(colour, linearFootShadow);
+    const shadeSurface = (colour: ShaderNode) =>
+      nodes.alive.modern ? nodes.alive.shadeAt(colour, linearFootShadow) : nodes.alive.shade(colour);
     // One colour graph per material (the main pass and the enhanced look's ground passes below).
     const colourNode = (): ShaderNode =>
       Fn(() => {
         // Declare once before lit/unlit/relight siblings; a factor first used inside select's lit branch is unsafe.
-        footCoverage.toStack();
-        footShadow.toStack();
-        linearFootShadow.toStack();
+        if (nodes.alive.modern) {
+          footCoverage.toStack();
+          footShadow.toStack();
+          linearFootShadow.toStack();
+        } else nodes.alive.shadow.toStack();
         const texel = vec2(aRect.x.add(u.mul(aRect.z)), aRect.y.add(v.mul(aRect.w))).toVar();
         const atlasUv = texel.div(atlasSize);
         // Derivatives must be evaluated before any non-uniform control flow (including the look branch).
@@ -1533,6 +1541,7 @@ class SpriteGraph {
         // and never brightens them), so only the blitter's added colour applies there.
         const tintedLit: ShaderNode = applyObjectTint(result.rgb, aTint.x, aTint.y, grade.x, look.unlitBaseLight);
         const tintedUnlit: ShaderNode = applyObjectTint(unlitColour, float(1), aTint.y, 1, look.unlitBaseLight);
+        if (!nodes.alive.modern) return vec4(mix(tintedLit, tintedUnlit, unlitShare), result.a.mul(bodyOpacity));
         const finished = mix(tintedLit, tintedUnlit, unlitShare).toVar();
         // Flat kinds are ground decals, shadows and reflections, not upright object pictures.
         If(aFlat.lessThan(0.5), () => {
@@ -1743,7 +1752,16 @@ class SpriteGraph {
     // Upright cards have an outline of their own for the frame's outline pass (silhouette.ts), one per draw point:
     // the cards of one object (a building's body and the animations at its draw point) share it. Decals, shadows,
     // contact shades and wet reflections belong to the ground.
-    const silhouette = instanceSilhouette(aAnchor, float(1).sub(step(0.5, aFlat)));
+    let silhouette: ShaderNode = instanceSilhouette(aAnchor, float(1).sub(step(0.5, aFlat)));
+    if (nodes.surfaceClasses) {
+      const category: ShaderNode = varying(
+        surfaceClass
+          .greaterThan(0)
+          .select(surfaceClass, treeWind.greaterThan(0).select(4, aFlat.greaterThan(0.5).select(0, 1))),
+        'surfaceClass',
+      );
+      silhouette = vec2(silhouette.x, floor(silhouette.y.mul(256).div(8)).mul(8).add(category).div(256));
+    }
     for (const one of Object.values(this.materials)) setSilhouette(one, silhouette);
   }
 }
@@ -2052,7 +2070,11 @@ export class SpriteLayer {
         this.anchor.setComponent(
           i,
           5,
-          (s.gradeExempt ? 1 : 0) + (s.indexedHousePaint ? 2 : 0) + (s.houseConverter ? 4 : 0) + (s.windSway ? 8 : 0),
+          (s.gradeExempt ? 1 : 0) +
+            (s.indexedHousePaint ? 2 : 0) +
+            (s.houseConverter ? 4 : 0) +
+            (s.windSway ? 8 : 0) +
+            (this.cache.nodes?.surfaceClasses ? (s.surfaceClass ?? 0) * 16 : 0),
         );
         const tinted = !s.shadow && !s.kind;
         this.anchor.setComponent(i, 6, tinted ? (s.tintLight ?? 1) : 1);

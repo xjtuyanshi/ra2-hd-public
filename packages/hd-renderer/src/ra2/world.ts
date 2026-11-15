@@ -107,6 +107,8 @@ export async function loadRa2World(
     voxelShape?: Readonly<VoxelShape>;
     voxelLook?: 'engine' | 'remaster';
     spriteIntegration?: boolean;
+    surfaceClasses?: boolean;
+    modernClouds?: boolean;
     smoothVoxel?: Partial<SmoothVoxelOptions>;
     /** Optional base URL of view-dependent vehicle redraw atlases; absent/failed types keep their current look. */
     voxelProjection?: string;
@@ -121,7 +123,8 @@ export async function loadRa2World(
     extraHouses?: Record<string, Hsv>;
   } & Ra2CacheOptions = {},
 ): Promise<HdWorld> {
-  const nodes = options.nodes ?? new AtmosphereNodes();
+  const nodes = options.nodes ?? new AtmosphereNodes(options.modernClouds === true);
+  nodes.surfaceClasses = options.surfaceClasses ?? false;
   configureSpriteIntegration(nodes, options.spriteIntegration === true);
   const voxelLook = options.voxelLook ?? 'engine';
   const smoothVoxel = smoothVoxelOptions(options.smoothVoxel);

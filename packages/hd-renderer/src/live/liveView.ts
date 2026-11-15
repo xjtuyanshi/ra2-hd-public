@@ -287,6 +287,8 @@ function visibleObjectEffects(snapshot: LiveSnapshot): LiveEffects | null | unde
 export interface LiveViewOptions extends VoxelUnitsOptions {
   /** Compile sprite integration once; its parameters remain uniforms. */
   spriteIntegration?: boolean;
+  surfaceClasses?: boolean;
+  modernClouds?: boolean;
   /** URL of the map's HD cache directory (manifest.json inside). */
   mapBase: string;
   /** URL of the type library root (holding <theater>/library.json and common/effects/), for players' art. */
@@ -1402,6 +1404,8 @@ export class LiveView {
         includeObject: (object) => object.kind === 'tree',
         voxelLook: options.voxelLook,
         spriteIntegration: options.spriteIntegration,
+        surfaceClasses: options.surfaceClasses,
+        modernClouds: options.modernClouds,
         smoothVoxel: options.smoothVoxel,
         voxelProjection: options.voxelProjection,
       }),
@@ -2587,6 +2591,7 @@ export class LiveView {
         painter.z = Math.floor(object.y / LEPTONS_PER_CELL);
       }
       this.spritePool.painter = painter;
+      this.spritePool.surfaceClass = object.kind === 'building' ? 1 : object.kind === 'infantry' ? 3 : 2;
       // Every card of this object carries its tint as instance data; the next object sets its own.
       this.spritePool.tintLight = tintLight(object.tint);
       this.spritePool.tintColour = packTintColour(object.tint?.add);
@@ -4303,6 +4308,7 @@ export class LiveView {
         );
         body.glint = object.kind === 'overlay' && object.flat && lighting === 'none' ? 1 : undefined;
         body.unlit = isUnlitMapOverlay(object);
+        body.surfaceClass = body.unlit ? 5 : object.kind === 'tree' ? 4 : 0;
         instances.push(body);
       }
     this.cellLayer.setInstances(instances);

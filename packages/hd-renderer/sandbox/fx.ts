@@ -134,6 +134,7 @@ const time = Number(params.get('time') ?? 0);
 const house = Number(params.get('house') ?? (params.get('fx')?.split(',').includes('shpunits') ? 11 : 15));
 const live = await LiveView.create(canvas, {
   ...voxelLookParams(params),
+  modernClouds: params.has('tone') || params.get('blend') === '1',
   spriteIntegration: params.get('sprite') === '1',
   ...parseWeatherParams(params),
   mapBase: `/${encodeURIComponent(mapName)}`,

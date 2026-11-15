@@ -7,6 +7,7 @@ import type { ShaderNode } from './tsl';
 
 /** Surface policy controls the cloud field's own tint independently of its darkness. */
 export function surfaceCloudFactor(nodes: AtmosphereNodes, coverage: ShaderNode): ShaderNode {
+  if (nodes.alive.modern === false) return nodes.alive.shadow;
   const colour = nodes.alive.colourFromCoverage(coverage);
   const neutral = vec3(float(1).sub(coverage.mul(nodes.alive.cloudStrength)));
   return nodes.cloudTone.strength.greaterThan(0).select(mix(neutral, colour, nodes.cloudTone.cloudTintShare), colour);
@@ -22,6 +23,14 @@ export function objectCloudFactor(nodes: AtmosphereNodes, coverage: ShaderNode):
 
 /** Reuses one foot coverage and factor across all lighting terms of a material. Legacy sampling stays unchanged. */
 export function objectCloudTone(nodes: AtmosphereNodes) {
+  if (nodes.alive.modern === false)
+    return {
+      coverage: float(0),
+      shadow: nodes.alive.shadow,
+      linearShadow: nodes.alive.shadow,
+      shade: (colour: ShaderNode) => nodes.alive.shade(colour),
+      grade: (colour: ShaderNode) => colour,
+    };
   const coverage = nodes.alive
     .coverageAt(mix(positionWorld.xz, objectGroundAnchor.xz, nodes.cloudTone.strength.greaterThan(0).select(1, 0)))
     .toVar('aliveCloudCoverage');

@@ -33,6 +33,8 @@ import { emptyHeightGrid, frontMaxTexture } from './groundRay';
 
 /** Shader inputs owned by one renderer/world. Legacy exports below remain for standalone material callers. */
 export class AtmosphereNodes extends SceneLightingUniforms {
+  /** Compile diagnostic category packing only for explicitly opted-in worlds. */
+  surfaceClasses = false;
   private disposed = false;
   private readonly resources = new Set<{ dispose(): void }>();
   /** Materials and lookup textures created for this context share its lifetime. */
@@ -94,8 +96,8 @@ export class AtmosphereNodes extends SceneLightingUniforms {
     this.groundHeightInfo.value.set(width, height, surface.sub);
   }
 
-  constructor() {
-    super();
+  constructor(modernClouds = true) {
+    super(modernClouds);
     this.black.needsUpdate = true;
     this.noSurface.needsUpdate = true;
   }
@@ -148,7 +150,7 @@ export class AtmosphereNodes extends SceneLightingUniforms {
 }
 
 /** Compatibility context for callers constructing standalone materials without a renderer. */
-export const DEFAULT_ATMOSPHERE_NODES = new AtmosphereNodes();
+export const DEFAULT_ATMOSPHERE_NODES = new AtmosphereNodes(false);
 export const {
   sceneLevel,
   sceneBrightness,

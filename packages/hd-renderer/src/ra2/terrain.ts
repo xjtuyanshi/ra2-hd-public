@@ -448,24 +448,25 @@ export function buildRa2Terrain(cache: Ra2Cache): Ra2TerrainBuild {
           [0, 1, 0],
         )
       : null;
-  const toneMap = cache.terrainMap
-    ? new CloudToneMap({
-        texture: cache.terrainMap.texture,
-        width: cache.terrainMap.ref.width,
-        height: cache.terrainMap.ref.height,
-        blockWidth: LUSH2_MEAN.blockWidth * cache.terrainMap.ref.scale,
-        contextWidth: LUSH2_MEAN.contextWidth * cache.terrainMap.ref.scale,
-        uniforms: (cache.nodes ?? DEFAULT_ATMOSPHERE_NODES).cloudTone,
-        night: (cache.nodes ?? DEFAULT_ATMOSPHERE_NODES).night,
-        transformMean: meanCoordinates
-          ? (mean, at) => {
-              const world = texture(meanCoordinates, at).xz;
-              return srgbScale(mean, terrainGradeAt(cache.mapLight, world));
-            }
-          : undefined,
-        sourceVersion: meanCoordinates ? () => cache.mapLight?.texture.version ?? 0 : undefined,
-      })
-    : null;
+  const toneMap =
+    (cache.nodes ?? DEFAULT_ATMOSPHERE_NODES).alive.modern && cache.terrainMap
+      ? new CloudToneMap({
+          texture: cache.terrainMap.texture,
+          width: cache.terrainMap.ref.width,
+          height: cache.terrainMap.ref.height,
+          blockWidth: LUSH2_MEAN.blockWidth * cache.terrainMap.ref.scale,
+          contextWidth: LUSH2_MEAN.contextWidth * cache.terrainMap.ref.scale,
+          uniforms: (cache.nodes ?? DEFAULT_ATMOSPHERE_NODES).cloudTone,
+          night: (cache.nodes ?? DEFAULT_ATMOSPHERE_NODES).night,
+          transformMean: meanCoordinates
+            ? (mean, at) => {
+                const world = texture(meanCoordinates, at).xz;
+                return srgbScale(mean, terrainGradeAt(cache.mapLight, world));
+              }
+            : undefined,
+          sourceVersion: meanCoordinates ? () => cache.mapLight?.texture.version ?? 0 : undefined,
+        })
+      : null;
   const wetness = uniform(0);
   const water = createWaterUniforms();
   const tuning = createWaterTuning(waterPreset.style);
@@ -990,6 +991,7 @@ function mappedArtGrade(
   nodes: AtmosphereNodes,
   wet: ShaderNode = float(0),
 ): ShaderNode {
+  if (!nodes.alive.modern) return source;
   return Fn(() => {
     const result = source.toVar(),
       shade = nodes.alive.gradeCoverage(nodes.alive.coverage);
@@ -1031,18 +1033,22 @@ function plainArtMaterial(
   nodes: AtmosphereNodes,
   grade?: (colour: ShaderNode) => ShaderNode,
 ): ArtMaterial {
-  colour = groundToneNode(colour, positionWorld.xz, nodes.groundTone, nodes.night);
-  colour = grade
-    ? grade(colour)
-    : cloudToneNode(colour, colour, nodes.alive.gradeCoverage(nodes.alive.coverage), nodes.cloudTone, nodes.night);
+  if (nodes.alive.modern) {
+    colour = groundToneNode(colour, positionWorld.xz, nodes.groundTone, nodes.night);
+    colour = grade
+      ? grade(colour)
+      : cloudToneNode(colour, colour, nodes.alive.gradeCoverage(nodes.alive.coverage), nodes.cloudTone, nodes.night);
+  }
   const material = new ArtMaterial();
   material.sceneMultiplier = nodes.sceneTerrainMul;
-  material.cloudShadow = surfaceCloudFactor(nodes, nodes.alive.coverage);
+  material.cloudShadow = nodes.alive.modern ? surfaceCloudFactor(nodes, nodes.alive.coverage) : nodes.alive.shadow;
   // The sun and sky see the night-desaturated albedo; local lights (emissive) the full colour.
-  material.colorNode = Fn(() => {
-    nodes.alive.coverage.toStack();
-    return moonlit(colour, nodes);
-  })();
+  material.colorNode = nodes.alive.modern
+    ? Fn(() => {
+        nodes.alive.coverage.toStack();
+        return moonlit(colour, nodes);
+      })()
+    : moonlit(colour, nodes);
   material.gloss = float(0);
   material.roughnessNode = float(0.95);
   material.metalnessNode = float(0);
@@ -1148,6 +1154,7 @@ function createMaterials(
   );
 
   const ground = new ArtMaterial();
+  ground.userData.modernWater = nodes.alive.modern;
   ground.sceneMultiplier = nodes.sceneTerrainMul;
   ground.cloudShadow = nodes.alive.shadow;
   const { uv, colour: raw, tap } = sample('atlasUv', 'atlasRect');
@@ -1478,55 +1485,57 @@ function createMaterials(
       .mul(waterness);
     roughness = mix(roughness, float(0.25), waterness);
   }
-  const waterCloud = ground.cloudShadow;
-  const toneLand = smoothstep(0.3, 0.7, weatherLand);
-  ground.cloudShadow = nodes.cloudTone.strength
-    .greaterThan(0)
-    .select(mix(waterCloud, surfaceCloudFactor(nodes, nodes.alive.coverage), toneLand), waterCloud);
-  // Keep the water inputs, refracted bed and wet shore on their original art. Only the final land share
-  // receives softened art and dressing; soften itself is independent of the mask and fades at night like the dressing.
-  const undressed = albedo;
-  albedo = Fn(() => {
-    const result = undressed.toVar();
-    const share = groundToneShareNode(nodes.groundTone, nodes.night).toVar();
-    If(share.greaterThan(0), () => {
-      const land = undressed.toVar();
-      If(nodes.groundTone.soften.greaterThan(0), () => {
-        let sum: ShaderNode = vec3(0);
-        for (const x of [-0.65, 0.65]) for (const y of [-0.65, 0.65]) sum = sum.add(tap(vec2(x, y)));
-        const softened = mix(raw.rgb, sum.mul(0.25), nodes.groundTone.soften.mul(share));
-        const softWet = wetGround(srgbScale(softened, grade), groundWetness, paved, nodes).albedo;
-        land.addAssign(softWet.sub(wet.albedo));
+  if (nodes.alive.modern) {
+    const waterCloud = ground.cloudShadow;
+    const toneLand = smoothstep(0.3, 0.7, weatherLand);
+    ground.cloudShadow = nodes.cloudTone.strength
+      .greaterThan(0)
+      .select(mix(waterCloud, surfaceCloudFactor(nodes, nodes.alive.coverage), toneLand), waterCloud);
+    // Keep the water inputs, refracted bed and wet shore on their original art. Only the final land share
+    // receives softened art and dressing; soften itself is independent of the mask and fades at night like the dressing.
+    const undressed = albedo;
+    albedo = Fn(() => {
+      const result = undressed.toVar();
+      const share = groundToneShareNode(nodes.groundTone, nodes.night).toVar();
+      If(share.greaterThan(0), () => {
+        const land = undressed.toVar();
+        If(nodes.groundTone.soften.greaterThan(0), () => {
+          let sum: ShaderNode = vec3(0);
+          for (const x of [-0.65, 0.65]) for (const y of [-0.65, 0.65]) sum = sum.add(tap(vec2(x, y)));
+          const softened = mix(raw.rgb, sum.mul(0.25), nodes.groundTone.soften.mul(share));
+          const softWet = wetGround(srgbScale(softened, grade), groundWetness, paved, nodes).albedo;
+          land.addAssign(softWet.sub(wet.albedo));
+        });
+        result.assign(mix(undressed, groundToneNode(land, positionWorld.xz, nodes.groundTone, nodes.night), landMask));
       });
-      result.assign(mix(undressed, groundToneNode(land, positionWorld.xz, nodes.groundTone, nodes.night), landMask));
-    });
-    return result;
-  })();
-  // Whole-map mip low-pass suppresses the iso stripe lattice; atlas fallback stays inside its tile.
-  // Water-majority texels retain the original colour and shoreline recipe.
-  const legacyAlbedo = albedo;
-  albedo = Fn(() => {
-    const result = legacyAlbedo.toVar();
-    If(nodes.cloudTone.strength.greaterThan(0).and(toneLand.greaterThan(0)), () => {
-      let dressed: ShaderNode;
-      if (toneMap) dressed = mappedArtGrade(legacyAlbedo, toneMap, uv, nodes, shoreWetMask);
-      else {
-        let mean: ShaderNode = vec3(0);
-        for (const x of [-12, 12]) for (const y of [-6, 6]) mean = mean.add(tap(vec2(x, y)).mul(0.25));
-        dressed = cloudToneNode(
-          legacyAlbedo,
-          mean,
-          nodes.alive.gradeCoverage(nodes.alive.coverage),
-          nodes.cloudTone,
-          nodes.night,
-          false,
-          shoreWetMask,
-        );
-      }
-      result.assign(mix(legacyAlbedo, dressed, toneLand));
-    });
-    return result;
-  })();
+      return result;
+    })();
+    // Whole-map mip low-pass suppresses the iso stripe lattice; atlas fallback stays inside its tile.
+    // Water-majority texels retain the original colour and shoreline recipe.
+    const legacyAlbedo = albedo;
+    albedo = Fn(() => {
+      const result = legacyAlbedo.toVar();
+      If(nodes.cloudTone.strength.greaterThan(0).and(toneLand.greaterThan(0)), () => {
+        let dressed: ShaderNode;
+        if (toneMap) dressed = mappedArtGrade(legacyAlbedo, toneMap, uv, nodes, shoreWetMask);
+        else {
+          let mean: ShaderNode = vec3(0);
+          for (const x of [-12, 12]) for (const y of [-6, 6]) mean = mean.add(tap(vec2(x, y)).mul(0.25));
+          dressed = cloudToneNode(
+            legacyAlbedo,
+            mean,
+            nodes.alive.gradeCoverage(nodes.alive.coverage),
+            nodes.cloudTone,
+            nodes.night,
+            false,
+            shoreWetMask,
+          );
+        }
+        result.assign(mix(legacyAlbedo, dressed, toneLand));
+      });
+      return result;
+    })();
+  }
   // Contact shading darkens every light at cliff feet (an occlusion term); the sun and sky see the night-desaturated
   // albedo, local lights (emissive, below) the full colour.
   const look = spriteLookFor(nodes);

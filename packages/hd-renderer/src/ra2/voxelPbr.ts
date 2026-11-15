@@ -458,12 +458,14 @@ function createGraph(
   )();
   // Standard Lambert already divides irradiance by pi. HdRenderer's noon exposure is pi/E_noon; no emissive
   // daylight fill or second exposure factor belongs here. Metal energy conservation and GGX remain physical.
-  material.colorNode = Fn(() => {
-    cloud.coverage.toStack();
-    cloud.shadow.toStack();
-    cloud.linearShadow.toStack();
-    return mix(moonlit(lit, nodes), lit, house);
-  })();
+  material.colorNode = nodes.alive.modern
+    ? Fn(() => {
+        cloud.coverage.toStack();
+        cloud.shadow.toStack();
+        cloud.linearShadow.toStack();
+        return mix(moonlit(lit, nodes), lit, house);
+      })()
+    : mix(moonlit(lit, nodes), lit, house);
   // Ground light fades with the model's height above the ground (vpl.ts meshLocalLight).
   const local: ShaderNode = objectLight(positionWorld.xz, nodes)
     .mul(1 / Math.PI)

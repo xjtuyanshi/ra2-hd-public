@@ -80,10 +80,10 @@ describe('voxel scale', () => {
     expect(water.filter((m) => m.layer === 'foam')).toHaveLength(2 * SHADOW_COPIES.length);
     expect(water.filter((m) => m.layer === 'reflection')).toHaveLength(2);
     expect(water.every((m) => !m.visible)).toBe(true);
-    expect(meshes.length).toBe(2 + 2 * (2 * SHADOW_COPIES.length + 1));
+    expect(meshes.length).toBe(1 + 2 * (2 * SHADOW_COPIES.length + 1));
     const soft = meshes.filter((m) => m instanceof VoxelSoftContactMesh);
-    expect(soft).toHaveLength(1);
-    expect(soft[0]!.visible).toBe(false);
+    // The default analytic-cloud path keeps Build 13's original mesh count.
+    expect(soft).toHaveLength(0);
   });
 });
 

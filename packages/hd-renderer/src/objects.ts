@@ -52,7 +52,7 @@ export class ObjectLayer {
   private dress(material: SceneLitMaterial): void {
     const cloud = objectCloudTone(this.atmosphereNodes);
     material.cloudShadow = cloud.shadow;
-    material.outputNode = Fn(() => vec4(cloud.grade(output.rgb), output.a))();
+    if (this.atmosphereNodes.alive.modern) material.outputNode = Fn(() => vec4(cloud.grade(output.rgb), output.a))();
   }
 
   sync(objects: readonly RenderObject[], heightAt: (x: number, z: number) => number): void {

@@ -56,7 +56,7 @@ import type { ShaderNode } from '../tsl';
 import { finishSceneLighting, sceneLitColour } from '../lighting';
 import { objectLevelAt, paletteGrade, paletteNodes, srgbScale, type MapLightGrade } from './mapLighting';
 import { inheritSlotBinder, slotMaterial, textureSlot } from '../materialSlots';
-import { setSilhouette } from '../silhouette';
+import { objectSilhouette, setSilhouette } from '../silhouette';
 import { applyObjectTint, meshObjectTint } from '../objectTint';
 import { VoxelProjectionInputs, voxelProjectionFor, type VoxelProjectionPart } from './voxelProjection';
 import { projectedVoxelColour, type VoxelLookGains } from './voxelProjectionNodes';
@@ -498,7 +498,12 @@ function createGraph(
   const integrated = integration.compiled ? integration : undefined;
   const { voxelFill, voxelDebug, voxelExtraLight, voxelOcclusion, voxelSunDiffuse, lightDirection } = state;
   // Every part mesh drawn with a material of this graph carries its unit's silhouette code (see VoxelUnit).
-  const material = setSilhouette(new VoxelMaterial());
+  const material = setSilhouette(
+    new VoxelMaterial(),
+    nodes.surfaceClasses
+      ? vec2(objectSilhouette.x, floor(objectSilhouette.y.mul(256).div(8)).mul(8).add(2).div(256))
+      : objectSilhouette,
+  );
   material.sceneMultiplier = nodes.sceneObjectMul;
   const cloud = objectCloudTone(nodes);
   material.cloudShadow = cloud.shadow;
@@ -602,13 +607,17 @@ function createGraph(
     material.matp = vec3(matp.xy, matp.z.mul(uncovered));
   }
   material.emissiveNode = mix(shaded, debugColour, debugOn);
-  material.colorNode = Fn(() => {
-    // Hoist before emissive/palette siblings and the physical lighting finish; all share this one foot sample.
-    cloud.coverage.toStack();
-    cloud.shadow.toStack();
-    cloud.linearShadow.toStack();
-    return raw.mul(voxelSunDiffuse).mul(ao).mul(live).mul(uncovered);
-  })();
+  material.colorNode = nodes.alive.modern
+    ? Fn(() => {
+        // Hoist before emissive/palette siblings and the physical lighting finish; all share this one foot sample.
+        if (nodes.alive.modern) {
+          cloud.coverage.toStack();
+          cloud.shadow.toStack();
+          cloud.linearShadow.toStack();
+        }
+        return raw.mul(voxelSunDiffuse).mul(ao).mul(live).mul(uncovered);
+      })()
+    : raw.mul(voxelSunDiffuse).mul(ao).mul(live).mul(uncovered);
   material.roughnessNode = matp.x;
   // Metalness only shapes the highlight (see VoxelLightingModel); the diffuse term stays a plain weak Lambert.
   material.metalnessNode = float(0);

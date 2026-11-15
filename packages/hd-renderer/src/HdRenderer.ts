@@ -1,3 +1,4 @@
+import { surfaceCategoryDisplay } from './surfaceDebug';
 import { objectPostMask, objectSurfaceFilter, objectOutlineFeather, ObjectMaskedSharpen } from './objectPost';
 import { spriteIntegrationFor } from './spriteIntegration';
 import { CloudCoverageMap } from './cloudCoverageMap';
@@ -732,6 +733,7 @@ interface ParkedPipeline {
  * visual randomness, interpolation and effects live entirely on this side of the contract.
  */
 export class HdRenderer {
+  readonly surfaceDebug = uniform(0);
   readonly renderer: WebGPURenderer;
   readonly scene = new Scene();
   /** Native top-layer effect art is composited after the ground visibility mask. */
@@ -976,7 +978,7 @@ export class HdRenderer {
       nodes?: AtmosphereNodes;
     } = {},
   ) {
-    this.nodes = options.nodes ?? new AtmosphereNodes();
+    this.nodes = options.nodes ?? new AtmosphereNodes(false);
     this.layerNodes = this.nodes;
     this.objects = new ObjectLayer(this.layerNodes);
     this.effects = new EffectsLayer(this.layerNodes, this.terrainDepth);
@@ -1076,8 +1078,9 @@ export class HdRenderer {
       this.scene.add(this.objects.root);
       this.view.target.set(map.width / 2, 0, map.height / 2);
     }
-    this.cloudCoverageMap = new CloudCoverageMap(this.bounds.width, this.bounds.height, this.nodes.alive);
-    if (this.layerNodes !== this.nodes) {
+    if (this.nodes.alive.modern)
+      this.cloudCoverageMap = new CloudCoverageMap(this.bounds.width, this.bounds.height, this.nodes.alive);
+    if (this.cloudCoverageMap && this.layerNodes !== this.nodes) {
       this.layerNodes.alive.coverageTexture.value = this.cloudCoverageMap.target.texture;
       this.layerNodes.alive.coverageBounds.value.copy(this.nodes.alive.coverageBounds.value);
       this.layerNodes.alive.coverageCached.value = 1;
@@ -1579,6 +1582,10 @@ export class HdRenderer {
     // Reuse the existing display pass and physical depth: no debug render target, grading, or extra pass.
     // This branch is uniform-only and does not evaluate the cloud field while debug is disabled.
     this.pipeline.outputNode = this.nodes.alive.debugView(display, world.xz, visible);
+    if (this.nodes.surfaceClasses && this.painterDepthEnabled)
+      this.pipeline.outputNode = this.surfaceDebug
+        .greaterThan(0)
+        .select(surfaceCategoryDisplay(scenePass.getTextureNode('physicalDepth')), this.pipeline.outputNode);
   }
 
   applySettings(): void {

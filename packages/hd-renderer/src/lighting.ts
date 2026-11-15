@@ -15,7 +15,10 @@ import { LivingWorldNodes, shadeCloudColour, linearCloudFactor } from './livingW
 
 /** Renderer-local scene multipliers are independent of the authored map-grade weight and all adaptation inputs. */
 export class SceneLightingUniforms {
-  readonly alive = new LivingWorldNodes();
+  readonly alive: LivingWorldNodes;
+  constructor(modernClouds = true) {
+    this.alive = new LivingWorldNodes(modernClouds);
+  }
   readonly sceneTerrainMul = uniform(new Color(1, 1, 1)).setName('sceneTerrainMul');
   readonly sceneObjectMul = uniform(new Color(1, 1, 1)).setName('sceneObjectMul');
   /** Cast shadows disappear under an event's overcast sky; contact occlusion still anchors objects. */
@@ -37,7 +40,7 @@ export function sceneLitColour(colour: ShaderNode, multiplier: ShaderNode): Shad
 /** Physical materials call this after sun/sky lighting and before three adds their separate emissive term. */
 export function finishSceneLighting(builder: NodeBuilder, multiplier: ShaderNode, cloud: ShaderNode = float(1)): void {
   const { outgoingLight } = builder.context as { outgoingLight: ShaderNode };
-  outgoingLight.assign(shadeCloudColour(sceneLitColour(outgoingLight, multiplier), linearCloudFactor(cloud).toVar()));
+  outgoingLight.assign(shadeCloudColour(sceneLitColour(outgoingLight, multiplier), linearCloudFactor(cloud)));
 }
 
 class SceneLightingModel extends PhysicalLightingModel {
