@@ -47,6 +47,8 @@ The generic modules in `packages/hd-renderer/src/` own:
   selection. It fixes partition planes to avoid opening cracks and never invokes an exact
   or per-voxel cuboid cover. Once both surface gates pass, silhouette search cannot reopen
   them. Non-finite formal values remain visible and cannot satisfy the corresponding gate.
+  Parameter-candidate memoization includes the current primitive or entire coaxial group, so
+  changing a radius cannot suppress a newly useful centre move or another step in the same direction.
 - `hardSurfaceRecess.ts`: broad connected overfill pockets with source occupancy on opposite
   sides. Convex subtraction candidates need at least twelve source-empty cells, a long span
   of six cells, and at most one percent source overlap. Tiny dimples, paint-only marks and

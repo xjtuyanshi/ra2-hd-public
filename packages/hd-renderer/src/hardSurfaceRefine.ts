@@ -121,6 +121,13 @@ export function refineHardSurface(
   let residualPart: PartSpec | undefined,
     surfaceWeights: number[] = [];
   const tried = new Set<string>();
+  const reserveParameter = (key: string, state: unknown): boolean => {
+    // The same delta is a new candidate after a parameter change. Coaxial groups include every segment's radius.
+    const scoped = `${key}@${JSON.stringify(state)}`;
+    if (tried.has(scoped)) return false;
+    tried.add(scoped);
+    return true;
+  };
   let stop: RefinementResult['stop'] = 'no-improving-region';
   while (!result.pass) {
     if (history.length >= options.maxEvaluations) {
@@ -207,8 +214,13 @@ export function refineHardSurface(
         for (const dimension of [0, 1])
           for (const delta of [-0.15, 0.15, -0.075, 0.075]) {
             const key = `axis:${group}:${dimension}:${delta}`;
-            if (tried.has(key)) continue;
-            tried.add(key);
+            if (
+              !reserveParameter(
+                key,
+                indices.map((i) => part.primitives[i]),
+              )
+            )
+              continue;
             candidate = structuredClone(part);
             nextRegions = structuredClone(regions);
             for (const i of indices) {
@@ -236,8 +248,7 @@ export function refineHardSurface(
     if (!candidate && !model.options.tunePlanes)
       for (const { r, i } of ranked) {
         const key = `tune:${r.id}`;
-        if (tried.has(key) || r.primitive.type !== 'poly') continue;
-        tried.add(key);
+        if (r.primitive.type !== 'poly' || !reserveParameter(key, r.primitive)) continue;
         const fitted = fitRegion(r.cells, r.id, whole, { ...model.options, tunePlanes: true });
         candidate = structuredClone(part);
         candidate.primitives[i] = fitted.primitive;
@@ -250,8 +261,7 @@ export function refineHardSurface(
       for (const { r, i } of ranked) {
         for (const delta of [-0.15, 0.15, -0.075, 0.075]) {
           const key = `offset:${r.id}:${delta}`;
-          if (tried.has(key)) continue;
-          tried.add(key);
+          if (!reserveParameter(key, part.primitives[i])) continue;
           candidate = structuredClone(part);
           candidate.primitives[i] = shifted(candidate.primitives[i], delta);
           nextRegions = structuredClone(regions);
