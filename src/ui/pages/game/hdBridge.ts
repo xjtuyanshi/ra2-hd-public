@@ -561,6 +561,16 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
   host.screen.parentElement!.insertBefore(canvas, host.screen);
 
   let live: LiveView | null = null;
+  // YR draws rank marks through its shroud-lit buffer (0x70AA4F, blitter flags 0xE00), so the original blacks them
+  // out under shroud, gap generator shroud included. Terrain passthrough skips the cell passes that write SHROUD.SHP
+  // into that buffer, so the keyed picture's marks arrive at full brightness; their HD art takes the darkening of the
+  // HD shroud at the same pixel instead. The post pass darkens linear light, so the display factor is about v^(1/2.2).
+  host.frameRenderer.setMarkLight((x, y) => {
+    const view = live;
+    if (!view) return 1;
+    const visibility = view.shroudVisibilityAt(x - (keyRect?.x ?? 0), y - (keyRect?.y ?? 0));
+    return visibility >= 1 ? 1 : visibility <= 0 ? 0 : visibility ** (1 / 2.2);
+  });
   /** Map names below are keys: lower-cased, without the extension (see `mapKey`). */
   let liveMap: string | null = null;
   /** Last snapshot pushed to `live`; readers return the identical object while nothing changed. */
@@ -2194,6 +2204,7 @@ export function startHdBridge(host: HdBridgeHost): HdBridgeControl {
     host.frameRenderer.setTransparentKey(null);
     host.frameRenderer.setTransparentRect(null);
     host.frameRenderer.setOpacityRegion(null);
+    host.frameRenderer.setMarkLight(null);
     live?.dispose();
     live = null;
     governor = null;

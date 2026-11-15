@@ -405,6 +405,31 @@ describe('sharp native mark art', () => {
     renderer.destroy();
   });
 
+  it('darkens the mark art with the light at its box corners and re-prepares the picture when the light changes', () => {
+    const gl = new FakeWebGl();
+    const uploaded: Float32Array[] = [];
+    (gl as unknown as { bufferData(target: number, data: unknown): void }).bufferData = (_target, data) => {
+      if (data instanceof Float32Array) uploaded.push(data);
+    };
+    const canvas = { getContext: () => gl, dataset: {} as Record<string, string> };
+    const renderer = createVmFrameRenderer(canvas as unknown as HTMLCanvasElement);
+    renderer.setMarkArt({ set, atlas: {} as TexImageSource });
+    renderer.setTransparentKey({ rect: { x: 0, y: 0, width: 4, height: 4 }, rgb565: KEY });
+    const frame = picture();
+    // The mark's box is x 1..3, y 1..2: a shroud edge darkens its left side only.
+    renderer.setMarkLight((x) => (x <= 1 ? 0 : 1));
+    renderer.draw(frame, 10, 10);
+    expect([0, 1, 2, 3, 4, 5].map((v) => uploaded.at(-1)![v * 5 + 4])).toEqual([0, 1, 0, 0, 1, 1]);
+    // Same picture, new light (the shroud closed over it): drawn again with the new value.
+    renderer.setMarkLight(() => 0);
+    renderer.draw(frame, 10, 10);
+    expect([...uploaded.at(-1)!].filter((_, i) => i % 5 === 4)).toEqual([0, 0, 0, 0, 0, 0]);
+    renderer.setMarkLight(null);
+    renderer.draw(frame, 10, 10);
+    expect([...uploaded.at(-1)!].filter((_, i) => i % 5 === 4)).toEqual([1, 1, 1, 1, 1, 1]);
+    renderer.destroy();
+  });
+
   it('switches step smoothing of the keyed 16-bit picture on and off and keeps it across backend changes', () => {
     const gl = new FakeWebGl();
     const canvas = { getContext: () => gl, dataset: {} as Record<string, string> };

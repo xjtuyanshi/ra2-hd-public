@@ -4,7 +4,13 @@ import type { FramePostProcess } from '../../../graphics/framePostProcess';
 import type { VmFrame } from '../../../vm86/win32';
 import { validFrameOverlay } from '../../../graphics/frameOverlayData';
 import { FrameOverlayPass } from '../../../graphics/frameOverlay';
-import { FrameMarkPass, FrameMarkReplacer, frameMarkVertices, type FrameMarkSet } from '../../../graphics/frameMarks';
+import {
+  FrameMarkPass,
+  FrameMarkReplacer,
+  frameMarkVertices,
+  type FrameMarkLight,
+  type FrameMarkSet,
+} from '../../../graphics/frameMarks';
 import { STEP_SMOOTH_GLSL, StepSmoothFlags } from '../../../graphics/frameStepSmooth';
 import { spatialUpscaleShader } from './spatialUpscale';
 import { fsrRcasShader, fsrUpscaleShader } from './fsrUpscale';
@@ -123,6 +129,11 @@ interface FrameBackend {
    */
   setMarkArt(art: FrameMarkArt | null): void;
   /**
+   * Darkening of the mark art at a picture point (FrameMarkLight), standing in for the native lighting/shroud buffer
+   * the game draws those marks through; null draws the art unchanged. Read when a new picture's marks are prepared.
+   */
+  setMarkLight(light: FrameMarkLight | null): void;
+  /**
    * Smooth the stair steps of thin diagonal marks in the keyed picture (src/graphics/frameStepSmooth.ts). Applies only
    * to 16-bit pictures on the keyed path; pixels without a diagonal step keep their exact nearest-sampled output.
    */
@@ -191,6 +202,7 @@ export function createVmFrameRenderer(
   let transparentRects: readonly FrameRect[] = [];
   let smoothRect: FrameRect | null = null;
   let markArt: FrameMarkArt | null = null;
+  let markLight: FrameMarkLight | null = null;
   let markSmoothing = false;
   return {
     get backend() {
@@ -223,6 +235,7 @@ export function createVmFrameRenderer(
       replacement.setTransparentRects(transparentRects);
       replacement.setSmoothRect(smoothRect);
       replacement.setMarkArt(markArt);
+      replacement.setMarkLight(markLight);
       replacement.setMarkSmoothing(markSmoothing);
       backend.destroy();
       backend = replacement;
@@ -258,6 +271,10 @@ export function createVmFrameRenderer(
     setMarkArt(art) {
       markArt = art;
       if (!destroyed) backend.setMarkArt(art);
+    },
+    setMarkLight(light) {
+      markLight = light;
+      if (!destroyed) backend.setMarkLight(light);
     },
     setMarkSmoothing(on) {
       markSmoothing = on;
@@ -332,6 +349,7 @@ class WebGlIndexedFrameRenderer implements FrameBackend {
   private markSource: VmFrame | null = null;
   private markPicture: { frame: VmFrame; vertices: Float32Array } | null = null;
   private markCount = -1;
+  private markLight: FrameMarkLight | null = null;
   private markSmoothing = false;
   private stepFlags: StepSmoothFlags | null = null;
   private stepFlagSource: { frame: VmFrame; rect: string; key: number } | null = null;
@@ -703,6 +721,13 @@ class WebGlIndexedFrameRenderer implements FrameBackend {
     this.reportMarks(this.markPass ? 0 : -1);
   }
 
+  setMarkLight(light: FrameMarkLight | null): void {
+    this.markLight = light;
+    // The next draw prepares its marks again with this light (the cached picture keeps the old vertices).
+    this.markSource = null;
+    this.markPicture = null;
+  }
+
   setMarkSmoothing(on: boolean): void {
     this.markSmoothing = on;
     if (!this.canvas.dataset) return;
@@ -755,7 +780,7 @@ class WebGlIndexedFrameRenderer implements FrameBackend {
     if (!clean) return null;
     this.markPicture = {
       frame: { ...frame, rgb565: clean, overlayJournal: undefined },
-      vertices: frameMarkVertices(matches, this.markReplacer.set, frame.width, frame.height),
+      vertices: frameMarkVertices(matches, this.markReplacer.set, frame.width, frame.height, this.markLight),
     };
     return this.markPicture;
   }
@@ -1111,6 +1136,7 @@ class CanvasFrameRenderer implements FrameBackend {
   setTransparentKey(): void {}
   prepareTransparentKey(): void {}
   setMarkArt(): void {}
+  setMarkLight(): void {}
   setMarkSmoothing(): void {}
 
   clear(): void {

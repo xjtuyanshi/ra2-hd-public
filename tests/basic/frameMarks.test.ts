@@ -96,9 +96,22 @@ describe('native mark replacement', () => {
     expect(clean[1 * 12 + 1]).toBe(0x1234);
     expect(replacer.prepare(pixels, 12, 8, { x: 0, y: 0, width: 12, height: 8 }, KEY)).toBe(clean);
     const quad = frameMarkVertices(replacer.matches, set, 12, 8);
-    expect(quad.length).toBe(24);
-    [1 / 6 - 1, 1 - 0.25, 0, 0].forEach((value, i) => expect(quad[i]).toBeCloseTo(value, 6));
-    [4 / 6 - 1, 1 - 0.75, 12 / 32, 8 / 16].forEach((value, i) => expect(quad[20 + i]).toBeCloseTo(value, 6));
+    expect(quad.length).toBe(30);
+    [1 / 6 - 1, 1 - 0.25, 0, 0, 1].forEach((value, i) => expect(quad[i]).toBeCloseTo(value, 6));
+    [4 / 6 - 1, 1 - 0.75, 12 / 32, 8 / 16, 1].forEach((value, i) => expect(quad[25 + i]).toBeCloseTo(value, 6));
+    // Light is sampled at the native box corners (picture pixels) and clamped; the mark here spans x 1..4, y 1..3.
+    const seen: [number, number][] = [];
+    const lit = frameMarkVertices(replacer.matches, set, 12, 8, (x, y) => {
+      seen.push([x, y]);
+      return x === 1 ? (y === 1 ? -2 : 0.25) : y === 1 ? Number.NaN : 3;
+    });
+    expect(seen).toEqual([
+      [1, 1],
+      [4, 1],
+      [1, 3],
+      [4, 3],
+    ]);
+    expect([0, 1, 2, 3, 4, 5].map((v) => lit[v * 5 + 4])).toEqual([0, 1, 0.25, 0.25, 1, 1]);
     const none = picture(12, 8);
     expect(replacer.prepare(none, 12, 8, { x: 0, y: 0, width: 12, height: 8 }, KEY)).toBeNull();
     const copy = picture(12, 8);

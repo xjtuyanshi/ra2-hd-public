@@ -232,6 +232,33 @@ export class ShroudLayer {
   }
 
   /**
+   * Visibility (0 black .. 1 clear) the post pass gives the flat Z = 0 ground point at world (x, y) in cells: the same
+   * corner field, linearly filtered with clamped edges like the texture, shaped like shroudVisibility. For layers drawn
+   * outside the renderer (native marks the engine draws through its shroud-lit buffer). Everything is visible before
+   * the first update.
+   */
+  visibilityAt(x: number, y: number): number {
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return 1;
+    const { width, height, data } = this;
+    const fx = Math.min(width, Math.max(0, x)),
+      fy = Math.min(height, Math.max(0, y));
+    const i0 = Math.min(width, Math.floor(fx)),
+      j0 = Math.min(height, Math.floor(fy));
+    const i1 = Math.min(width, i0 + 1),
+      j1 = Math.min(height, j0 + 1);
+    const tx = fx - i0,
+      ty = fy - j0;
+    const stride = width + 1;
+    const sample = (channel: number): number => {
+      const at = (i: number, j: number) => data[(j * stride + i) * 2 + channel]! / 255;
+      const top = at(i0, j0) * (1 - tx) + at(i1, j0) * tx;
+      const bottom = at(i0, j1) * (1 - tx) + at(i1, j1) * tx;
+      return top * (1 - ty) + bottom * ty;
+    };
+    return 1 - shroudOpacity(sample(0), sample(1));
+  }
+
+  /**
    * The engine's MapClass::IsLocationShrouded for a lepton location: the shroud is a flat Z = 0 layer, so an object at
    * height level L is tested against the flat cell it covers on screen, (X - L/2, Y - L/2); an odd level straddles two
    * cells and is hidden only when both are shrouded. Everything is visible before the first update.

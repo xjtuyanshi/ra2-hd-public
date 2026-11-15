@@ -221,6 +221,7 @@ function setup(
     setTransparentRect: vi.fn(),
     setOpacityRegion: vi.fn(),
     prepareTransparentKey: vi.fn(),
+    setMarkLight: vi.fn(),
   };
   let state: GameRenderState | null = null;
   let frameSize = { width: 800, height: 600 };
