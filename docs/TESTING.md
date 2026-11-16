@@ -63,6 +63,12 @@ thread) must generate the same shader code and buffer layouts as the smooth mesh
 either, so that one pipeline serves both. These are shader-layout checks,
 not WebGPU pipeline validation, rendered-pixel acceptance or performance measurements.
 
+Smooth voxel regressions include an eight-voxel stepped ledge whose fixed quad diagonal folds a triangle,
+all primal-edge axes/directions, and a Float32 same-ray native-depth boundary that can make a rear surface win.
+The private-model `voxelSmoothAudit.mts` entry and its metrics are documented in the
+[HD renderer README](../packages/hd-renderer/README.md). It reads supplied JSON only; private-asset topology and CPU
+projection measurements remain separate from caller/browser screenshots.
+
 Current asset-enabled CI requires original-executable startup, the RA2 quick-game and RA2/YR save/cold-load regressions, and Worker/main-thread direct battlefield startup. Same-host two-client network tests remain manual and are excluded from CI until Chromium cleanup and runner memory capacity are confirmed. Select other real-game cases according to changes. Gonghui requires separate MOD resources; cache restoration requires original packages. Neither is implicitly covered by Basic.
 
 ## Select regressions by change

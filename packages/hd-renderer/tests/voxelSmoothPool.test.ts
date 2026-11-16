@@ -74,15 +74,19 @@ afterEach(() => {
 });
 
 describe('smooth voxel Worker', () => {
-  it('answers with the arrays the in-place build makes and lists every buffer for transfer', () => {
-    const section = syntheticSection(4);
-    const { reply, transfer } = answerSmoothSection({ id: 7, section, options: OPTIONS });
-    expect(reply).toEqual({ id: 7, mesh: buildSmoothSection(section, OPTIONS) });
-    const mesh = (reply as { mesh: ReturnType<typeof buildSmoothSection> }).mesh;
-    expect(transfer).toEqual(smoothMeshBuffers(mesh));
-    expect(new Set(transfer).size).toBe(transfer.length);
-    for (const array of Object.values(mesh)) expect(transfer).toContain(array.buffer);
-  });
+  it.each(['occupancy', 'imls'] as const)(
+    'answers with the in-place %s arrays and lists every buffer for transfer',
+    (shape) => {
+      const section = syntheticSection(4);
+      const options = smoothVoxelOptions({ ...OPTIONS, shape });
+      const { reply, transfer } = answerSmoothSection({ id: 7, section, options });
+      expect(reply).toEqual({ id: 7, mesh: buildSmoothSection(section, options) });
+      const mesh = (reply as { mesh: ReturnType<typeof buildSmoothSection> }).mesh;
+      expect(transfer).toEqual(smoothMeshBuffers(mesh));
+      expect(new Set(transfer).size).toBe(transfer.length);
+      for (const array of Object.values(mesh)) expect(transfer).toContain(array.buffer);
+    },
+  );
 
   it('reports a failed build instead of throwing', () => {
     const { reply, transfer } = answerSmoothSection({
@@ -113,7 +117,29 @@ describe('smooth voxel Worker', () => {
     expect(again.transfer.every((buffer) => buffer.byteLength > 0)).toBe(true);
     await answerSmoothSectionCached({ ...request, section: syntheticSection(4) }, cache);
     await answerSmoothSectionCached({ ...request, options: { ...OPTIONS, bandOut: 0.1 } }, cache);
-    expect(stored.size).toBe(3);
+    const imls = { ...request, options: { ...OPTIONS, shape: 'imls' as const } };
+    expect((await answerSmoothSectionCached(imls, cache)).reply).toMatchObject({ source: 'build' });
+    expect((await answerSmoothSectionCached(imls, cache)).reply).toMatchObject({ source: 'cache' });
+    expect(stored.size).toBe(4);
+  });
+
+  it('does not reuse a version-1 fixed-diagonal mesh after triangulation changes', async () => {
+    const request = { id: 1, section: syntheticSection(3), options: OPTIONS };
+    const hash = new Uint8Array(
+      await crypto.subtle.digest(
+        'SHA-256',
+        new TextEncoder().encode(JSON.stringify([1, request.section, request.options])),
+      ),
+    );
+    const oldKey = [...hash].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+    const oldMesh = buildSmoothSection(request.section, request.options);
+    const cache: SmoothSectionCache = {
+      get: vi.fn(async (key) => (key === oldKey ? oldMesh : null)),
+      put: vi.fn(async () => {}),
+    };
+    expect((await answerSmoothSectionCached(request, cache)).reply).toMatchObject({ source: 'build' });
+    expect(cache.get).not.toHaveBeenCalledWith(oldKey);
+    expect(cache.put).toHaveBeenCalledOnce();
   });
 
   it.each(['denied', 'corrupt', 'write-failed'] as const)('rebuilds when persistence is %s', async (failure) => {

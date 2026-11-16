@@ -1,3 +1,5 @@
+import { parseSmoothVoxelOverride, smoothVoxelOptions, type SmoothVoxelOptions } from './voxelSmooth';
+
 /** Renderer-independent projection contract and CPU twins of the shader's coordinate math. */
 export type ProjectionPartName = 'body' | 'turret';
 export type Point2 = [number, number];
@@ -54,6 +56,8 @@ export interface VoxelProjectionManifest {
    * night, local lights and shadows still apply. Absent: image-model redraws that get those terms.
    */
   shading?: 'baked';
+  /** Per-type mesh options, merged over the session options only for a successfully loaded page set. */
+  smooth?: Readonly<Partial<SmoothVoxelOptions>>;
   registration: { part: ProjectionPartName; k: number; iou: number; scale: number; dx: number; dy: number }[];
 }
 
@@ -152,7 +156,18 @@ export function parseVoxelProjectionManifest(
   if (m.exposure !== undefined && (!finite(m.exposure) || m.exposure < 1 || m.exposure > 4))
     throw new Error('Invalid projection page exposure');
   if (m.shading !== undefined && m.shading !== 'baked') throw new Error('Invalid projection page shading');
-  return m as unknown as VoxelProjectionManifest;
+  if (m.smooth === undefined) return m as unknown as VoxelProjectionManifest;
+  const { smooth, ...manifest } = m;
+  const override = parseSmoothVoxelOverride(smooth);
+  return { ...manifest, ...(override ? { smooth: override } : {}) } as unknown as VoxelProjectionManifest;
+}
+
+/** Shared policy for static worlds, live instances and their main-thread/Worker geometry builds. */
+export function projectionSmoothVoxelOptions(
+  session: Partial<SmoothVoxelOptions>,
+  manifest?: VoxelProjectionManifest,
+): Readonly<SmoothVoxelOptions> {
+  return smoothVoxelOptions({ ...session, ...manifest?.smooth });
 }
 
 export function parseVoxelProjectionIndex(value: unknown): Record<string, string> {

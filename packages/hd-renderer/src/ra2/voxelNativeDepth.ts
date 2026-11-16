@@ -1,5 +1,17 @@
-import { Vector3, type Mesh, type NodeBuilder } from 'three/webgpu';
-import { Fn, cameraFar, cameraNear, depth, dot, floor, positionWorld, userData, vec3 } from 'three/tsl';
+import { Vector2, Vector3, type Camera, type Mesh, type NodeBuilder } from 'three/webgpu';
+import {
+  Fn,
+  cameraFar,
+  cameraNear,
+  depth,
+  dot,
+  floor,
+  positionWorld,
+  uniform,
+  userData,
+  vec3,
+  viewportUV,
+} from 'three/tsl';
 import { isShadowPass } from '../painterDepth';
 import type { ShaderNode } from '../tsl';
 import { PIXELS_PER_CELL_EDGE } from '../world';
@@ -35,6 +47,15 @@ export function voxelFragmentRow(fragment: Vector3, anchor: Vector3): number {
       (fragment.z - anchor.z) * SCREEN_DOWN.z) *
     PIXELS_PER_CELL_EDGE
   );
+}
+
+const projectedAnchor = new Vector3();
+
+/** Native row = x + y * viewportUV.y for the fixed orthographic camera, including zoom and offscreen targets. */
+export function voxelRowProjection(camera: Camera, anchor: Vector3, out: Vector2): Vector2 {
+  projectedAnchor.copy(anchor).project(camera);
+  const scale = PIXELS_PER_CELL_EDGE / camera.projectionMatrix.elements[5]!;
+  return out.set((projectedAnchor.y - 1) * scale, 2 * scale);
 }
 
 /** CPU twin of the shader's physical-to-card pull, without the separately additive painter/clearance bias. */
@@ -174,12 +195,19 @@ export function voxelNativeDepthNode(): ShaderNode {
 }
 
 function createVoxelNativeDepthNode(): ShaderNode {
+  const rows = uniform(new Vector2()).onObjectUpdate(({ camera, object }) => {
+    if (!camera || !object) return;
+    const state = object.userData.voxelNativeDepth as VoxelNativeDepth | undefined;
+    if (state) voxelRowProjection(camera, state.anchor, rows.value);
+  });
   return Fn(([], builder: NodeBuilder) => {
     if (isShadowPass(builder)) return depth;
     const anchor: ShaderNode = userData('voxelNativeDepth.anchor', 'vec3');
     const relative: ShaderNode = positionWorld.sub(anchor);
-    const down: ShaderNode = dot(relative, vec3(SCREEN_DOWN.x, SCREEN_DOWN.y, SCREEN_DOWN.z));
-    const py = down.mul(PIXELS_PER_CELL_EDGE).toVar('voxelNativeRow');
+    // A world-position varying rounds differently on each triangle/section. At a three-row floor boundary that
+    // changes the card push by a whole step and lets the hull cover a nearer turret/barrel in horizontal dashes.
+    // All surfaces of this unit must use the SAME pixel row, independently of their interpolated positions.
+    const py = rows.x.add(rows.y.mul(viewportUV.y)).toVar('voxelNativeRow');
     const bottom: ShaderNode = userData('voxelNativeDepth.bottom', 'float');
     const push = bottom
       .add(userData('voxelNativeDepth.bonus', 'float'))

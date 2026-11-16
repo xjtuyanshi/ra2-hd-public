@@ -28,6 +28,7 @@ import {
 } from './voxels';
 import { loadVoxelLighting } from './vpl';
 import { smoothVoxelOptions, type SmoothVoxelOptions } from './voxelSmooth';
+import { projectionSmoothVoxelOptions } from './voxelProjectionMath';
 import { buildSmoothVoxelGeometry } from './voxelSmoothGeometry';
 import { projectionParts, voxelProjectionLibrary, type VoxelProjectionLibrary } from './voxelProjection';
 import { frameInclusiveBottom, terrainObjectDepth } from './nativeDepth';
@@ -193,19 +194,16 @@ export async function loadRa2World(
       const model = cache.voxels.get(object.voxel);
       if (!model) continue;
       const paletteKey = paletteFor(cache, model.palette, true, object.owner);
-      const cacheKey = `${object.voxel}@${paletteKey}`;
+      const projection = projections?.get(model.id, projectionParts(model.parts)) ?? null;
+      const effectiveSmooth = projectionSmoothVoxelOptions(smoothVoxel, projection?.manifest);
+      const cacheKey = `${object.voxel}@${paletteKey}@${JSON.stringify(effectiveSmooth)}`;
       let parts = geometries.get(cacheKey);
       if (!parts) {
         parts =
           voxelLook === 'remaster'
-            ? buildSmoothVoxelGeometry(model, cache.paletteRgb.get(paletteKey)!, nodes, smoothVoxel)
+            ? buildSmoothVoxelGeometry(model, cache.paletteRgb.get(paletteKey)!, nodes, effectiveSmooth)
             : buildVoxelGeometry(model, cache.paletteRgb.get(paletteKey)!, nodes);
-        projectVoxelMaterials(
-          parts,
-          cache.paletteRgb.get(paletteKey)!,
-          projections?.get(model.id, projectionParts(model.parts)) ?? null,
-          nodes,
-        );
+        projectVoxelMaterials(parts, cache.paletteRgb.get(paletteKey)!, projection, nodes);
         geometries.set(cacheKey, parts);
       }
       const { root: vehicle } = instantiateVoxel(parts, voxelMaterial, nodes);

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { BoxGeometry, Mesh, MeshStandardNodeMaterial, Scene, Vector3, WebGPURenderer } from 'three/webgpu';
+import { BoxGeometry, Mesh, MeshStandardNodeMaterial, Scene, Vector2, Vector3, WebGPURenderer } from 'three/webgpu';
 import { IsoCamera, PIXELS_PER_CELL_EDGE } from '../src/world';
 import { AtmosphereNodes } from '../src/atmosphere';
 import { TerrainDepth } from '../src/terrainDepth';
@@ -12,12 +12,64 @@ import {
   voxelCardDelta,
   voxelFragmentRow,
   voxelNativeDepthNode,
+  voxelRowProjection,
 } from '../src/ra2/voxelNativeDepth';
 import { createVoxelMaterial, instantiateVoxel, updateVoxelNativeDepth, VOXEL_CLEARANCE } from '../src/ra2/voxels';
 
 const forward = new Vector3(-Math.sqrt(3 / 8), -0.5, -Math.sqrt(3 / 8));
 
 describe('native voxel card projection', () => {
+  it('derives the same native rows from the viewport at different zooms, anchors and camera targets', () => {
+    const iso = new IsoCamera();
+    const anchor = new Vector3(35.25, 3.75, 7.5);
+    const point = new Vector3(35.9, 4.4, 8.7);
+    for (const zoom of [0.5, 1, 3]) {
+      iso.zoom = zoom;
+      iso.target.set(20, 0, 15);
+      iso.resize(800, 600);
+      iso.update();
+      const rows = voxelRowProjection(iso.camera, anchor, new Vector2());
+      const uvY = (1 - point.clone().project(iso.camera).y) / 2;
+      expect(rows.x + rows.y * uvY).toBeCloseTo(voxelFragmentRow(point, anchor), 10);
+    }
+  });
+
+  it('keeps two closed surfaces ordered at a row boundary where Float32 world interpolation reverses them', () => {
+    const anchor = new Vector3(50, 0, 50);
+    const down = new Vector3(Math.SQRT1_2 / 2, -Math.sqrt(3) / 2, Math.SQRT1_2 / 2);
+    const front = anchor
+      .clone()
+      .addScaledVector(down, -6 / PIXELS_PER_CELL_EDGE)
+      .addScaledVector(forward, -0.5);
+    const back = front.clone().addScaledVector(forward, 0.25);
+    // These are two points on one camera ray, on otherwise closed front/back surface patches.
+    const f = Math.fround;
+    const interpolatedRow = (point: Vector3) => {
+      const terms = point.toArray().map((x, j) => f(f(f(x) - f(anchor.getComponent(j))) * f(down.getComponent(j))));
+      return f(f(f(terms[0]! + terms[1]!) + terms[2]!) * f(PIXELS_PER_CELL_EDGE));
+    };
+    const frontRow = interpolatedRow(front);
+    const backRow = interpolatedRow(back);
+    expect(frontRow).toBeGreaterThan(-6);
+    expect(backRow).toBeLessThan(-6);
+    const oldGap =
+      0.25 * VOXEL_CARD_KAPPA - (1 - VOXEL_CARD_KAPPA) * (nativeCardPush(backRow, 3) - nativeCardPush(frontRow, 3));
+    expect(oldGap).toBeLessThan(0); // The rear surface wins, producing a false hole.
+
+    const iso = new IsoCamera();
+    iso.target.copy(anchor);
+    iso.zoom = 1.25;
+    iso.resize(864, 560);
+    iso.update();
+    const rows = voxelRowProjection(iso.camera, anchor, new Vector2());
+    const uvY = f((1 - front.clone().project(iso.camera).y) / 2);
+    // The rasterizer supplies this identical pixel coordinate to every triangle and section.
+    const pixelRow = f(f(rows.x) + f(f(rows.y) * uvY));
+    const corrected = (physical: number) =>
+      physical * VOXEL_CARD_KAPPA - (1 - VOXEL_CARD_KAPPA) * nativeCardPush(pixelRow, 3);
+    expect(corrected(-0.25) - corrected(-0.5)).toBeCloseTo(0.25 * VOXEL_CARD_KAPPA, 12);
+  });
+
   it('matches the fixed camera screen rows at nonzero anchors, heights and zoom', () => {
     const iso = new IsoCamera();
     const anchor = new Vector3(35.25, 3.75, 7.5);
@@ -241,6 +293,10 @@ describe('voxel native depth shaders', () => {
     builder.camera = iso.camera;
     builder.build();
     expect(builder.fragmentShader).toContain('voxelNativeRow');
+    // Floor's input must be pixel-derived, not a world-position varying that differs between closed surfaces.
+    const rowAssignment = builder.fragmentShader.split('\n').find((line) => /voxelNativeRow\s*=/.test(line));
+    expect(rowAssignment).toBeDefined();
+    expect(rowAssignment).not.toContain('v_positionWorld');
     expect(builder.fragmentShader).toContain('voxelNativeDelta');
     expect(builder.fragmentShader).toContain('floor(');
     expect(builder.fragmentShader).toContain('0.94');

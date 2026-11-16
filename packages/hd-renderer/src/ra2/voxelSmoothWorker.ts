@@ -7,7 +7,7 @@ import type { VoxelSection } from '../../../ra2-assets/src/manifest';
 import { buildSmoothSection, type SmoothMeshData, type SmoothVoxelOptions } from './voxelSmooth';
 
 /** Bump when the mesh algorithm or its input interpretation changes; old meshes are never shown across versions. */
-const MESH_CACHE_VERSION = 1;
+const MESH_CACHE_VERSION = 2;
 /** Persistent meshes are an optional acceleration, bounded independently of the browser's storage quota. */
 const MESH_CACHE_BYTES = 128 * 1024 * 1024;
 

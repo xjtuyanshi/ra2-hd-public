@@ -8,6 +8,12 @@ import { VoxelUnit } from '../src/ra2/voxels';
 import { loadRa2World } from '../src/ra2/world';
 import { LEVEL_HEIGHT } from '../src/world';
 import { syntheticModel, syntheticSection } from './fixtures/syntheticVoxels';
+import { voxelProjectionLibrary } from '../src/ra2/voxelProjection';
+import { createVoxelProjectionPart } from '../src/ra2/voxelProjection';
+import type { VoxelProjectionManifest } from '../src/ra2/voxelProjectionMath';
+import { smoothVoxelPartGeometries } from '../src/ra2/voxelSmoothGeometry';
+import { smoothVoxelOptions } from '../src/ra2/voxelSmooth';
+import { Texture } from 'three/webgpu';
 
 const fixture = vi.hoisted(() => ({ cache: null as unknown as Ra2Cache, sprites: [] as SpriteInstance[] }));
 
@@ -42,6 +48,82 @@ function object(kind: MapObject['kind'], x: number, z = 0, voxel = false): MapOb
 }
 
 describe('static map native ground cards', () => {
+  it.each([undefined, { shape: 'imls' as const }])(
+    'applies only the loaded type mesh override %j in the sandbox loader',
+    async (smooth) => {
+      const nodes = new AtmosphereNodes();
+      const model = syntheticModel([syntheticSection(2, true)]);
+      const other = { ...model, id: 'OTHER' };
+      const texture = nodes.own(new Texture());
+      const spec: VoxelProjectionManifest = {
+        version: 1,
+        type: model.id,
+        frames: 16,
+        facingStep: 16,
+        scale: 1,
+        jacobian: [
+          [1, 0, 0],
+          [0, 1, 0],
+        ],
+        house: null,
+        registration: [],
+        smooth,
+        parts: {
+          body: {
+            colour: 'body.png',
+            paint: 'paint.png',
+            size: [16, 1],
+            frames: Array.from({ length: 16 }, (_, k) => ({ k, facing: k * 16, pivot: [0, 0], rect: [k, 0, 1, 1] })),
+          },
+        },
+      };
+      const asset = { manifest: spec, parts: { body: createVoxelProjectionPart(spec, 'body', texture, texture) } };
+      nodes.own(asset.parts.body.frameTable);
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => new Response(JSON.stringify({ version: 1, types: {} }))),
+      );
+      const projections = voxelProjectionLibrary('/pages', nodes);
+      let loaded = false;
+      vi.spyOn(projections, 'loadType').mockImplementation(async () => {
+        loaded = true;
+        return asset;
+      });
+      vi.spyOn(projections, 'get').mockImplementation((id) => (loaded && id === model.id ? asset : null));
+      fixture.cache = {
+        nodes,
+        manifest: {
+          grid: { width: 16, height: 16 },
+          objects: [object('vehicle', 1, 0, true), { ...object('vehicle', 2, 0, true), voxel: 'OTHER' }],
+          sprites: {},
+          waypoints: [],
+        },
+        lights: { hiddenObjects: [], cells: { surface: Buffer.from(new Uint8Array(256)).toString('base64') } },
+        voxels: new Map([
+          [model.id, model],
+          ['OTHER', other],
+        ]),
+        paletteRgb: new Map([['unit', new Uint8Array(768)]]),
+        paletteRow: new Map(),
+      } as unknown as Ra2Cache;
+      const session = smoothVoxelOptions({ aoRays: 0, bandOut: 0.1 });
+      const world = await loadRa2World('/synthetic', {
+        nodes,
+        voxelLook: 'remaster',
+        smoothVoxel: session,
+        voxelProjection: '/pages',
+        spriteMaterials: false,
+      });
+      const units = world.root.children.filter((child): child is VoxelUnit => child instanceof VoxelUnit);
+      expect(units).toHaveLength(2);
+      expect(units[0]!.partMeshes[0]!.geometry).toBe(smoothVoxelPartGeometries(model, { ...session, ...smooth })![0]);
+      expect(units[1]!.partMeshes[0]!.geometry).toBe(smoothVoxelPartGeometries(other, session)![0]);
+      expect(world.smoothVoxel).toEqual(session);
+      world.surfaceTexture!.dispose();
+      nodes.dispose();
+      vi.unstubAllGlobals();
+    },
+  );
   it('enables only ground/deck units and preserves non-unit art, airborne objects and shadow/reflection cards', async () => {
     const nodes = new AtmosphereNodes();
     const objects = [

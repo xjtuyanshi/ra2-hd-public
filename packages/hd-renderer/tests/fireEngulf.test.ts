@@ -380,6 +380,7 @@ it('toggles capture layers on voxel body/turret/barrel originals only and restor
     hd: { terrainDepth: depth },
     pending: new Map(),
     cadRecords: new Map(),
+    smoothSets: new Map(),
     standIns: new Map(),
     setCaptureCode: VoxelUnits.prototype.setCaptureCode,
   };

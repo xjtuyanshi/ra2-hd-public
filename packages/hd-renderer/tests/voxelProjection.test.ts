@@ -22,6 +22,7 @@ import {
   facingFromMatrix,
   parseVoxelProjectionIndex,
   parseVoxelProjectionManifest,
+  projectionSmoothVoxelOptions,
   projectVoxelPoint,
   projectionFramePair,
   type VoxelProjectionManifest,
@@ -44,6 +45,10 @@ import {
 } from '../src/ra2/voxelReflectionColour';
 import { buildVoxelGeometry, instantiateVoxel, projectVoxelMaterials, updateVoxelNativeDepth } from '../src/ra2/voxels';
 import { buildSmoothVoxelGeometry } from '../src/ra2/voxelSmoothGeometry';
+import { smoothVoxelOptions, buildSmoothSection, type SmoothMeshData } from '../src/ra2/voxelSmooth';
+import { smoothVoxelPartGeometries } from '../src/ra2/voxelSmoothGeometry';
+import type { SmoothSectionBuilder } from '../src/ra2/voxelSmoothPool';
+import { VoxelUnit as VoxelRoot } from '../src/ra2/voxels';
 import { syntheticSection } from './fixtures/syntheticVoxels';
 import type { VoxelModel } from '../../ra2-assets/src/manifest';
 import { VoxelUnits } from '../src/live/voxelUnits';
@@ -52,6 +57,8 @@ import type { HdWorld } from '../src/ra2/world';
 import type { Ra2Cache } from '../src/ra2/cache';
 import { voxelLookParams } from '../sandbox/look';
 import { selectVoxelTurretModel } from '../src/ra2/voxelTurrets';
+import { VoxelCadLibrary } from '../src/ra2/voxelCad';
+import { buildCadModel } from '../src/ra2/voxelCadMesh';
 
 function manifest(turret = true): VoxelProjectionManifest {
   const part = (name: string) => ({
@@ -153,6 +160,40 @@ describe('voxel projection coordinate contract', () => {
 });
 
 describe('projection manifest validation', () => {
+  it('merges only validated partial mesh fields over session settings without changing the input', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const input = { ...manifest(), smooth: { shape: 'imls', aoRays: 0, supersample: 1, groundOcclusion: 0, typo: 1 } };
+    const parsed = parseVoxelProjectionManifest(input);
+    expect(parsed.smooth).toEqual({ shape: 'imls', aoRays: 0 });
+    expect(input.smooth).toHaveProperty('typo');
+    const session = smoothVoxelOptions({ bandOut: 0.1, aoRays: 8 });
+    expect(projectionSmoothVoxelOptions(session, parsed)).toEqual({ ...session, shape: 'imls', aoRays: 0 });
+    expect(session.shape).toBe('occupancy');
+    expect(warn).toHaveBeenCalledOnce();
+  });
+  it.each([null, [], 3, 'imls', { shape: 'other', bandIn: 0.5, aoRays: 257 }, { shape: false }])(
+    'ignores a fully invalid smooth block %j with one warning and retains the pages',
+    (smooth) => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const parsed = parseVoxelProjectionManifest({ ...manifest(), smooth });
+      expect(parsed.smooth).toBeUndefined();
+      expect(parsed.parts.body).toBeDefined();
+      expect(projectionSmoothVoxelOptions({ aoRays: 0 }, parsed)).toEqual(smoothVoxelOptions({ aoRays: 0 }));
+      expect(warn).toHaveBeenCalledOnce();
+    },
+  );
+  it('keeps absent and empty smooth blocks silent and preserves every session setting', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const original = manifest();
+    expect(parseVoxelProjectionManifest(original)).toBe(original);
+    for (const parsed of [original, parseVoxelProjectionManifest({ ...original, smooth: {} })]) {
+      expect(parsed.smooth).toBeUndefined();
+      expect(projectionSmoothVoxelOptions({ shape: 'imls', groundOcclusion: false }, parsed)).toEqual(
+        smoothVoxelOptions({ shape: 'imls', groundOcclusion: false }),
+      );
+    }
+    expect(warn).not.toHaveBeenCalled();
+  });
   it('accepts civilian and turreted sets with out-of-rect pivots', () => {
     expect(parseVoxelProjectionManifest(manifest(), ['body', 'turret']).frames).toBe(16);
     const civilian = manifest(false);
@@ -945,6 +986,163 @@ describe('projection loading and disposal', () => {
         expect((mesh.material as { name: string }).name).toContain('-projected');
         expect((mesh.material as { name: string }).name).not.toContain(':native-ground');
       }
+      nodes.dispose();
+    },
+  );
+});
+
+describe('per-type projection smoothing in the live view', () => {
+  const session = smoothVoxelOptions({ aoRays: 0, bandOut: 0.1 });
+  function harness(smoothBuilder: SmoothSectionBuilder | null = null, projected = true, cad = false) {
+    const nodes = new AtmosphereNodes();
+    const hd = {
+      nodes,
+      settings: { voxelLook: 'remaster' },
+      terrainDepth: { setCaptured: vi.fn() },
+    } as unknown as HdRenderer;
+    const world = {
+      nodes,
+      voxelLook: 'remaster',
+      smoothVoxel: session,
+      ...(projected ? { voxelProjection: '/vehicles-hd' } : {}),
+    } as HdWorld;
+    const cache = {
+      paletteRgb: new Map([
+        ['unit', new Uint8Array(768)],
+        ['blue', new Uint8Array(768).fill(60)],
+      ]),
+    } as Ra2Cache;
+    const units = new VoxelUnits(hd, world, cache, undefined, { smoothBuilder, ...(cad ? { voxelCad: '/cad' } : {}) });
+    return { nodes, units };
+  }
+  const meshes = (unit: { root: unknown }) => (unit.root as VoxelRoot).partMeshes;
+
+  it.each([false, true])(
+    'uses only this type override, with pages preloaded=%s, on the main thread',
+    async (preloaded) => {
+      const spec = { ...manifest(), smooth: { shape: 'imls' as const } };
+      mockAssets({ spec });
+      const { nodes, units } = harness();
+      const plain = harness(null, false);
+      const local = { ...model };
+      if (preloaded) await voxelProjectionLibrary('/vehicles-hd', nodes).loadType(local.id);
+      const unit = units.build(local, 'unit', 'tank');
+      const blue = units.build(local, 'blue', 'tank-blue');
+      const baseline = plain.units.build(local, 'unit', 'tank');
+      const scene = new Scene();
+      scene.add(unit.root, blue.root);
+      units.pose(unit, { x: 512, y: 768, z: 104, facing: 1 }, 2);
+      units.setNativeDepth(unit, unit.root.position, 13);
+      units.setOpacity(unit, 0.5);
+      const before = {
+        children: [...unit.root.children],
+        parts: [...meshes(unit)],
+        turret: unit.turret,
+        position: unit.root.position.clone(),
+      };
+      await vi.waitFor(() => expect(units.loading).toBe(0));
+      const expected = smoothVoxelPartGeometries(local, { ...session, shape: 'imls' })!;
+      expect(expected).not.toBeNull();
+      expect(meshes(unit).map((m) => m.geometry)).toEqual(expected);
+      expect(meshes(blue).map((m) => m.geometry)).toEqual(expected);
+      expect(meshes(baseline).map((m) => m.geometry)).toEqual(smoothVoxelPartGeometries(local, session));
+      expect(meshes(baseline)[0]!.geometry).not.toBe(expected[0]);
+      expect(unit.root.children).toEqual(before.children);
+      expect(meshes(unit)).toEqual(before.parts);
+      expect(unit.turret).toBe(before.turret);
+      expect(unit.root.position).toEqual(before.position);
+      expect(unit.turret!.rotation.y).toBe(-1);
+      expect(scene.children).toEqual([unit.root, blue.root]);
+      for (const mesh of meshes(unit)) expect(mesh.material).toMatchObject({ opacity: 0.5, transparent: true });
+      expect(meshes(units.build(local, 'unit', 'tank')).map((m) => m.geometry)).toEqual(expected);
+      units.disposeAll();
+      plain.units.disposeAll();
+      nodes.dispose();
+      plain.nodes.dispose();
+    },
+  );
+
+  it('leaves an already built mesh unchanged when the manifest has no smooth block', async () => {
+    mockAssets();
+    const { nodes, units } = harness();
+    const local = { ...model };
+    const unit = units.build(local, 'unit', 'tank');
+    const original = meshes(unit).map((m) => m.geometry);
+    await vi.waitFor(() => expect(units.loading).toBe(0));
+    expect(meshes(unit).map((m) => m.geometry)).toEqual(original);
+    expect(original).toEqual(smoothVoxelPartGeometries(local, session));
+    units.disposeAll();
+    nodes.dispose();
+  });
+
+  it('retains visible CAD geometry and restores the overridden source mesh when CAD is turned off', async () => {
+    mockAssets({ spec: { ...manifest(), smooth: { shape: 'imls' } } });
+    const local = { ...model };
+    const built = buildCadModel(
+      local,
+      {
+        units: 'voxel lattice',
+        parts: Object.fromEntries(
+          local.parts.map(({ role }) => [
+            role,
+            {
+              primitives: [{ type: 'box', min: [0, 0, 0], max: [2, 2, 2], chamfer: 0 }],
+            },
+          ]),
+        ),
+      },
+      new Uint8Array(768),
+    );
+    vi.spyOn(VoxelCadLibrary.prototype, 'load').mockResolvedValue(built);
+    const { nodes, units } = harness(null, true, true);
+    const unit = units.build(local, 'unit', 'tank');
+    await vi.waitFor(() => expect(units.loading).toBe(0));
+    const cad = meshes(unit).map((m) => m.geometry);
+    expect(cad[0]!.getAttribute('position').array).toEqual(built[0]!.position);
+    const expected = smoothVoxelPartGeometries(local, { ...session, shape: 'imls' })!;
+    units.vehicleCadMode('off');
+    expect(meshes(unit).map((m) => m.geometry)).toEqual(expected);
+    units.vehicleCadMode('look');
+    expect(meshes(unit).map((m) => m.geometry)).toEqual(cad);
+    units.vehicleCadMode('off');
+    expect(meshes(units.build(local, 'unit', 'tank')).map((m) => m.geometry)).toEqual(expected);
+    units.disposeAll();
+    nodes.dispose();
+  });
+
+  it.each(['occupancy', 'imls'] as const)(
+    'keeps the effective mesh when %s finishes first off-thread',
+    async (first) => {
+      mockAssets({ spec: { ...manifest(), smooth: { shape: 'imls' } } });
+      const jobs: { shape: string; finish(): void }[] = [];
+      const builder: SmoothSectionBuilder = {
+        build: (section, options) =>
+          new Promise<SmoothMeshData>((resolve) => {
+            jobs.push({ shape: options.shape, finish: () => resolve(buildSmoothSection(section, options)) });
+          }),
+      };
+      const { nodes, units } = harness(builder);
+      const local = { ...model };
+      const unit = units.build(local, 'unit', 'tank');
+      expect(units.isStandIn(unit)).toBe(true);
+      const original = meshes(unit).map((m) => m.geometry);
+      await vi.waitFor(() => expect(jobs.filter((j) => j.shape === 'imls')).toHaveLength(3));
+      // The page override did not build anything on the calling thread.
+      expect(smoothVoxelPartGeometries(local, { ...session, shape: 'imls' })).toBeNull();
+      for (const job of jobs.filter((j) => j.shape === first)) job.finish();
+      await vi.waitFor(() => expect(smoothVoxelPartGeometries(local, { ...session, shape: first })).not.toBeNull());
+      if (first === 'occupancy') {
+        expect(meshes(unit).map((m) => m.geometry)).toEqual(original);
+        expect(units.isStandIn(unit)).toBe(true);
+      }
+      for (const job of jobs.filter((j) => j.shape !== first)) job.finish();
+      await vi.waitFor(() => expect(units.loading).toBe(0));
+      const expected = smoothVoxelPartGeometries(local, { ...session, shape: 'imls' })!;
+      expect(meshes(unit).map((m) => m.geometry)).toEqual(expected);
+      expect(units.isStandIn(unit)).toBe(false);
+      expect(meshes(units.build(local, 'blue', 'tank-blue')).map((m) => m.geometry)).toEqual(expected);
+      expect(units.prepare(local, 'unit', 'tank')).toBe(true);
+      units.disposeAll();
       nodes.dispose();
     },
   );

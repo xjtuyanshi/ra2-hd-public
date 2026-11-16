@@ -1,10 +1,11 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { resolve, join } from 'node:path';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
-const script = resolve('packages/hd-renderer/scripts/hardSurfaceSpec.ts');
+const script = fileURLToPath(new URL('../scripts/hardSurfaceSpec.ts', import.meta.url));
 function invoke(...args: string[]): string {
   return execFileSync(process.execPath, ['--import', 'tsx', script, ...args], {
     encoding: 'utf8',
@@ -64,7 +65,7 @@ describe('offline hard surface spec adapter (synthetic cache only)', () => {
       expect(JSON.parse(before).parts.body.primitives[0].paint).toBe('house');
       expect(() => invoke(model, seed, model)).toThrow('overwrite');
       // Both directory and final-file symlinks must resolve before the repository boundary check.
-      const dest = resolve('packages/hd-renderer/tests'),
+      const dest = fileURLToPath(new URL('.', import.meta.url)),
         inside = join(dest, 'hard-surface-forbidden-output.json');
       expect(existsSync(inside)).toBe(false);
       symlinkSync(dest, join(dir, 'repo'));

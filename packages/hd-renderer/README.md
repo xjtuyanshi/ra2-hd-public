@@ -1579,6 +1579,9 @@ Use `?vlook=remaster&vproj=vehicles-hd` for [projected vehicle redraws](#project
   IMLS estimates the artist's planes from stored normals; the optional occupancy mode blurs signed distance.
   Both clamp displacement to a band, preserving one-voxel features. Material-index-constant quads have separate
   vertices; normals, curvature and ray AO are computed once per surface-net vertex before duplication.
+  Concave rings use their interior diagonal in the primal-edge projection; a fixed diagonal can fold a triangle
+  backwards even when all shared edges are closed. This changes only indices, without dilation or vertex movement.
+  Persistent Worker mesh version 2 invalidates the previous triangulation.
 - Material classes still use the original `pindex`. A separate fractional `pshade` averages exposed voxel
   indices within `shadeRadius` (default 1.5 voxels), weighted by a Gaussian with sigma `shadeRadius / 2`.
   Only neighbours within `shadeThreshold` (default 3 index steps) and the same `floor(index / shadeRamp)`
@@ -1611,6 +1614,36 @@ Geometry review parameters, captured before loading:
 ```text
 ?vlook=remaster&vsmooth=supersample:3,shape:imls,imlsRadius:1.1,bandIn:0.3,bandOut:0.3,storedNormals:0.35,aoRays:48
 ```
+
+`vsmooth` sets the session mesh options. A successfully loaded projection type manifest may override individual
+fields with `"smooth": { "shape": "imls" }`; omitted fields inherit the session settings and other types keep their
+own options. The partial block uses `smoothVoxelOptions` validation: unknown keys and invalid values are ignored
+with one console warning per parsed block. An absent, empty or fully invalid block supplies no override. Both
+sandbox worlds and live units use the same precedence, on the main thread and in Workers. Caches include the
+effective options; late page loads replace existing part geometries in place (also the retained pre-CAD mesh),
+without adding units or allowing an older build to restore the default. The engine look and CAD meshes are
+unchanged. This adjusts the mesh carrying the pages, not the pages' pixels.
+
+Horizontal dashes can also come from native card depth rather than mesh openings. Ground voxel parts share a
+screen-derived native row (the current viewport and the anchor projected with the current orthographic camera).
+Interpolating world positions independently per triangle before the three-row `floor` can put coincident pixels
+on opposite sides of a depth step, allowing a hull to cover a nearer turret. The shared row preserves the native
+steps, bonuses and six-percent physical ordering; flight and shadow depth retain their existing paths.
+
+Read-only offline geometry audit (original assets remain outside Git):
+
+```bash
+pnpm exec node --import tsx packages/hd-renderer/benchmarks/voxelSmoothAudit.mts "$VOXEL_MODEL_JSON" "$BASELINE_MODULE"
+```
+
+The optional baseline is a saved module exporting `buildSmoothSection`, with its imports resolvable from that
+location. Without it, the audit measures the current builder alone. JSON lines report both default occupancy and
+IMLS, per section: exact and 1e-6-voxel welded boundary/non-manifold edges, winding conflicts, zero-area triangles,
+and triangles folded against their ring's primal-edge projection. Artist-normal disagreement is reported separately
+and is not proof of reversed winding. Surface nets may retain non-manifold pinch edges at ambiguous sign patterns;
+zero boundary edges does not imply a manifold surface. Sixteen fixed-camera yaw projections rasterize triangle
+unions at eight samples per source unit to compare silhouette area. Nine alternating warm builds include the default
+AO settings and report medians. These CPU measurements do not establish rendered-pixel acceptance or scene FPS.
 
 `supersample` defaults to 2: quads of half a voxel, about one device pixel at the engine's size on a 2x display.
 3 costs 2.25 times the triangles, vertex memory and build time and shows only in captures at higher zoom.

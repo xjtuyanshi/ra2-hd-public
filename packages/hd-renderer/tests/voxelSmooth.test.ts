@@ -17,6 +17,7 @@ import type { HdRenderer } from '../src/HdRenderer';
 import type { HdWorld } from '../src/ra2/world';
 import type { Ra2Cache } from '../src/ra2/cache';
 import { syntheticModel, syntheticSection } from './fixtures/syntheticVoxels';
+import { auditSmoothMesh, projectedMeshArea } from './fixtures/smoothMeshAudit';
 
 /** A box with outward artist normals and identity bounds, independent of proprietary voxel art. */
 function box(
@@ -215,6 +216,77 @@ describe.each(['occupancy', 'imls'] as const)('smooth voxel %s', (shape) => {
     for (let i = 0; i < a.pindex.length; i++)
       expect(raised.position[i * 3 + 1]! - a.position[i * 3 + 1]!).toBeCloseTo(20 * VOXEL_TO_WORLD, 6);
     expect(raised.occlusion.reduce((n, v) => n + v, 0)).toBeLessThan(a.occlusion.reduce((n, v) => n + v, 0));
+  });
+});
+
+describe('concave surface-net rings', () => {
+  // An eight-voxel stepped ledge: the legacy 0--2 diagonal crosses outside one concave ring.
+  const section: VoxelSection = {
+    ...box([4, 4, 4]),
+    voxels: Buffer.from(
+      [
+        [1, 3, 2],
+        [2, 3, 2],
+        [3, 3, 2],
+        [1, 2, 3],
+        [0, 3, 3],
+        [1, 3, 3],
+        [2, 3, 3],
+        [3, 3, 3],
+      ].flatMap((p) => [...p, 36, 0]),
+    ).toString('base64'),
+  };
+
+  it.each(['occupancy', 'imls'] as const)(
+    'triangulates %s rings without folds, open edges or silhouette growth',
+    (shape) => {
+      const options = smoothVoxelOptions({ shape, aoRays: 0 });
+      const mesh = buildSmoothSection(section, options);
+      const legacy = { ...mesh, indices: mesh.indices.slice() };
+      for (let q = 0; q < legacy.indices.length / 6; q++)
+        legacy.indices.set(
+          [0, 1, 2, 0, 2, 3].map((i) => q * 4 + i),
+          q * 6,
+        );
+      if (shape === 'occupancy') expect(auditSmoothMesh(legacy, 2).invertedTriangles).toBe(1);
+      expect(auditSmoothMesh(mesh, 2)).toMatchObject({
+        boundaryEdges: 0,
+        nonManifoldEdges: 0,
+        windingConflicts: 0,
+        degenerateTriangles: 0,
+        invertedTriangles: 0,
+        ambiguousQuads: 0,
+      });
+      closed(mesh);
+      for (let facing = 0; facing < 16; facing++) {
+        const before = projectedMeshArea(legacy, (facing * Math.PI) / 8, 8 / VOXEL_TO_WORLD);
+        const after = projectedMeshArea(mesh, (facing * Math.PI) / 8, 8 / VOXEL_TO_WORLD);
+        expect(Math.abs(after / before - 1)).toBeLessThanOrEqual(0.03);
+      }
+    },
+  );
+
+  it.each(['occupancy', 'imls'] as const)('handles concave rings along all axes and both directions (%s)', (shape) => {
+    const raw = Buffer.from(section.voxels, 'base64');
+    for (let axis = 0; axis < 3; axis++)
+      for (const reflect of [false, true]) {
+        const rotated = raw.slice();
+        for (let i = 0; i < raw.length; i += 5)
+          for (let j = 0; j < 3; j++) {
+            const coordinate = raw[i + ((j + axis) % 3)]!;
+            rotated[i + j] = reflect ? 3 - coordinate : coordinate;
+          }
+        const mesh = buildSmoothSection(
+          { ...section, voxels: rotated.toString('base64') },
+          smoothVoxelOptions({ shape, aoRays: 0 }),
+        );
+        expect(auditSmoothMesh(mesh, 2)).toMatchObject({
+          boundaryEdges: 0,
+          windingConflicts: 0,
+          degenerateTriangles: 0,
+          invertedTriangles: 0,
+        });
+      }
   });
 });
 

@@ -35,6 +35,7 @@ import { VoxelCadLibrary, cadVoxelGeometry, adoptCadVoxel } from '../ra2/voxelCa
 import type { CadMeshData } from '../ra2/voxelCadMesh';
 import { voxelCadLookFor } from '../ra2/voxelCadMaterial';
 import { selectedVoxelTurretIndex } from '../ra2/voxelTurrets';
+import { projectionSmoothVoxelOptions } from '../ra2/voxelProjectionMath';
 
 export interface VoxelUnitsOptions {
   voxelLook?: 'engine' | 'remaster';
@@ -70,12 +71,11 @@ export interface VoxelUnit {
 
 /**
  * What draws a model while its smooth mesh is being built: the stand-in geometries (one per part, shared by every
- * house palette), the geometry sets made from them and the roots of the placed units that show them (callers keep
+ * house palette) and the roots of the placed units that show them (callers keep
  * their own record of a unit around the same root, so the root is what identifies it).
  */
 interface StandIn {
   geometries: BufferGeometry[];
-  sets: Set<VoxelGeometry[]>;
   units: Set<Group>;
 }
 
@@ -95,6 +95,12 @@ export interface VoxelPose {
 export class VoxelUnits {
   private readonly material: ReturnType<typeof createVoxelMaterial>;
   private readonly geometries = new Map<string, VoxelGeometry[]>();
+  /** Caller keys point to the active option-keyed set; late page loads migrate that set in place. */
+  private readonly geometryKeys = new Map<string, string>();
+  private readonly smoothSets = new Map<
+    VoxelModel,
+    Map<VoxelGeometry[], { cacheKey: string; units: Set<VoxelUnit> }>
+  >();
   private readonly voxelLook: 'engine' | 'remaster';
   private readonly smoothVoxel: Readonly<SmoothVoxelOptions>;
   private readonly projections?: VoxelProjectionLibrary;
@@ -103,7 +109,7 @@ export class VoxelUnits {
   /** Builds the remaster look's meshes off this thread; null: built in place by the first instance. */
   private readonly smoothBuilder: (SmoothSectionBuilder & { dispose?(): void }) | null;
   /** Models whose mesh is being built by `smoothBuilder`. */
-  private readonly meshing = new Set<VoxelModel>();
+  private readonly meshing = new Map<VoxelModel, Set<string>>();
   /** Models drawn with a stand-in mesh until `smoothBuilder` answers (see build). */
   private readonly standIns = new Map<VoxelModel, StandIn>();
   /** The stand-in a geometry set was made from, while it is one. */
@@ -170,6 +176,14 @@ export class VoxelUnits {
     return false;
   }
 
+  private smoothingFor(model: VoxelModel): Readonly<SmoothVoxelOptions> {
+    const projected = selectedVoxelTurretIndex(model)
+      ? model.parts.filter((part) => part.role === 'body')
+      : model.parts;
+    const asset = projected.length ? this.projections?.get(model.id, projectionParts(projected)) : null;
+    return projectionSmoothVoxelOptions(this.smoothVoxel, asset?.manifest);
+  }
+
   /**
    * Whether the model's final mesh exists, so that build() makes an instance of the final look. The remaster look's
    * smooth mesh costs 0.02 to 3.3 s of CPU per model (measured over the 94 library models; 3 s for the vehicles of
@@ -182,53 +196,70 @@ export class VoxelUnits {
    */
   geometryReady(model: VoxelModel): boolean {
     const builder = this.smoothBuilder;
-    if (!builder || this.voxelLook !== 'remaster' || hasSmoothVoxelGeometry(model, this.smoothVoxel)) return true;
-    if (this.meshing.has(model)) return false;
-    this.meshing.add(model);
-    prepareSmoothVoxelGeometry(model, this.smoothVoxel, builder)
+    const options = this.smoothingFor(model);
+    if (!builder || this.voxelLook !== 'remaster' || hasSmoothVoxelGeometry(model, options)) return true;
+    const key = JSON.stringify(options);
+    let pending = this.meshing.get(model);
+    if (!pending) this.meshing.set(model, (pending = new Set()));
+    if (pending.has(key)) return false;
+    pending.add(key);
+    prepareSmoothVoxelGeometry(model, options, builder)
       .catch((error) => {
         if (this.disposed) return;
         // The Worker could not build it: build in place once rather than keeping the stand-in for good.
         console.warn(`[HD] smooth voxel mesh of ${model.id} built on the main thread`, error);
-        ensureSmoothVoxelGeometry(model, this.smoothVoxel);
+        ensureSmoothVoxelGeometry(model, options);
       })
       .finally(() => {
-        this.meshing.delete(model);
-        if (!this.disposed) this.adoptSmooth(model);
+        pending.delete(key);
+        if (!pending.size) this.meshing.delete(model);
+        // A default build may finish after the page override: it must never restore the old mesh.
+        if (!this.disposed && key === JSON.stringify(this.smoothingFor(model))) this.adoptSmooth(model, options);
         this.revision++;
       });
     return false;
   }
 
-  /**
-   * The model's smooth mesh has arrived: every geometry set made from its stand-in, and every placed unit that shows
-   * one, changes to the smooth geometries in place (same parts in the same order, same materials), and the stand-in
-   * is released. A unit is the same object before and after, so nothing about where and how it stands can jump.
-   */
-  private adoptSmooth(model: VoxelModel): void {
-    const standIn = this.standIns.get(model);
-    if (!standIn) return;
-    const smooth = smoothVoxelPartGeometries(model, this.smoothVoxel);
-    // Not built after all (cannot happen: a failed build is repeated in place above): the stand-in stays.
-    if (!smooth || smooth.length !== standIn.geometries.length) return;
-    this.standIns.delete(model);
-    const swap = new Map(standIn.geometries.map((geometry, index) => [geometry, smooth[index]!]));
-    for (const parts of standIn.sets) {
-      for (const part of parts) part.geometry = swap.get(part.geometry) ?? part.geometry;
+  /** A late page set replaces the type's mesh on both build paths, keeping existing units and CAD originals. */
+  private refreshSmooth(model: VoxelModel): void {
+    if (this.voxelLook !== 'remaster' || this.disposed) return;
+    const options = this.smoothingFor(model);
+    for (const [parts, { cacheKey }] of this.smoothSets.get(model) ?? []) {
+      const key = JSON.stringify([model.id, cacheKey, options]);
+      const previous = this.geometryKeys.get(cacheKey);
+      if (previous !== undefined) this.geometries.delete(previous);
+      this.geometries.set(key, parts);
+      this.geometryKeys.set(cacheKey, key);
+    }
+    if (!this.geometryReady(model)) return;
+    ensureSmoothVoxelGeometry(model, options);
+    this.adoptSmooth(model, options);
+  }
+
+  /** Adopt the effective mesh in place, including palette/variant sets and retained pre-CAD geometry. */
+  private adoptSmooth(model: VoxelModel, options: Readonly<SmoothVoxelOptions>): void {
+    const smooth = smoothVoxelPartGeometries(model, options);
+    if (!smooth) return;
+    for (const [parts, { units }] of this.smoothSets.get(model) ?? []) {
+      const cad = this.cadRecords.get(model)?.get(parts);
+      const source = cad?.original ?? parts;
+      const swap = new Map(source.map((part, index) => [part.geometry, smooth[index]!]));
+      for (let i = 0; i < source.length; i++) source[i]!.geometry = smooth[i]!;
       this.standInOf.delete(parts);
+      if (cad?.original && this.cadMode !== 'off') continue;
+      if (cad?.original) for (let i = 0; i < parts.length; i++) Object.assign(parts[i], source[i]);
+      for (const { root } of units) {
+        if (!(root instanceof VoxelRoot) || !root.replaceGeometry(swap)) continue;
+        // Resting units may receive no new pose: update the native card from the new bounds now.
+        const { anchor, bonus, enabled } = root.nativeDepth;
+        updateVoxelNativeDepth(root, anchor, bonus, enabled !== 0);
+      }
     }
-    for (const root of standIn.units) {
-      if (!(root instanceof VoxelRoot) || !root.replaceGeometry(swap)) continue;
-      // A resting unit may receive no new pose: its depth card follows the new bounds now, like a repaint does.
-      const { anchor, bonus, enabled } = root.nativeDepth;
-      updateVoxelNativeDepth(root, anchor, bonus, enabled !== 0);
+    const standIn = this.standIns.get(model);
+    if (standIn) {
+      this.standIns.delete(model);
+      for (const geometry of standIn.geometries) geometry.dispose();
     }
-    for (const [parts, record] of this.cadRecords.get(model) ?? []) {
-      if (this.standInOf.get(parts) === standIn) this.standInOf.delete(parts);
-      if (this.cadMode === 'off' && record.original)
-        for (let i = 0; i < parts.length; i++) Object.assign(parts[i], record.original[i]);
-    }
-    for (const geometry of standIn.geometries) geometry.dispose();
   }
 
   /** Keep current parts on screen during fetch/build, then adopt the completed CAD set in place. */
@@ -292,11 +323,6 @@ export class VoxelUnits {
     const standIn = this.standInOf.get(parts);
     if (!record.original) {
       record.original = parts.map((p) => ({ ...p }));
-      // The retained pre-CAD set still follows a pending smooth build, even while CAD is visible.
-      if (standIn) {
-        standIn.sets.delete(parts);
-        standIn.sets.add(record.original);
-      }
       record.look = cadVoxelGeometry(
         model,
         this.cadMeshes.get(model)!,
@@ -329,7 +355,7 @@ export class VoxelUnits {
     let standIn = this.standIns.get(model);
     if (!standIn) {
       const built = buildStandInVoxelParts(model, voxelShapeFor(this.hd.nodes));
-      standIn = { geometries: built.map((part) => part.geometry), sets: new Set(), units: new Set() };
+      standIn = { geometries: built.map((part) => part.geometry), units: new Set() };
       this.standIns.set(model, standIn);
     }
     const material = voxelPbrMaterialFor(palette, this.hd.nodes);
@@ -340,7 +366,6 @@ export class VoxelUnits {
       turretOffset,
       material,
     }));
-    standIn.sets.add(parts);
     this.standInOf.set(parts, standIn);
     return parts;
   }
@@ -351,16 +376,24 @@ export class VoxelUnits {
    * the redraw's page variant the set is painted with (VoxelProjectionLibrary.get); callers put it in `cacheKey`.
    */
   private partsFor(model: VoxelModel, paletteKey: string, cacheKey: string, variant = ''): VoxelGeometry[] {
-    let parts = this.geometries.get(cacheKey);
+    const options = this.smoothingFor(model);
+    const key = JSON.stringify([model.id, cacheKey, options]);
+    let parts = this.geometries.get(this.geometryKeys.get(cacheKey) ?? key);
     if (parts) return parts;
     const palette = this.cache.paletteRgb.get(paletteKey)!;
     parts =
       this.voxelLook !== 'remaster'
         ? buildVoxelGeometry(model, palette, this.hd.nodes)
         : this.geometryReady(model)
-          ? buildSmoothVoxelGeometry(model, palette, this.hd.nodes, this.smoothVoxel)
+          ? buildSmoothVoxelGeometry(model, palette, this.hd.nodes, options)
           : this.standInParts(model, palette);
-    this.geometries.set(cacheKey, parts);
+    this.geometries.set(key, parts);
+    this.geometryKeys.set(cacheKey, key);
+    if (this.voxelLook === 'remaster') {
+      let sets = this.smoothSets.get(model);
+      if (!sets) this.smoothSets.set(model, (sets = new Map()));
+      sets.set(parts, { cacheKey, units: new Set() });
+    }
     const publish = (): VoxelGeometry[] => {
       // Capture the complete pre-CAD set, including an already cached redraw projection, before adoption.
       this.requestCad(model, parts!, palette);
@@ -379,6 +412,7 @@ export class VoxelUnits {
     const target = parts;
     this.pending.set(target, waiting);
     void projection.loadType(model.id, required, variant).then((asset) => {
+      if (asset?.manifest.smooth) this.refreshSmooth(model);
       if (
         !this.disposed &&
         !this.cadParts.has(target) &&
@@ -410,7 +444,7 @@ export class VoxelUnits {
 
   /** Whether a geometry set (and its materials) already exists for `cacheKey`: an instance of it builds no shader. */
   built(cacheKey: string): boolean {
-    return this.geometries.has(cacheKey);
+    return this.geometryKeys.has(cacheKey);
   }
 
   /**
@@ -445,6 +479,7 @@ export class VoxelUnits {
     const parts = this.partsFor(model, paletteKey, cacheKey, variant);
     const unit = instantiateVoxel(parts, this.material, this.hd.nodes);
     this.pending.get(parts)?.add(unit);
+    this.smoothSets.get(model)?.get(parts)?.units.add(unit);
     if (!this.cadParts.has(parts) || this.cadMode === 'off') this.standInOf.get(parts)?.units.add(unit.root);
     this.cadRecords.get(model)?.get(parts)?.units.add(unit);
     return unit;
@@ -538,6 +573,9 @@ export class VoxelUnits {
     this.cadParts.clear();
     this.cadLoading.clear();
     this.meshing.clear();
+    this.smoothSets.clear();
+    this.geometryKeys.clear();
+    this.geometries.clear();
     // Stand-ins belong to this instance alone (the smooth geometries they wait for follow their model).
     for (const standIn of this.standIns.values()) for (const geometry of standIn.geometries) geometry.dispose();
     this.standIns.clear();
@@ -548,6 +586,7 @@ export class VoxelUnits {
   dispose(unit: VoxelUnit): void {
     this.setCaptureCode(unit, NOT_CAPTURED_CODE);
     for (const waiting of this.pending.values()) waiting.delete(unit);
+    for (const sets of this.smoothSets.values()) for (const record of sets.values()) record.units.delete(unit);
     for (const records of this.cadRecords.values()) for (const record of records.values()) record.units.delete(unit);
     for (const standIn of this.standIns.values()) standIn.units.delete(unit.root);
     if (unit.root instanceof VoxelRoot) unit.root.disposeOpacityMaterials();

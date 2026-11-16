@@ -98,6 +98,29 @@ export function smoothVoxelOptions(options: Partial<SmoothVoxelOptions> = {}): R
   return Object.freeze(result);
 }
 
+/** Untrusted partial configuration: retain valid fields without replacing omitted fields with defaults. */
+export function parseSmoothVoxelOverride(value: unknown): Readonly<Partial<SmoothVoxelOptions>> | undefined {
+  if (value === undefined) return undefined;
+  const result: Partial<SmoothVoxelOptions> = {};
+  let invalid = !value || typeof value !== 'object' || Array.isArray(value);
+  if (!invalid) {
+    for (const [key, field] of Object.entries(value as Record<string, unknown>)) {
+      if (!Object.hasOwn(DEFAULT_SMOOTH_VOXEL, key)) {
+        invalid = true;
+        continue;
+      }
+      try {
+        smoothVoxelOptions({ [key]: field });
+        (result as Record<string, unknown>)[key] = field;
+      } catch {
+        invalid = true;
+      }
+    }
+  }
+  if (invalid) console.warn('[HD] invalid smooth voxel override fields ignored');
+  return Object.keys(result).length ? Object.freeze(result) : undefined;
+}
+
 const BORDER = 3;
 // Exactly representable in Float32: a rounded sentinel would defeat the empty-line fast path in the EDT.
 const FAR = 2 ** 30;
@@ -604,10 +627,25 @@ export function buildSmoothSection(section: VoxelSection, options: SmoothVoxelOp
       }
       const base = quad * 4;
       const offset = quad * 6;
+      // Surface-net vertices stay in their cells, but a ring can be concave when viewed along its primal edge.
+      // The fixed 0--2 diagonal then folds one triangle backwards. Choose the interior diagonal in that projection;
+      // this changes no vertices, shared edges, palette ownership or attribute layout.
+      const u = (axis + 1) % 3;
+      const w = (axis + 2) % 3;
+      const turn = (a: number, b: number, c: number): number => {
+        const A = ids[a]! * 3;
+        const B = ids[b]! * 3;
+        const C = ids[c]! * 3;
+        return (
+          (vp[B + u]! - vp[A + u]!) * (vp[C + w]! - vp[A + w]!) - (vp[B + w]! - vp[A + w]!) * (vp[C + u]! - vp[A + u]!)
+        );
+      };
+      const direction = field[k]! < 0 ? 1 : -1;
+      const alternate = turn(0, 1, 2) * direction <= 0 || turn(0, 2, 3) * direction <= 0;
       out.indices[offset] = base;
       out.indices[offset + 1] = base + 1;
-      out.indices[offset + 2] = base + 2;
-      out.indices[offset + 3] = base;
+      out.indices[offset + 2] = base + (alternate ? 3 : 2);
+      out.indices[offset + 3] = base + (alternate ? 1 : 0);
       out.indices[offset + 4] = base + 2;
       out.indices[offset + 5] = base + 3;
       quad++;

@@ -689,8 +689,11 @@ Traversal breaks near-equal depth ties with a bounded camera-space bias; it neve
 With an extracted native depth template, building fragment depth uses signed `BUILDNGZ.SHA` corrections and native
 frame baselines, while attached building parts inherit the owner's template. Ground SHP units use native upright
 card gradients. Ground voxel units approximate the native projected bitmap bottom with posed bounds, retaining
-six percent of physical depth for internal face ordering. A harvester receives the native card bonus only while
-its current cell belongs to a refinery foundation. The previous contact-based dock pull and propagation are
+six percent of physical depth for internal face ordering. Every part obtains its native row from the same viewport
+pixel and projected anchor, rather than interpolating a world-position varying across each triangle. Rounding that
+varying near a three-row depth step can otherwise let the hull cover a nearer turret/barrel in horizontal dashes,
+even on a closed mesh. Native step size, bonuses and physical-depth share are unchanged. A harvester receives the
+native card bonus only while its current cell belongs to a refinery foundation. The previous contact-based dock pull and propagation are
 removed; `contactUid` and `dock` remain optional state metadata. Buildings without a template retain the analytic
 foundation fallback. Flight, shadows and bridge-deck geometry retain their existing paths. Full formulas and
 approximation bounds are in [Native Z model](research/painter-order.md#native-z-model).
@@ -873,6 +876,29 @@ overrides the tactical rectangle (default: the frame minus YR's 168 px sidebar a
 `hd-governor=0` switches the frame-rate safeguard off, `hd-pace=<rate>|cap|off` replaces the frame pacer's own
 choice of rate, and `hd-pipelines=sync` switches the asynchronous pipeline compiles off (see "Frame rate" and
 "Match start").
+
+## Projection page manifest smoothing
+
+A projection page type manifest may include `"smooth": { "shape": "imls" }` to select artist-normal surface
+reconstruction for its remaster mesh without changing other vehicle types. This is a partial `SmoothVoxelOptions` block, validated
+by the same rules as `smoothVoxelOptions` in `packages/hd-renderer/src/ra2/voxelSmooth.ts`. Only valid, known fields
+are retained; invalid values or unknown keys are ignored together with one console warning per parsed block.
+An absent, empty or fully invalid block supplies no override. Invalid smoothing never rejects an otherwise valid
+page set. Missing, unknown, failed or incomplete page assets keep their existing fallback behavior.
+
+Effective options are merged in this order: world/session `smoothVoxel`, live-view `smoothVoxel` when supplied,
+then the successfully loaded type manifest's `smooth`. The sandbox's `vsmooth` supplies the session options.
+The override affects only remaster geometry; the engine look and CAD geometry keep their own mesh paths.
+Main-thread and Worker builds receive the same effective options, and geometry caches distinguish those options.
+If pages arrive after a default mesh or stand-in is visible, the effective mesh replaces each instance's part
+geometry in place, including retained pre-CAD geometry. No second unit is added, and an older Worker result cannot
+restore the default mesh. A manifest without `smooth` retains the current geometry and defaults.
+
+The surface-net triangulator chooses the interior diagonal of concave rings in their primal-edge projection;
+it does not dilate occupancy or move vertices. Worker persistent meshes invalidate the previous fixed-diagonal
+triangulation through mesh cache version 2. Closed edges and non-manifold pinch edges are separate diagnostics;
+neither a page override nor triangulation claims to remove every ambiguous-sign pinch. The renderer README's
+offline geometry audit measures topology, fold orientation, projected area and warm build cost without a browser.
 
 ## Display scale
 
