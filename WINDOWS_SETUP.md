@@ -1,15 +1,21 @@
-# AI setup runbook: Build 12 HD on a Windows PC (port, not yet verified)
+# AI setup runbook: current HD on a Windows PC (port, not yet verified)
 
 **For a friend's independent Windows port, start with [START_HERE.md](START_HERE.md).**
 It defines the friend's account and local-only work scope, superseding this runbook's
 original-author login/push instructions for that use. The "HD cache" below is the
 finished HD resource pack to download and restore, not art to generate again.
 
+Current code and published resources are in the public mirror `xjtuyanshi/ra2-hd-public`;
+the development repository `xjtuyanshi/ra2-hd-assets` remains private. The Build 13 Sunday
+pack is incremental: follow the current restore in [START_HERE.md](START_HERE.md),
+including its explicit public `--repo` override and all 32 base chunks.
+
 This file is written for a coding agent on the owner's Windows PC. Read it together with
 [AI_SETUP.md](AI_SETUP.md), which is the verified macOS runbook; this file only says what
 is the same on Windows, what is different, and what still has to be built.
 
-**Status (2026-11-10): Build 12 has only ever run on macOS under free Wine. Nothing in this
+**Windows status: the historical Build 12 and current Build 13 paths have only been exercised
+on macOS under free Wine. Nothing in this
 file has been run on Windows.** The game itself is a Windows program, so the port should
 be smaller than the Wine work was, but every Windows step below is `UNVERIFIED` until the
 owner has played a full match on the PC.
@@ -20,7 +26,7 @@ owner has played a full match on the PC.
   Revenge folder to the PC. A `gamemd.exe` that differs from the supported digest
   (YR 1.001, sha256 `7b8a068535d6af06845edf95ae829b113d00c02909330e16f197426cd7db94b6`)
   is reported, not patched and not treated as fatal.
-- The repository `xjtuyanshi/ra2-hd-assets` and its published release attachments are
+- The sharing repository `xjtuyanshi/ra2-hd-public` and its published release attachments are
   public. Remote writes require an explicit request. For the original author's authorized
   work, use Chinese commit descriptions, English comments/docs and the agent's
   `Co-Authored-By` trailer; push only to the explicitly authorized repository and branch.
@@ -39,8 +45,8 @@ owner has played a full match on the PC.
 | Item                                       | Where                                                                                  | Notes                                                                                                                                    |
 | ------------------------------------------ | -------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
 | Code, page, HD renderer                    | this repository                                                                        | Platform-independent TypeScript, served by Vite.                                                                                         |
-| `ddraw.dll`, `ra2launch.exe`               | release `farm-build12-20261102`, or rebuilt from `packages/native-host` with MinGW-w64 | Already 32-bit Windows binaries (the in-process agent is a cnc-ddraw fork). On macOS they run inside Wine; on Windows they run natively. |
-| HD farm `hd-cache-play12` (about 59.7 GiB) | release `farm-build12-20261102`, 32 chunks                                             | Plain files. `restore_farm.py` needs Python and `zstd`; restore chunk 0 alone first to confirm it handles Windows paths.                 |
+| `ddraw.dll`, `ra2launch.exe`               | release `farm-build12-20261102`, or rebuilt from `packages/native-host` with MinGW-w64 | Historical Build 12 outputs. Rebuild current source when needed for Build 13; validate on Windows. |
+| Current HD farm `hd-cache-play12-b13f` | release `farm-build13-sunday-20261115` plus base `farm-build12-20261102` | One new chunk plus all 32 base chunks; restore with the Build 13 release script and public `--repo` override in START_HERE.md. |
 | SDXL / ControlNet weights                  | release `env-build12-20261102`, 6 chunks                                               | Only needed for terrain re-detail, not for playing.                                                                                      |
 | Python asset tools                         | `packages/ra2-assets/python/`, `backup/python/*.txt`                                   | Recreate the environments with `uv`; `.venv/bin/python` becomes `.venv\Scripts\python.exe`.                                              |
 
@@ -48,9 +54,9 @@ Not usable on Windows: the Wine archive in the environment release (not needed),
 macOS `realesrgan-ncnn-vulkan` binary (only needed for terrain re-detail; ask the owner
 before fetching the Windows build from the upstream Real-ESRGAN project).
 
-Known gap: some HD farm changes made after 2026-11-02 (for example the round-9e nuke
-mushroom edge smoothing) exist only in the original Mac's farm and are not in the release.
-Playing works without them.
+The Build 13 Sunday pack contains the published 2026-11-15 snapshot. Unreleased local
+assets for experimental branches are not implied to be present. The older Mac
+`launcher-build12.command` is a reference, not the current Windows entry.
 
 ## 2. Prerequisites (the owner installs)
 
@@ -113,10 +119,10 @@ Report each item as passed, failed or unverified, with its evidence.
 
 ## 5. 中文摘要
 
-- 第 12 版只在 Mac 的免费 Wine 下跑过，Windows 上还没跑过。在机主实际玩完一整局之前，下面每一步都算"未验证"。
-- 能直接用的：代码；`ddraw.dll` 和 `ra2launch.exe`（本来就是 Windows 程序）；高清缓存（发布 `farm-build12-20261102`）；SDXL 权重（只有重做地形才需要）。
+- 历史第 12 版与当前第 13 版仅在 Mac 的免费 Wine 下验证过，Windows 尚未验证。在机主实际玩完一整局之前，下面每一步都算"未验证"。
+- 能直接用的：代码；`ddraw.dll` 和 `ra2launch.exe`（本来就是 Windows 程序）；高清素材（`farm-build13-sunday-20261115` 增量加 `farm-build12-20261102` 的 32 个基础分卷）；SDXL 权重（只有重做地形才需要）。
 - 要新做的：启动器的 Windows 分支（不用 Wine，直接运行游戏，`ddraw.dll` 放进游戏文件夹，Blowfish 注册由机主手动执行）、Windows 双击启动器、文档。
 - 规矩：
   - 游戏文件只由机主从自己的安装复制，绝不下载。
-  - 源码与已发布附件现为公开；远程写入须有明确授权。朋友独立适配按 `START_HERE.md`，只改自己的本地副本。
+  - 源码与已发布附件从公开镜像 `xjtuyanshi/ra2-hd-public` 获取；原开发仓保持私有；远程写入须有明确授权。朋友独立适配按 `START_HERE.md`，只改自己的本地副本。
   - 安装软件、管理员权限、登录都由机主操作。

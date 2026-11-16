@@ -1,7 +1,9 @@
 # Backup tools and records
 
-Restore and packaging tools for the owner's private Build 12 backup. Start with
-[AI_SETUP.md](../AI_SETUP.md).
+Restore and packaging tools for the historical Build 12 backup. For the current Build 13
+pack and public download locations, start with [START_HERE.md](../START_HERE.md).
+The incremental restorer is supplied by the Build 13 release; the older tool below
+remains a Build 12 reference. [AI_SETUP.md](../AI_SETUP.md) preserves the Mac workflow.
 
 - `env-build12.manifest.json`: every file of the environment release
   `env-build12-20261102` with size, sha256, mode and chunk segments (same as the release

@@ -2,13 +2,11 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-> **Build 12 HD on a friend's Windows PC: [START_HERE.md](START_HERE.md).**
-> Give this entry to a coding assistant for source, finished HD resource pack and bridge
-> download locations, Windows porting steps and independent verification.
-
-> **Personal backup of the owner's Build 12 HD fork.** To set it up on another Mac, follow
-> [AI_SETUP.md](AI_SETUP.md) (step-by-step, for an AI coding agent) or the shorter
-> [RESTORE.md](RESTORE.md).
+> **Current HD remaster / Build 13: [START_HERE.md](START_HERE.md).**
+> Give this entry to a Windows coding assistant for source, the finished HD resource pack,
+> public downloads, porting and acceptance. Public sharing mirror: `xjtuyanshi/ra2-hd-public`;
+> the development repository `xjtuyanshi/ra2-hd-assets` stays private. Updates are on demand.
+> [AI_SETUP.md](AI_SETUP.md) and [RESTORE.md](RESTORE.md) preserve the historical Build 12 Mac workflow.
 
 ![Status: Alpha](https://img.shields.io/badge/status-Alpha-orange)
 [![Runtime: v86](https://img.shields.io/badge/runtime-v86-5c4ee5)](docs/ARCHITECTURE.md)

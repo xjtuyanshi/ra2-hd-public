@@ -1,4 +1,9 @@
-# AI setup runbook: Build 12 HD on a fresh Apple Silicon Mac
+# Historical setup runbook: Build 12 HD on a fresh Apple Silicon Mac
+
+For the current Build 13 code and incremental HD pack, use [START_HERE.md](START_HERE.md).
+Downloads below use the public mirror `xjtuyanshi/ra2-hd-public`; the development source
+`xjtuyanshi/ra2-hd-assets` stays private. This Mac/Build 12 reference is not a Windows
+installer and its base-farm restore does not install the Build 13 increment.
 
 This file is written for a coding agent (and for the owner reading along). Follow the
 steps in order. Every step ends with a check; do not continue past a failed check. The
@@ -61,8 +66,8 @@ uploads are complete; each restore step downloads `SHA256SUMS` again right befor
 restores:
 
 ```sh
-gh release view farm-build12-20261102 -R xjtuyanshi/ra2-hd-assets --json assets --jq '[.assets[].name|select(test("part[0-9]+"))]|length'   # 32
-gh release view env-build12-20261102  -R xjtuyanshi/ra2-hd-assets --json assets --jq '[.assets[].name|select(test("part[0-9]+"))]|length'   # 6
+gh release view farm-build12-20261102 -R xjtuyanshi/ra2-hd-public --json assets --jq '[.assets[].name|select(test("part[0-9]+"))]|length'   # 32
+gh release view env-build12-20261102  -R xjtuyanshi/ra2-hd-public --json assets --jq '[.assets[].name|select(test("part[0-9]+"))]|length'   # 6
 ```
 
 Not backed up on purpose: Wine prefixes (owner's registry and game state), CrossOver,
@@ -143,7 +148,7 @@ gh auth status           # check: the current computer owner's account
 
 ```sh
 mkdir -p ~/ra2-hd && cd ~/ra2-hd
-gh repo clone xjtuyanshi/ra2-hd-assets code
+gh repo clone xjtuyanshi/ra2-hd-public code
 cd code
 git config core.hooksPath scripts/git-hooks
 git log -1 --oneline          # main of the source repo
@@ -158,7 +163,7 @@ Use the released first-party builds:
 
 ```sh
 mkdir -p ~/ra2-hd/dl && cd ~/ra2-hd/dl
-gh release download farm-build12-20261102 -R xjtuyanshi/ra2-hd-assets --clobber \
+gh release download farm-build12-20261102 -R xjtuyanshi/ra2-hd-public --clobber \
   -p SHA256SUMS -p hd-cache-play12.manifest.json -p restore_farm.py \
   -p launcher-build12.command -p ddraw.dll -p ra2launch.exe
 shasum -a 256 -c SHA256SUMS --ignore-missing   # check: 5 files OK, no FAILED
@@ -183,13 +188,13 @@ Do not start until the release shows all 32 farm chunks (see step 1; the command
 last chunks:
 
 ```sh
-gh release view farm-build12-20261102 -R xjtuyanshi/ra2-hd-assets --json assets --jq '[.assets[].name|select(test("part[0-9]+"))]|length'   # must print 32
+gh release view farm-build12-20261102 -R xjtuyanshi/ra2-hd-public --json assets --jq '[.assets[].name|select(test("part[0-9]+"))]|length'   # must print 32
 cd ~/ra2-hd/dl
-gh release download farm-build12-20261102 -R xjtuyanshi/ra2-hd-assets --clobber -p SHA256SUMS
+gh release download farm-build12-20261102 -R xjtuyanshi/ra2-hd-public --clobber -p SHA256SUMS
 FARM=~/ra2-hd/farm/hd-cache-play12
 for n in $(seq -w 0 31); do
   f=hd-cache-play12.part$n.tar.zst
-  gh release download farm-build12-20261102 -R xjtuyanshi/ra2-hd-assets -p "$f" --clobber || break
+  gh release download farm-build12-20261102 -R xjtuyanshi/ra2-hd-public -p "$f" --clobber || break
   python3 -I restore_farm.py hd-cache-play12.manifest.json . "$FARM" --chunks "$((10#$n))" || break
   rm -f "$f"
 done
@@ -210,14 +215,14 @@ downloaded here, right before restoring, so it lists every chunk.
 ```sh
 mkdir -p ~/ra2-hd/dl-env && cd ~/ra2-hd/dl-env
 R=env-build12-20261102
-gh release view $R -R xjtuyanshi/ra2-hd-assets --json assets --jq '[.assets[].name|select(test("part[0-9]+"))]|length'   # must print 6
-gh release download $R -R xjtuyanshi/ra2-hd-assets --clobber \
+gh release view $R -R xjtuyanshi/ra2-hd-public --json assets --jq '[.assets[].name|select(test("part[0-9]+"))]|length'   # must print 6
+gh release download $R -R xjtuyanshi/ra2-hd-public --clobber \
   -p SHA256SUMS -p env-build12.manifest.json -p restore_env.py
 shasum -a 256 -c SHA256SUMS --ignore-missing                       # manifest + script OK
 cmp env-build12.manifest.json ~/ra2-hd/code/backup/env-build12.manifest.json && echo manifest-matches-repo
 for n in 0 1 2 3 4 5; do
   f=env-build12.part0$n.tar.zst
-  gh release download $R -R xjtuyanshi/ra2-hd-assets -p "$f" --clobber || break
+  gh release download $R -R xjtuyanshi/ra2-hd-public -p "$f" --clobber || break
   python3 -I restore_env.py env-build12.manifest.json . ~/ra2-hd/env --chunks $n || break
   rm -f "$f"
 done

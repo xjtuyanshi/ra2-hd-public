@@ -2,11 +2,10 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-> **朋友在 Windows 上适配第 12 版高清：[START_HERE.md](START_HERE.md)。**
-> 把这个入口交给 AI，即可找到源码、已经做好的高清素材包、桥接程序，以及 Windows 适配与验收步骤。
-
-> **机主第 12 版高清分支的个人备份。** 在另一台 Mac 上安装请按 [AI_SETUP.md](AI_SETUP.md)
-> （供 AI 编程助手逐步执行）或较简短的 [RESTORE.md](RESTORE.md)。
+> **当前高清重制 / 第 13 版：[START_HERE.md](START_HERE.md)。**
+> 把这个入口交给 Windows 上的 AI，即可找到源码、已经做好的高清素材、公开下载位置、适配与验收步骤。
+> 公开分享镜像：`xjtuyanshi/ra2-hd-public`；开发仓 `xjtuyanshi/ra2-hd-assets` 保持私有，按需同步。
+> [AI_SETUP.md](AI_SETUP.md) 和 [RESTORE.md](RESTORE.md) 保留第 12 版 Mac 恢复参考流程。
 
 ![开发阶段：Alpha](https://img.shields.io/badge/status-Alpha-orange)
 [![运行时：v86](https://img.shields.io/badge/runtime-v86-5c4ee5)](docs/ARCHITECTURE.md)

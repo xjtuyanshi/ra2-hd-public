@@ -1,7 +1,9 @@
 # 第 12 版高清在另一台 Mac 上恢复 / Restoring Build 12 on another Mac
 
-This public repository is the owner's personal backup. `main` is the Build 12 code
-(`2c0ff27`) plus this file. The HD farm and the native-host build outputs are assets of
+This is the historical Build 12 Mac restore reference (code baseline `2c0ff27`).
+Current `main` is Build 13: use [START_HERE.md](START_HERE.md) for its incremental pack.
+The public mirror is `xjtuyanshi/ra2-hd-public`; the development repository
+`xjtuyanshi/ra2-hd-assets` remains private. The HD farm and the native-host build outputs are assets of
 the release `farm-build12-20261102`. The free Wine, Real-ESRGAN and the diffusion model
 weights are assets of the release `env-build12-20261102`. Nothing here is an original game
 file: no MIX, EXE or DLL from the game, no INI, no maps, no Wine prefix. Source code
@@ -11,7 +13,7 @@ and published release attachments are publicly readable.
 [AI_SETUP.md](AI_SETUP.md).** It also covers Wine, models, Python environments,
 confirming HD and troubleshooting.
 
-本仓库是机主的个人备份，现已公开。`main` 是第 12 版代码（`2c0ff27`）加上本文件。高清缓存与本机组件构建结果放在
+本文保留第 12 版 Mac 恢复参考（代码基线 `2c0ff27`）。当前 `main` 已到第 13 版，请从 [START_HERE.md](START_HERE.md) 获取增量恢复流程。公开镜像为 `xjtuyanshi/ra2-hd-public`，原开发仓保持私有。高清缓存与本机组件构建结果放在
 发布 `farm-build12-20261102` 的附件中；免费 Wine、Real-ESRGAN 与扩散模型权重在发布
 `env-build12-20261102` 中。这里没有任何原版游戏文件（无游戏 MIX/EXE/DLL、INI、地图）和 Wine 环境（prefix）。
 源码与已发布附件可公开读取。完整的分步安装与检查见 [AI_SETUP.md](AI_SETUP.md)。
@@ -87,12 +89,12 @@ Suggested layout / 建议目录：
 
 ```sh
 mkdir -p ~/ra2-hd && cd ~/ra2-hd
-gh repo clone xjtuyanshi/ra2-hd-assets code
+gh repo clone xjtuyanshi/ra2-hd-public code
 cd code
 git config core.hooksPath scripts/git-hooks
 pnpm install --frozen-lockfile
 mkdir -p packages/native-host/build
-gh release download farm-build12-20261102 --repo xjtuyanshi/ra2-hd-assets \
+gh release download farm-build12-20261102 --repo xjtuyanshi/ra2-hd-public \
   -p ddraw.dll -p ra2launch.exe -D packages/native-host/build
 ```
 
@@ -100,7 +102,7 @@ gh release download farm-build12-20261102 --repo xjtuyanshi/ra2-hd-assets \
 
 ```sh
 mkdir -p ~/ra2-hd/dl && cd ~/ra2-hd/dl
-gh release download farm-build12-20261102 --repo xjtuyanshi/ra2-hd-assets \
+gh release download farm-build12-20261102 --repo xjtuyanshi/ra2-hd-public \
   -p SHA256SUMS -p hd-cache-play12.manifest.json -p restore_farm.py -p launcher-build12.command
 shasum -a 256 -c SHA256SUMS --ignore-missing     # manifest, script, launcher
 ```
@@ -111,7 +113,7 @@ Streaming restore (needs only ~2 GiB extra) / 逐块恢复（只需约 2 GiB 额
 FARM=~/ra2-hd/farm/hd-cache-play12
 for n in $(seq -w 0 31); do
   f=hd-cache-play12.part$n.tar.zst
-  gh release download farm-build12-20261102 --repo xjtuyanshi/ra2-hd-assets -p "$f" --clobber
+  gh release download farm-build12-20261102 --repo xjtuyanshi/ra2-hd-public -p "$f" --clobber
   python3 restore_farm.py hd-cache-play12.manifest.json . "$FARM" --chunks "$((10#$n))" || break
   rm -f "$f"
 done
@@ -125,7 +127,7 @@ extracted file's sha256 against the manifest and hard-links duplicate paths. The
 recorded sizes. It prints `13301 farm paths checked, 0 problems` when complete.
 
 If disk space allows, download everything first and restore in one run:
-`gh release download farm-build12-20261102 --repo xjtuyanshi/ra2-hd-assets -p '*.tar.zst'`
+`gh release download farm-build12-20261102 --repo xjtuyanshi/ra2-hd-public -p '*.tar.zst'`
 then `python3 restore_farm.py hd-cache-play12.manifest.json . ~/ra2-hd/farm/hd-cache-play12`.
 `--dry-run` only verifies the downloaded chunks; `--copy` writes copies instead of hard
 links.
