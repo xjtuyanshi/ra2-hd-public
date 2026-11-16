@@ -22,5 +22,6 @@ These maintained guides describe the current code, scripts, and test boundaries.
 | Launch arguments and page/battlefield hooks                           | [Launch behavior](RA2_COMMAND_LINE_AND_SPAWNER.md)                                                     |
 | Upscaling modes, experimental models, and measurement limits          | [Upscaling](AI_UPSCALING.md)                                                                           |
 | ReShade effects and adaptation boundaries                             | [ReShade adaptation](RESHADE_ADAPTATION.md)                                                            |
+| Remaster: owner-approved HD looks                                     | [Approved looks](remaster/APPROVED_LOOKS.md)                                                           |
 
 Fixed addresses, version hashes, and instruction signatures are defined by profiles, hooks, and tests in `src/games/`. Maintained documentation records purpose, boundaries, and verification entry points, without one-off terminal logs, machine-specific paths, or obsolete handoff notes.
