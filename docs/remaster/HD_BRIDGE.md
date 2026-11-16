@@ -800,6 +800,92 @@ Game art and derived images remain outside Git.
 
 ## Offline hard-surface reconstruction
 
+### Native sprite-camera gates
+
+`hardSurfaceSpriteGates.ts` supplies source-region segmentation, thinning, oriented edge matching,
+negative controls, silhouette IoU and D65 Lab dE76. `hardSurfaceSpriteAnalyticEdges.ts` extracts visible
+projected union crease and intersection segments from outward-wound triangle meshes. Continuous ray
+visibility suppresses hidden intersections and coincident coplanar seams; bevel host boundaries contribute
+one midpoint line. It rasterizes these analytic segments into thin native edges with segment normals.
+`hardSurfaceSpriteCamera.ts` projects through a caller-supplied orthonormal camera and provides a fallback
+that reconstructs geometric edges from supersampled unit normals
+and view depth. Depth jumps must lie outside the two incident tangent-plane predictions, so ordinary sloping
+planes do not create false discontinuities. Optional sample face IDs attribute creases without
+changing detection. These helpers contain no game identifiers, cameras, palettes or resource paths.
+
+Run the offline adapter with an explicit external output directory:
+
+```bash
+pnpm exec node --import tsx packages/hd-renderer/scripts/hardSurfaceSpriteGates.ts <buffers.json> <outside-checkout/gates.json>
+```
+
+Manifest paths are relative to the manifest. Required rasters are `original` (native binary-alpha RGBA),
+`indices` (native L), `coverage` (supersampled L), `normals` (supersampled RGB, unit world normals encoded
+from -1..1 to 0..255), `depth` (supersampled RGBA containing little-endian float32 bytes), `faceIds`
+(native RGB, unsigned ID in little-endian channel order), and `colour` (native RGB/RGBA, area-downsampled
+foreground display colour before background composition). Zero face ID is background. Optional
+`faceIdsSamples` supplies supersampled IDs; optional native L `edges` must agree with independently
+reconstructed geometry edges. `faceLabels` supplies whitelisted descriptive metadata and cannot overwrite
+measurements. Optional RGBA `normalX`, `normalY` and `normalZ` provide lossless little-endian float32 geometric normal components; interpolated lighting normals must not be used for depth continuity. Optional `surfaceColour` and L `emissive` add diagnostics without changing primary colour results.
+
+Optional `analyticMesh` selects analytic extraction and exports `analytic_segments.json`. Its JSON contains
+`triangles`, each with three world-space `vertices`, numeric `face` and `primitive` identifiers, and an optional
+`chamfer` flag. Triangle winding must point outward. Geometry extraction then uses this mesh rather than raster
+normal/face transitions; the original sample buffers remain coverage, attribution and rendering evidence.
+
+The manifest also supplies integer `supersampling` (at least four), `camera` (`right`, `up`, `towards`,
+`origin`, `pixelsPerWorld`), `normalAngleDegrees` (20 for this contract), `depthJumpWorld` (a documented
+positive numerical world-space tolerance), and an exact `houseIndexRange`. House classification always uses those
+original indices and also protects its source segmentation class; it never uses hue guessing.
+
+`edgeOptions` specifies the complete source-only extraction configuration. Defaults start with three
+radius-two Lab bilateral iterations (spatial sigma two, range sigma dE76 ten), observed-palette quantization,
+four-connected palette seeds, sequential adjacent-region merges up to dE76 eight, minimum region area six,
+boundary contrast dE76 ten **or** luminance step 12/255, and minimum boundary-component length six. Every
+merge recomputes region medians; stale transitive comparisons cannot merge two distinct faces through a chain
+of texture colours. Undersized regions merge into the nearest adjacent region, preferring their existing
+semantic class. An optional `median` method uses alpha- and class-aware channel medians. The `medianRadius`
+and `medianIterations` option names set the radius and iteration count for either selected method.
+
+Only sufficiently contrasting region boundaries inside alpha eroded by one pixel become source edges.
+Their single-pixel locus uses Zhang-Suen thinning. Source normals are the Di Zenzo principal gradient of the
+region-median Lab image. Analytic rendered normals are perpendicular to projected segments, with doubled-angle
+aggregation at junctions. The buffer fallback uses local skeleton tangent PCA with configurable `normalRadius`
+(three by default). Ambiguous rendered directions fail matching. Region
+labels, medians, palette indices, structural segments and their normals are exported for independent review.
+Raw texture Canny and all-palette-pixel boundaries are not unioned into this structural set.
+
+Source calibration may tighten region/contrast/component thresholds to suppress texture, before geometry
+comparisons resume. Source edges dilated by Chebyshev one must cover less than 40% of opaque source pixels.
+The report records this coverage and both a source-edge-mask hash and a normalized-options hash. Optional
+`frozenSource` contains `edgeMaskSha256`, `optionsSha256` and optional `normalSha256`; a mismatch aborts before writing outputs. The normal hash locks source directions as well as edge locations.
+Geometry fitting must retain that lock, rather than retuning its reference set to improve a score.
+
+G1 thresholds true area coverage at 0.5 and targets 0.99 IoU. G2 uses analytic visible union edges when supplied,
+otherwise the documented sample-buffer fallback. It excludes the silhouette band and thins native lines,
+then requires source support within Chebyshev one **and**
+boundary-normal difference at most 30 degrees. G3 targets 0.85 recall of the same source structural set,
+using thinned interior plus silhouette edges and the same orientation rule. Eight built-in negative controls
+shift rendered edges by (+/-2,0), (0,+/-2) and (+/-3,+/-3), preserving their normals. G2 is meaningful only if
+true precision exceeds every shifted precision by at least 0.25; coverage, exact precision and that control
+criterion must all pass. Empty denominators are null and do not pass. Every failing segment, its coordinates,
+unknown normals, control clipping counts and source support for each attributed crease remain in the report.
+
+G4 compares native rendered mean sRGB with the original channel median in D65 Lab, reporting complete visible
+face regions of at least six pixels and separate exact house/non-house paint partitions. Optional pre-emission
+surface measurements are supplementary; the primary composite-colour result remains unchanged. No unspecified
+colour pass threshold is invented. Every input PNG is SHA-256 hashed. All outputs resolve symlinks and reject
+input overwrites and repository destinations before the first write. Diagnostics are `original_edges.png`,
+`original_structural.png`, `rendered_interior.png`, `rendered_silhouette.png`, `failing_edges.png`,
+`missed_structural.png` and `structural_regions.json`, beside the requested report.
+
+Synthetic tests cover texture suppression, coherent region boundaries, thinning, orientation rejection,
+negative controls, slope-versus-depth edges, coplanar union seams, depth steps, bevel midlines, colour math,
+PNG decoding and output boundaries. They establish
+offline math and adapter behaviour, not visual owner acceptance or game/runtime compatibility.
+
+### Primitive reconstruction
+
 The research pipeline in `packages/hd-renderer/src/` supplies pure reconstruction helpers:
 `hardSurfaceSolid.ts` fills x-major dense grids with two-axis enclosure, exterior flood and one-cell recess
 restoration (negative Z is down by default; the down axis is configurable). `hardSurfaceFit.ts` fits seed regions
