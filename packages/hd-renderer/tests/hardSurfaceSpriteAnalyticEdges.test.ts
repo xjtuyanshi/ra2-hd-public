@@ -67,4 +67,23 @@ describe('analytic visible union edges', () => {
     expect(result.segments.some((s) => s.kind === 'chamfer-midline')).toBe(true);
     expect(result.segments.every((s) => s.visibleIntervals.every(([a, b]) => a >= 0 && b <= 1 && b > a))).toBe(true);
   });
+  it('retains each crease run normal separately at intersecting projected edges', () => {
+    const result = analyticSpriteEdges(
+      mesh([
+        { type: 'box', min: [0, 0, 0], max: [3, 2, 1], chamfer: 0 },
+        { type: 'box', min: [1, 0, 0], max: [2, 3, 1.5], chamfer: 0 },
+      ]),
+      camera,
+      32,
+      32,
+      new Float64Array(32 * 32).fill(1),
+    );
+    expect(result.creases.length).toBeGreaterThan(0);
+    for (const crease of result.creases) {
+      expect(crease.normals).toHaveLength(crease.pixels.length);
+      expect(crease.normals.every(Number.isFinite)).toBe(true);
+      // Every box edge in this camera is horizontal or vertical, even at a T-junction.
+      expect(crease.normals.every((n) => Math.abs(Math.sin(2 * n)) < 1e-8)).toBe(true);
+    }
+  });
 });

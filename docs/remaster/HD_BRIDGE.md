@@ -879,6 +879,21 @@ input overwrites and repository destinations before the first write. Diagnostics
 `original_structural.png`, `rendered_interior.png`, `rendered_silhouette.png`, `failing_edges.png`,
 `missed_structural.png` and `structural_regions.json`, beside the requested report.
 
+An optional `localEvidence` manifest entry supplies a `rois` JSON path and `frozen` source hashes.
+The JSON contains source-only half-open integer ROI boxes and `detailEdgeOptions`; it does not alter the
+global reference. G2L audits each visible connected analytic face-pair run of at least three native pixels.
+It samples two-pixel Lab bands on either side at offsets -3 through +3. Each offset needs at least half
+its samples wholly inside opaque source pixels. The median sample contrast must peak within offset one
+and reach dE76 eight; incomplete evidence fails. Per-run normals remain separate at junctions.
+Results include run-weighted pixels and conservative unique pixels (every incident run must pass),
+seven complete profiles, and the same eight negative shifts. Full support and a 0.25 lead over every
+shift are required. G5 reports oriented precision and recall inside each fixed source ROI using its
+separately frozen detail-edge configuration. No pass threshold is assumed for this diagnostic.
+Optional paired `comparisonOriginal` and `comparisonColour` rasters add a clearly labelled colour audit
+for another matched layer state, leaving primary G4 intact. `faceLabels.category` provides group summaries.
+An original-mean versus original-median self-control diagnoses intrinsic within-face colour variation;
+it is never subtracted from the measured error. Local de-dithered rasters and regions are also exported.
+
 Synthetic tests cover texture suppression, coherent region boundaries, thinning, orientation rejection,
 negative controls, slope-versus-depth edges, coplanar union seams, depth steps, bevel midlines, colour math,
 PNG decoding and output boundaries. They establish

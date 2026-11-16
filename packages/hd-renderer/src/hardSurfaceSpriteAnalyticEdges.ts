@@ -268,7 +268,10 @@ export function analyticSpriteEdges(
   const raw = new Uint8Array(width * height),
     sx = new Float64Array(raw.length),
     sy = new Float64Array(raw.length),
-    groups = new Map<string, { faces: [number, number]; pixels: Set<number> }>();
+    groups = new Map<
+      string,
+      { faces: [number, number]; pixels: Set<number>; normalSums: Map<number, [number, number]> }
+    >();
   const segments: {
     id: number;
     kind: string;
@@ -328,8 +331,16 @@ export function analyticSpriteEdges(
           raw[i] = 1;
           sx[i] += Math.cos(2 * normal);
           sy[i] += Math.sin(2 * normal);
-          const group = groups.get(key) ?? { faces, pixels: new Set<number>() };
+          const group = groups.get(key) ?? {
+            faces,
+            pixels: new Set<number>(),
+            normalSums: new Map<number, [number, number]>(),
+          };
           group.pixels.add(i);
+          const sum = group.normalSums.get(i) ?? [0, 0];
+          sum[0] += Math.cos(2 * normal);
+          sum[1] += Math.sin(2 * normal);
+          group.normalSums.set(i, sum);
           groups.set(key, group);
         }
       } else if (begin !== undefined) {
@@ -370,7 +381,17 @@ export function analyticSpriteEdges(
     triangleCount: triangles.length,
     candidateCount: candidates.length,
     creases: [...groups.values()]
-      .map((g) => ({ faces: g.faces, pixels: [...g.pixels].filter((i) => interior[i]) }))
+      .map((g) => {
+        const pixels = [...g.pixels].filter((i) => interior[i]);
+        return {
+          faces: g.faces,
+          pixels,
+          normals: pixels.map((i) => {
+            const [x, y] = g.normalSums.get(i)!;
+            return Math.hypot(x, y) > 1e-9 ? (Math.atan2(y, x) / 2 + Math.PI) % Math.PI : NaN;
+          }),
+        };
+      })
       .filter((g) => g.pixels.length),
   };
 }

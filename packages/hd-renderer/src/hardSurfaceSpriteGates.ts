@@ -860,3 +860,270 @@ export function colourSummary(rows: readonly FaceColourMeasurement[]) {
     worst: values[values.length - 1],
   };
 }
+
+export interface SpriteLocalEvidenceSegment {
+  id: string;
+  /** Native pixel coordinates and analytic boundary normal, in radians modulo pi. */
+  samples: { x: number; y: number; normal: number }[];
+  faces?: number[];
+}
+export interface SpriteLocalEvidenceOptions {
+  thresholdDeltaE76: number;
+  halfBandWidth: number;
+  offsets: readonly number[];
+  acceptedOffsets: readonly number[];
+  minSegmentPixels: number;
+  minValidFraction: number;
+}
+export const defaultSpriteLocalEvidenceOptions: Readonly<SpriteLocalEvidenceOptions> = {
+  thresholdDeltaE76: 8,
+  halfBandWidth: 2,
+  offsets: [-3, -2, -1, 0, 1, 2, 3],
+  acceptedOffsets: [-1, 0, 1],
+  minSegmentPixels: 3,
+  minValidFraction: 0.5,
+};
+
+/**
+ * Independent local contrast evidence. Average Lab in two perpendicular bands, then take the median
+ * of sample-wise steps along each analytic crease run. Every offset needs enough valid opaque samples;
+ * missing/off-image evidence fails rather than silently reducing the denominator. A nearby peak must be
+ * the global maximum over the complete offset sweep. No rendered colour enters this measurement.
+ */
+export function spriteLocalEvidence(
+  image: SpriteRgb,
+  alpha: ArrayLike<number>,
+  segments: readonly SpriteLocalEvidenceSegment[],
+  options: SpriteLocalEvidenceOptions = { ...defaultSpriteLocalEvidenceOptions },
+  shift: readonly [number, number] = [0, 0],
+) {
+  const { width: w, height: h } = image;
+  dimensions(w, h, alpha);
+  if (image.rgb.length !== w * h * 3 || !shift.every(Number.isFinite)) throw new Error('Invalid local evidence image');
+  if (
+    new Set(segments.map((s) => s.id)).size !== segments.length ||
+    segments.some((s) => !s.id || s.samples.some((p) => !Number.isFinite(p.x) || !Number.isFinite(p.y)))
+  )
+    throw new Error('Local evidence segments require unique IDs and finite sample positions');
+  if (
+    !(options.thresholdDeltaE76 > 0) ||
+    !Number.isInteger(options.halfBandWidth) ||
+    options.halfBandWidth < 1 ||
+    !Number.isInteger(options.minSegmentPixels) ||
+    options.minSegmentPixels < 1 ||
+    !(options.minValidFraction > 0 && options.minValidFraction <= 1) ||
+    !options.offsets.length ||
+    !options.offsets.every(Number.isFinite) ||
+    !options.acceptedOffsets.length ||
+    !options.acceptedOffsets.every((x) => options.offsets.includes(x))
+  )
+    throw new Error('Invalid local evidence options');
+  const labs = Array.from({ length: w * h }, (_, i) =>
+    srgbToLab([image.rgb[i * 3], image.rgb[i * 3 + 1], image.rgb[i * 3 + 2]]),
+  );
+  const sampleLab = (x: number, y: number): number[] | undefined => {
+    // Pixel centres live at half coordinates. All nonzero interpolation taps must be opaque.
+    const px = x - 0.5,
+      py = y - 0.5,
+      x0 = Math.floor(px),
+      y0 = Math.floor(py),
+      fx = px - x0,
+      fy = py - y0;
+    const result = [0, 0, 0];
+    for (let dy = 0; dy <= 1; dy++)
+      for (let dx = 0; dx <= 1; dx++) {
+        const weight = (dx ? fx : 1 - fx) * (dy ? fy : 1 - fy);
+        if (weight < 1e-10) continue;
+        const xx = x0 + dx,
+          yy = y0 + dy;
+        if (xx < 0 || yy < 0 || xx >= w || yy >= h || !alpha[yy * w + xx]) return;
+        const lab = labs[yy * w + xx];
+        for (let c = 0; c < 3; c++) result[c] += lab[c] * weight;
+      }
+    return result;
+  };
+  const rows = segments
+    .filter((s) => s.samples.length >= options.minSegmentPixels)
+    .map((segment) => {
+      const profiles = options.offsets.map((offset) => {
+        const steps: number[] = [];
+        for (const p of segment.samples) {
+          if (!Number.isFinite(p.normal)) continue;
+          const nx = Math.cos(p.normal),
+            ny = Math.sin(p.normal),
+            left = [0, 0, 0],
+            right = [0, 0, 0];
+          let valid = true;
+          for (let k = 0; k < options.halfBandWidth; k++) {
+            const a = sampleLab(p.x + shift[0] + nx * (offset - k - 0.5), p.y + shift[1] + ny * (offset - k - 0.5));
+            const b = sampleLab(p.x + shift[0] + nx * (offset + k + 0.5), p.y + shift[1] + ny * (offset + k + 0.5));
+            if (!a || !b) {
+              valid = false;
+              break;
+            }
+            for (let c = 0; c < 3; c++) {
+              left[c] += a[c] / options.halfBandWidth;
+              right[c] += b[c] / options.halfBandWidth;
+            }
+          }
+          if (valid) steps.push(deltaE76(left, right));
+        }
+        const enough = steps.length >= Math.max(1, Math.ceil(segment.samples.length * options.minValidFraction));
+        return { offset, validSamples: steps.length, stepDeltaE76: enough ? median(steps) : null };
+      });
+      const measurable = profiles.every((p) => p.stepDeltaE76 !== null);
+      const maximum = measurable ? Math.max(...profiles.map((p) => p.stepDeltaE76!)) : null;
+      const nearby = profiles.filter((p) => options.acceptedOffsets.includes(p.offset));
+      const nearMaximum = nearby.every((p) => p.stepDeltaE76 !== null)
+        ? Math.max(...nearby.map((p) => p.stepDeltaE76!))
+        : null;
+      const pass =
+        measurable &&
+        nearMaximum !== null &&
+        nearMaximum >= options.thresholdDeltaE76 &&
+        nearMaximum >= maximum! - 1e-9;
+      return {
+        id: segment.id,
+        faces: segment.faces,
+        pixels: segment.samples.length,
+        pass,
+        measurable,
+        maximumDeltaE76: maximum,
+        nearbyMaximumDeltaE76: nearMaximum,
+        peakOffsets: profiles
+          .filter((p) => maximum !== null && p.stepDeltaE76 !== null && p.stepDeltaE76 >= maximum - 1e-9)
+          .map((p) => p.offset),
+        profiles,
+      };
+    });
+  const pixels = rows.reduce((sum, r) => sum + r.pixels, 0),
+    passedPixels = rows.reduce((sum, r) => sum + (r.pass ? r.pixels : 0), 0);
+  const unique = new Map<string, boolean>();
+  for (const row of rows)
+    for (const p of segments.find((s) => s.id === row.id)!.samples) {
+      const key = `${Math.floor(p.x)}:${Math.floor(p.y)}`;
+      unique.set(key, (unique.get(key) ?? true) && row.pass);
+    }
+  const uniquePassedPixels = [...unique.values()].filter(Boolean).length;
+  return {
+    shift,
+    totalSegments: rows.length,
+    passedSegments: rows.filter((r) => r.pass).length,
+    segmentFraction: rows.length ? rows.filter((r) => r.pass).length / rows.length : null,
+    totalPixels: pixels,
+    passedPixels,
+    pixelFraction: pixels ? passedPixels / pixels : null,
+    uniqueTotalPixels: unique.size,
+    uniquePassedPixels,
+    uniquePixelFraction: unique.size ? uniquePassedPixels / unique.size : null,
+    segments: rows,
+    failures: rows.filter((r) => !r.pass).map((r) => r.id),
+  };
+}
+
+/** Eight fixed null shifts preserve the analytic runs and their normals, including invalid evidence. */
+export function spriteLocalEvidenceNullControls(
+  image: SpriteRgb,
+  alpha: ArrayLike<number>,
+  segments: readonly SpriteLocalEvidenceSegment[],
+  options: SpriteLocalEvidenceOptions = { ...defaultSpriteLocalEvidenceOptions },
+  requiredLead = 0.25,
+) {
+  const actual = spriteLocalEvidence(image, alpha, segments, options);
+  const shifts: [number, number][] = [
+    [-2, 0],
+    [2, 0],
+    [0, -2],
+    [0, 2],
+    [-3, -3],
+    [-3, 3],
+    [3, -3],
+    [3, 3],
+  ];
+  const controls = shifts.map((shift) => {
+    const {
+      segments: _segments,
+      failures: _failures,
+      ...summary
+    } = spriteLocalEvidence(image, alpha, segments, options, shift);
+    return summary;
+  });
+  const worstSegments = Math.max(...controls.map((c) => c.segmentFraction ?? 0));
+  const worstPixels = Math.max(...controls.map((c) => c.pixelFraction ?? 0));
+  const worstUniquePixels = Math.max(...controls.map((c) => c.uniquePixelFraction ?? 0));
+  const segmentLead = actual.segmentFraction === null ? null : actual.segmentFraction - worstSegments;
+  const pixelLead = actual.pixelFraction === null ? null : actual.pixelFraction - worstPixels;
+  const uniquePixelLead = actual.uniquePixelFraction === null ? null : actual.uniquePixelFraction - worstUniquePixels;
+  return {
+    actual,
+    controls,
+    requiredLead,
+    segmentLead,
+    pixelLead,
+    uniquePixelLead,
+    meaningful:
+      segmentLead !== null &&
+      pixelLead !== null &&
+      uniquePixelLead !== null &&
+      segmentLead >= requiredLead &&
+      pixelLead >= requiredLead &&
+      uniquePixelLead >= requiredLead,
+    pass:
+      actual.segmentFraction === 1 &&
+      segmentLead !== null &&
+      pixelLead !== null &&
+      uniquePixelLead !== null &&
+      segmentLead >= requiredLead &&
+      pixelLead >= requiredLead &&
+      uniquePixelLead >= requiredLead,
+  };
+}
+
+export interface SpriteDetailRoi {
+  id: string;
+  label?: string;
+  bounds: readonly [number, number, number, number];
+}
+/** Local source-detail precision/recall uses fixed caller ROIs and never changes the global reference. */
+export function spriteDetailRoiMeasurements(input: {
+  width: number;
+  height: number;
+  source: ArrayLike<number>;
+  sourceNormals: ArrayLike<number>;
+  rendered: ArrayLike<number>;
+  renderedNormals: ArrayLike<number>;
+  rois: readonly SpriteDetailRoi[];
+}) {
+  const { width: w, height: h } = input;
+  dimensions(w, h, input.source, input.sourceNormals, input.rendered, input.renderedNormals);
+  return input.rois.map((roi) => {
+    const [x0, y0, x1, y1] = roi.bounds;
+    if (!roi.id || !roi.bounds.every(Number.isInteger) || x0 < 0 || y0 < 0 || x1 > w || y1 > h || x1 <= x0 || y1 <= y0)
+      throw new Error('Invalid detail ROI');
+    const source = Uint8Array.from(
+      input.source,
+      (v, i) => +(!!v && i % w >= x0 && i % w < x1 && Math.floor(i / w) >= y0 && Math.floor(i / w) < y1),
+    );
+    const rendered = Uint8Array.from(
+      input.rendered,
+      (v, i) => +(!!v && i % w >= x0 && i % w < x1 && Math.floor(i / w) >= y0 && Math.floor(i / w) < y1),
+    );
+    const precision = orientedEdgeAgreement(rendered, input.renderedNormals, source, input.sourceNormals, w, h);
+    const recall = orientedEdgeAgreement(source, input.sourceNormals, rendered, input.renderedNormals, w, h);
+    return {
+      ...roi,
+      sourcePixels: recall.total,
+      renderedPixels: precision.total,
+      precision: precision.fraction,
+      recall: recall.fraction,
+      matchedPrecisionPixels: precision.matched,
+      matchedRecallPixels: recall.matched,
+      failingPixels: Array.from(precision.failures, (v, i) => (v ? [i % w, Math.floor(i / w)] : null)).filter(
+        (v) => v !== null,
+      ),
+      missedPixels: Array.from(recall.failures, (v, i) => (v ? [i % w, Math.floor(i / w)] : null)).filter(
+        (v) => v !== null,
+      ),
+    };
+  });
+}

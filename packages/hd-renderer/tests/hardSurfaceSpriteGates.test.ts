@@ -14,10 +14,78 @@ import {
   spriteEdgeNullControls,
   bilateralSprite,
   labToSrgb,
+  spriteLocalEvidence,
+  spriteLocalEvidenceNullControls,
+  spriteDetailRoiMeasurements,
 } from '../src/hardSurfaceSpriteGates';
 import { projectSpritePoint, spriteGeometryEdges, type SpriteCamera } from '../src/hardSurfaceSpriteCamera';
 const camera: SpriteCamera = { right: [1, 0, 0], up: [0, 1, 0], towards: [0, 0, 1], origin: [4, 5], pixelsPerWorld: 2 };
 describe('native sprite gates on synthetic evidence', () => {
+  it('requires local evidence to peak on the analytic fold, not beside it or on a uniform face', () => {
+    const width = 40,
+      height = 30,
+      alpha = new Uint8Array(width * height).fill(1);
+    const rgb = Uint8Array.from({ length: width * height * 3 }, (_, i) => (Math.floor(i / 3) % width < 20 ? 40 : 180));
+    const runs = [{ id: 'wall', samples: Array.from({ length: 12 }, (_, k) => ({ x: 20, y: k + 8.5, normal: 0 })) }];
+    const actual = spriteLocalEvidence({ width, height, rgb }, alpha, runs);
+    expect(actual.segmentFraction).toBe(1);
+    expect(actual.uniqueTotalPixels).toBe(12);
+    expect(actual.uniquePixelFraction).toBe(1);
+    expect(actual.segments[0].nearbyMaximumDeltaE76).toBeGreaterThan(8);
+    expect(spriteLocalEvidence({ width, height, rgb }, alpha, runs, undefined, [3, 0]).segmentFraction).toBe(0);
+    expect(
+      spriteLocalEvidence({ width, height, rgb: new Uint8Array(rgb.length).fill(80) }, alpha, runs).segmentFraction,
+    ).toBe(0);
+    const missing = alpha.slice();
+    missing.fill(0);
+    expect(spriteLocalEvidence({ width, height, rgb }, missing, runs).segments[0].measurable).toBe(false);
+  });
+  it('keeps all eight local null controls and rejects a translation-invariant wall as meaningful', () => {
+    const width = 40,
+      height = 40,
+      alpha = new Uint8Array(width * height).fill(1);
+    const rgb = Uint8Array.from({ length: width * height * 3 }, (_, i) => (Math.floor(i / 3) % width < 20 ? 40 : 180));
+    const runs = [{ id: 'wall', samples: Array.from({ length: 12 }, (_, k) => ({ x: 20, y: k + 12.5, normal: 0 })) }];
+    const result = spriteLocalEvidenceNullControls({ width, height, rgb }, alpha, runs);
+    expect(result.controls).toHaveLength(8);
+    expect(result.actual.segmentFraction).toBe(1);
+    expect(result.segmentLead).toBe(0);
+    expect(result.meaningful).toBe(false);
+    expect(result.pass).toBe(false);
+  });
+  it('measures ROI detail with the same distance and orientation rule and excludes other ROIs', () => {
+    const width = 16,
+      height = 16,
+      source = new Uint8Array(256),
+      rendered = new Uint8Array(256),
+      normals = new Float64Array(256);
+    for (let y = 3; y < 10; y++) {
+      source[y * 16 + 5] = 1;
+      rendered[y * 16 + 6] = 1;
+    }
+    rendered[14 * 16 + 14] = 1;
+    const input = {
+      width,
+      height,
+      source,
+      sourceNormals: normals,
+      rendered,
+      renderedNormals: normals,
+      rois: [{ id: 'wall', bounds: [2, 2, 11, 11] as const }],
+    };
+    expect(spriteDetailRoiMeasurements(input)[0]).toMatchObject({
+      precision: 1,
+      recall: 1,
+      sourcePixels: 7,
+      renderedPixels: 7,
+    });
+    expect(
+      spriteDetailRoiMeasurements({ ...input, renderedNormals: new Float64Array(256).fill(Math.PI / 2) })[0].recall,
+    ).toBe(0);
+    expect(() => spriteDetailRoiMeasurements({ ...input, rois: [{ id: 'bad', bounds: [-1, 0, 5, 5] }] })).toThrow(
+      'Invalid detail ROI',
+    );
+  });
   it('thresholds true area coverage at 0.5 and rejects mismatched or invalid buffers', () => {
     expect(silhouetteIoU([1, 1, 0], [0.5, 0.49, 0.51])).toEqual({
       iou: 1 / 3,
