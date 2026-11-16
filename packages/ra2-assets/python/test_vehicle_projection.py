@@ -47,6 +47,67 @@ def _prototype_camo_lock(design, redraw, sigma_ab=2.5, l_lo=1.5, l_hi=8.0, l_str
 
 
 class VehicleProjectionTests(unittest.TestCase):
+    def test_cutout_pack_preserves_interior_zero_coverage_and_validates_manifest(self):
+        alpha = self.silhouette()
+        alpha[55:65, 100:120] = 0
+        colour = np.full((*alpha.shape, 3), 100, np.float32)
+        frame = Frame(0, 0, colour, alpha, np.zeros_like(colour), np.array([80, 80]), alpha,
+                      Registration(np.array([[1., 0, 0], [0, 1., 0]]), 1, 1, 0, 0))
+        atlas, _, entries = pack_frames([frame])
+        pivot = np.array(entries[0]['pivot'])
+        x, y = np.rint(pivot + np.array([110, 60]) - frame.pivot).astype(int)
+        self.assertEqual(atlas[y, x, 3], 0)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'X.json'
+            for name in ('colour', 'paint'):
+                Image.fromarray(atlas).save(path.parent / f'{name}.png')
+            spec = {'parts': {'body': {'colour': 'colour.png', 'paint': 'paint.png'}}}
+            for cutout in (None, 0.5, 1):
+                valid = spec if cutout is None else {**spec, 'cutout': cutout}
+                self.assertEqual(len(projection.manifest_atlases(path, valid)), 2)
+            for cutout in (0, -1, 1.1, float('nan'), float('inf'), True, None, '0.5'):
+                with self.assertRaisesRegex(ValueError, 'cutout'):
+                    projection.manifest_atlases(path, {**spec, 'cutout': cutout})
+
+    def test_receiver_layers_share_colour_layout_and_preserve_yaw_order(self):
+        frames = []
+        for k in range(3):
+            alpha = self.silhouette()
+            factors = np.stack([np.full(alpha.shape, (i+1)/8) for i in range(8)])
+            factors[:,60:65,80:90] *= .5
+            frames.append(Frame(k,k*8,np.full((*alpha.shape,3),100),alpha,np.zeros((*alpha.shape,3)),np.array([80,80]),alpha,
+                                Registration(np.array([[1.,0,0],[0,1.,0]]),1,1,0,0),factors))
+        colour, _, entries = pack_frames(frames, max_width=240)
+        layers = projection.pack_shadow_frames(frames,entries,(colour.shape[1],colour.shape[0]))
+        self.assertEqual(layers.shape, (8,*colour.shape))
+        for frame, entry in zip(frames,entries):
+            x,y = np.rint(np.array(entry['pivot']) + [85,62]-frame.pivot).astype(int)
+            np.testing.assert_array_equal(layers[:,y,x,0],np.rint(np.arange(1,9)/8*.5*255))
+            rx,ry,w,h = entry['rect']
+            self.assertEqual(layers[0,ry-1,rx,0],32)  # Nearest receiver continues into the gutter.
+        frames[0].shadow[0,0,0]=np.nan
+        with self.assertRaisesRegex(ValueError,'finite'):
+            projection.pack_shadow_frames(frames,entries,(colour.shape[1],colour.shape[0]))
+        frames[0].shadow=None
+        with self.assertRaisesRegex(ValueError,'eight'):
+            projection.pack_shadow_frames(frames,entries,(colour.shape[1],colour.shape[0]))
+
+    def test_receiver_manifest_validation_prevents_partial_installs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'X.json'
+            names=[f'shadow_{i}.png' for i in range(8)]
+            for name in ['colour.png','paint.png',*names]: Image.new('RGB',(20,12),'white').save(path.parent/name)
+            part={'colour':'colour.png','paint':'paint.png','size':[20,12],'shadow':{'layers':names}}
+            spec={'parts':{'body':part}}
+            self.assertEqual(len(projection.manifest_atlases(path,spec)),10)
+            for bad in [None,{}, {'layers':names[:7]}, {'layers':names[:7]+['../x.png']}]:
+                with self.assertRaisesRegex(ValueError,'shadow'):
+                    projection.manifest_atlases(path,{'parts':{'body':{**part,'shadow':bad}}})
+            Image.new('RGB',(19,12)).save(path.parent/names[3])
+            with self.assertRaisesRegex(ValueError,'dimensions'): projection.manifest_atlases(path,spec)
+            (path.parent/names[3]).unlink()
+            with self.assertRaisesRegex(ValueError,'missing shadow'): projection.manifest_atlases(path,spec)
+
     def silhouette(self):
         a = np.zeros((128, 192), np.float32)
         cv2.rectangle(a, (36, 48), (140, 94), 1, -1)

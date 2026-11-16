@@ -25,6 +25,8 @@ export interface ProjectionPartManifest {
    * one look. A variant a part does not name is drawn with `colour`.
    */
   variants?: Record<string, string>;
+  /** Eight linear receiver-factor atlases, at positive joint.rotation.y = i * 2pi/8; same layout as colour. */
+  shadow?: { layers: string[] };
 }
 
 /** Variant names are lower-case words: they become part of cache keys and file names. */
@@ -49,6 +51,8 @@ export interface VoxelProjectionManifest {
    * Absent (every manifest written before this field existed): 1.
    */
   exposure?: number;
+  /** Optional threshold (0 < cutout <= 1): discard below it, fully project survivors; absent retains mixing. */
+  cutout?: number;
   /**
    * 'baked': the pages carry their own complete form light (offline renders of the voxel mesh with sun, bevels,
    * seams and glints, see packages/ra2-assets/python/vehicle_pages.py). The renderer then adds none of its mesh form
@@ -110,6 +114,11 @@ export function parseVoxelProjectionManifest(
       for (const [variant, file] of Object.entries(variants))
         if (!projectionVariantName(variant) || !projectionPath(file)) throw new Error('Invalid projection variant');
     }
+    if (part.shadow !== undefined) {
+      const shadow = record(part.shadow, 'projection shadow');
+      if (!Array.isArray(shadow.layers) || shadow.layers.length !== 8 || !shadow.layers.every(projectionPath))
+        throw new Error('Invalid projection shadow layers');
+    }
     if (!Array.isArray(part.frames) || part.frames.length !== m.frames) throw new Error('Incomplete projection frames');
     const ks = new Set<number>();
     part.frames.forEach((value, i) => {
@@ -156,6 +165,8 @@ export function parseVoxelProjectionManifest(
   if (m.exposure !== undefined && (!finite(m.exposure) || m.exposure < 1 || m.exposure > 4))
     throw new Error('Invalid projection page exposure');
   if (m.shading !== undefined && m.shading !== 'baked') throw new Error('Invalid projection page shading');
+  if (m.cutout !== undefined && (!finite(m.cutout) || m.cutout <= 0 || m.cutout > 1))
+    throw new Error('Invalid projection page cutout');
   if (m.smooth === undefined) return m as unknown as VoxelProjectionManifest;
   const { smooth, ...manifest } = m;
   const override = parseSmoothVoxelOverride(smooth);
@@ -215,4 +226,9 @@ export function projectVoxelPoint(
     frame.pivot[0] + jacobian[0].reduce((sum, j, i) => sum + j * d[i]!, 0),
     frame.pivot[1] + jacobian[1].reduce((sum, j, i) => sum + j * d[i]!, 0),
   ];
+}
+
+/** CPU twin of the positive local-joint yaw selection, independent of the body facing. */
+export function projectionYawPair(yaw: number): { k0: number; k1: number; w: number } {
+  return projectionFramePair((yaw * 256) / (2 * Math.PI), 8);
 }

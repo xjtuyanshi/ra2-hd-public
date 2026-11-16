@@ -1,6 +1,8 @@
+import { voxelRelativeYaw, meshRelativeYaw } from '../src/ra2/voxelArticulation';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   DataTexture,
+  DataArrayTexture,
   DirectionalLight,
   HemisphereLight,
   LinearFilter,
@@ -10,6 +12,7 @@ import {
   MeshBasicNodeMaterial,
   PerspectiveCamera,
   Quaternion,
+  RedFormat,
   Scene,
   Texture,
   Vector3,
@@ -25,6 +28,7 @@ import {
   projectionSmoothVoxelOptions,
   projectVoxelPoint,
   projectionFramePair,
+  projectionYawPair,
   type VoxelProjectionManifest,
 } from '../src/ra2/voxelProjectionMath';
 import {
@@ -160,6 +164,61 @@ describe('voxel projection coordinate contract', () => {
 });
 
 describe('projection manifest validation', () => {
+  it('validates eight aligned relative-yaw layers and wraps positive local yaw independently of facing', () => {
+    const spec = manifest();
+    for (const shadow of [
+      null,
+      {},
+      { layers: [] },
+      { layers: Array(7).fill('x.png') },
+      { layers: [...Array(7).fill('x.png'), '../x.png'] },
+    ]) {
+      expect(() => parseVoxelProjectionManifest({ ...spec, parts: { body: { ...spec.parts.body!, shadow } } })).toThrow(
+        'shadow',
+      );
+    }
+    const layers = Array.from({ length: 8 }, (_, i) => `shadow_${i}.png`);
+    spec.parts.body!.shadow = { layers };
+    expect(parseVoxelProjectionManifest(spec).parts.body!.shadow!.layers).toEqual(layers);
+    expect(projectionYawPair(0)).toEqual({ k0: 0, k1: 1, w: 0 });
+    expect(projectionYawPair(Math.PI / 2)).toEqual({ k0: 2, k1: 3, w: 0 });
+    expect(projectionYawPair(-Math.PI / 8)).toEqual({ k0: 7, k1: 0, w: 0.5 });
+    expect(projectionYawPair(2 * Math.PI + Math.PI / 8).w).toBeCloseTo(0.5);
+  });
+  it('reads the root-owned joint on each draw, including direct Group turns, twins and separate instances', () => {
+    const nodes = new AtmosphereNodes();
+    const material = voxelMaterialFor(null, nodes);
+    const parts = buildVoxelGeometry(model, null, nodes);
+    const first = instantiateVoxel(parts, material, nodes),
+      second = instantiateVoxel(parts, material, nodes);
+    const body = first.root.partMeshes[0]!;
+    expect(first.root.articulation.joint).toBe(first.turret);
+    first.turret!.rotation.y = Math.PI / 2;
+    first.root.rotation.y = 1.7;
+    expect(voxelRelativeYaw(body)).toBe(Math.PI / 2);
+    expect(voxelRelativeYaw(second.root.partMeshes[0])).toBe(0);
+    const twin = new Mesh();
+    Object.assign(twin, { source: body });
+    expect(voxelRelativeYaw(twin)).toBe(Math.PI / 2);
+    // A notification-free turn is the shooter's path; the per-object uniform must read it again.
+    first.turret!.rotation.y = -Math.PI;
+    meshRelativeYaw.update({ object: twin });
+    expect(meshRelativeYaw.value).toBe(-Math.PI);
+    meshRelativeYaw.update({ object: second.root.partMeshes[0] });
+    expect(meshRelativeYaw.value).toBe(0);
+    first.root.replaceGeometry(new Map([[parts[0]!.geometry, parts[1]!.geometry]]));
+    expect(voxelRelativeYaw(body)).toBe(-Math.PI);
+    expect(voxelRelativeYaw(new Mesh())).toBe(0);
+    for (const part of parts) part.geometry.dispose();
+    nodes.dispose();
+  });
+  it('keeps cutout opt-in and rejects ambiguous thresholds', () => {
+    expect(parseVoxelProjectionManifest(manifest()).cutout).toBeUndefined();
+    for (const cutout of [0.01, 0.5, 1])
+      expect(parseVoxelProjectionManifest({ ...manifest(), cutout }).cutout).toBe(cutout);
+    for (const cutout of [0, -1, 1.01, NaN, Infinity, null, true, '0.5'])
+      expect(() => parseVoxelProjectionManifest({ ...manifest(), cutout })).toThrow('cutout');
+  });
   it('merges only validated partial mesh fields over session settings without changing the input', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const input = { ...manifest(), smooth: { shape: 'imls', aoRays: 0, supersample: 1, groundOcclusion: 0, typo: 1 } };
@@ -382,17 +441,33 @@ describe('projected materials and shader compilation', () => {
     nodes.dispose();
   });
   /** WebGPU (WGSL) or WebGL2 (GLSL) shaders of a projected body part and of its water reflection twin. */
-  const shaders = (spec: VoxelProjectionManifest, forceWebGL = false, turret = false) => {
+  const shaders = (
+    spec: VoxelProjectionManifest,
+    forceWebGL = false,
+    turret = false,
+    variant: 'main' | 'native' | 'opacity' = 'main',
+  ) => {
     const nodes = new AtmosphereNodes();
     const size = spec.parts.body!.size;
     const texture = () => nodes.own(new DataTexture(new Uint8Array(size[0] * size[1] * 4), size[0], size[1]));
-    const part = createVoxelProjectionPart(spec, turret ? 'turret' : 'body', texture(), texture());
+    const shadow = spec.parts[turret ? 'turret' : 'body']?.shadow
+      ? nodes.own(new DataArrayTexture(new Uint8Array(size[0] * size[1] * 8).fill(255), size[0], size[1], 8))
+      : undefined;
+    if (shadow) {
+      shadow.format = RedFormat;
+      shadow.magFilter = LinearFilter;
+      shadow.minFilter = LinearMipmapLinearFilter;
+      shadow.generateMipmaps = true;
+    }
+    const part = createVoxelProjectionPart(spec, turret ? 'turret' : 'body', texture(), texture(), shadow);
     const material = voxelProjectedMaterialFor(new Uint8Array(768), part, nodes);
     const parts = buildVoxelGeometry(model, null, nodes);
     parts[0]!.material = material;
     const unit = instantiateVoxel([parts[0]!], material, nodes);
     const mesh = unit.root.children.find((o) => o instanceof Mesh && o.material === material) as Mesh;
     const twin = unit.root.children.find((o) => o instanceof Mesh && o.name === 'voxel-reflection') as Mesh;
+    if (variant === 'native') updateVoxelNativeDepth(unit, unit.root.position);
+    if (variant === 'opacity') unit.root.setOpacity(0.5);
     const canvas = {
       width: 64,
       height: 64,
@@ -410,13 +485,55 @@ describe('projected materials and shader compilation', () => {
       builder.camera = new PerspectiveCamera();
       builder.lightsNode = lights([new DirectionalLight(), new HemisphereLight()]);
       builder.build();
-      return { vertex: builder.vertexShader as string, fragment: builder.fragmentShader as string };
+      const array = builder.uniforms.fragment.find(
+        (entry) => (entry.node as unknown as { value: DataArrayTexture }).value?.isDataArrayTexture,
+      );
+      expect(array).toBeDefined();
+      const reads = new RegExp(`\\b(?:texture|textureLod|textureSampleBias)\\(\\s*${array!.name}\\b`, 'g');
+      const shadowSamples = builder.fragmentShader.match(reads)?.length ?? 0;
+      const textureCount = builder
+        .getBindings()
+        .flatMap((group) =>
+          group.bindings.filter((binding) => (binding as unknown as { isSampledTexture: boolean }).isSampledTexture),
+        ).length;
+      return {
+        vertex: builder.vertexShader as string,
+        fragment: builder.fragmentShader as string,
+        shadowSamples,
+        textureCount,
+      };
     };
     const out = { main: build(mesh), reflection: build(twin), part };
+    unit.root.disposeOpacityMaterials();
     nodes.dispose();
     return out;
   };
 
+  it.each([false, true])('samples the array four times with per-object yaw in both passes: WebGL=%s', (webgl) => {
+    const spec = manifest();
+    spec.parts.body!.shadow = { layers: Array(8).fill('factor.png') };
+    const enabled = shaders(spec, webgl),
+      legacy = shaders(manifest(), webgl);
+    for (const pass of ['main', 'reflection'] as const) {
+      const shader = enabled[pass].fragment;
+      expect(shader).toBe(legacy[pass].fragment);
+      expect(shader).toContain('voxelRelativeYaw');
+      expect(shader).toMatch(webgl ? /sampler2DArray/ : /texture_2d_array/);
+      expect(enabled[pass].shadowSamples).toBe(4);
+      expect(enabled[pass].textureCount).toBeLessThanOrEqual(16);
+      expect(shader).not.toMatch(/\b(?:NaN|undefined)\b/);
+    }
+  });
+  it.each(['native', 'opacity'] as const)('retains yaw and the array binding in %s variants', (variant) => {
+    const spec = manifest();
+    spec.parts.body!.shadow = { layers: Array(8).fill('factor.png') };
+    const graph = shaders(spec, false, false, variant);
+    for (const pass of ['main', 'reflection'] as const) {
+      expect(graph[pass].fragment).toContain('voxelRelativeYaw');
+      expect(graph[pass].shadowSamples).toBe(4);
+      expect(graph[pass].textureCount).toBeLessThanOrEqual(16);
+    }
+  });
   it('keeps the page exposure in a slot: 1 for pages stored without headroom', () => {
     const exposed = shaders({ ...manifest(), exposure: 1.625 });
     const plain = shaders(manifest());
@@ -440,6 +557,21 @@ describe('projected materials and shader compilation', () => {
     inputs.bind(plain.part);
     expect(inputs.baked.value).toBe(0);
     expect(baked.main.fragment).toBe(plain.main.fragment);
+  });
+
+  it.each([false, true])('discards cutout coverage in main/depth and water shaders: WebGL=%s', (webgl) => {
+    const cut = shaders({ ...manifest(), cutout: 0.625 }, webgl);
+    const legacy = shaders(manifest(), webgl);
+    const inputs = new VoxelProjectionInputs();
+    inputs.bind(cut.part);
+    expect(inputs.cutout.value).toBe(0.625);
+    inputs.bind(legacy.part);
+    expect(inputs.cutout.value).toBe(0);
+    expect(cut.main.fragment).toMatch(/(?:gl_FragDepth|frag_depth)/);
+    for (const pass of ['main', 'reflection'] as const) {
+      expect(cut[pass].fragment).toContain('discard');
+      expect(cut[pass].fragment).toBe(legacy[pass].fragment);
+    }
   });
 
   /** A second manifest with the numbers of a real library type: another Jacobian, atlas sizes and an exposure. */
@@ -726,7 +858,15 @@ describe('voxel reflection source colour', () => {
   });
 });
 
-function mockAssets(options: { indexMissing?: boolean; missingPaint?: boolean; spec?: VoxelProjectionManifest } = {}) {
+function mockAssets(
+  options: {
+    indexMissing?: boolean;
+    missingPaint?: boolean;
+    spec?: VoxelProjectionManifest;
+    missingShadow?: string;
+    wrongShadow?: boolean;
+  } = {},
+) {
   const spec = options.spec ?? manifest();
   const bitmaps: { width: number; height: number; close: ReturnType<typeof vi.fn> }[] = [];
   const fetchMock = vi.fn(async (url: string) => {
@@ -735,13 +875,19 @@ function mockAssets(options: { indexMissing?: boolean; missingPaint?: boolean; s
         status: options.indexMissing ? 404 : 200,
       });
     if (url.endsWith('model.json')) return new Response(JSON.stringify(spec));
-    return new Response('', { status: options.missingPaint && url.endsWith('_paint.png') ? 404 : 200 });
+    return new Response(url, {
+      status:
+        (options.missingPaint && url.endsWith('_paint.png')) || url.endsWith(options.missingShadow ?? '__missing__')
+          ? 404
+          : 200,
+    });
   });
   vi.stubGlobal('fetch', fetchMock);
   vi.stubGlobal(
     'createImageBitmap',
-    vi.fn(async () => {
-      const bitmap = { width: 320, height: 32, close: vi.fn() };
+    vi.fn(async (blob: Blob) => {
+      const url = await blob.text();
+      const bitmap = { width: options.wrongShadow && url.includes('shadow_') ? 1 : 320, height: 32, close: vi.fn() };
       bitmaps.push(bitmap);
       return bitmap;
     }),
@@ -750,6 +896,96 @@ function mockAssets(options: { indexMissing?: boolean; missingPaint?: boolean; s
 }
 
 describe('projection loading and disposal', () => {
+  function shadowSpec() {
+    const spec = manifest();
+    spec.parts.body!.shadow = { layers: Array.from({ length: 8 }, (_, i) => `shadow_${i}.png`) };
+    return spec;
+  }
+  function pixelCanvas() {
+    vi.stubGlobal(
+      'OffscreenCanvas',
+      class {
+        constructor(
+          readonly width: number,
+          readonly height: number,
+        ) {}
+        getContext() {
+          return {
+            clearRect() {},
+            drawImage() {},
+            getImageData: () => ({ data: new Uint8ClampedArray(this.width * this.height * 4).fill(128) }),
+          };
+        }
+      },
+    );
+  }
+  it('loads eight layers atomically into one mipmapped array, closes decodes, and restores white on a legacy bind', async () => {
+    const { fetchMock, bitmaps } = mockAssets({ spec: shadowSpec() });
+    pixelCanvas();
+    const nodes = new AtmosphereNodes();
+    const asset = await voxelProjectionLibrary('/assets', nodes).loadType('HTNK');
+    expect(asset).not.toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(14);
+    const part = asset!.parts.body!;
+    expect(part.shadow).toBeInstanceOf(DataArrayTexture);
+    expect(part.shadow!.image.depth).toBe(8);
+    expect(part.shadow!.image.data![0]).toBe(128);
+    expect(part.shadow!.generateMipmaps).toBe(true);
+    expect(part.shadow!.flipY).toBe(false);
+    expect(bitmaps.filter((b) => b.close.mock.calls.length === 1)).toHaveLength(8);
+    const inputs = new VoxelProjectionInputs();
+    inputs.bind(part);
+    expect(inputs.shadow.value).toBe(part.shadow);
+    const old = createVoxelProjectionPart(manifest(), 'body', new Texture(), new Texture());
+    inputs.bind(old);
+    expect(inputs.shadow.value.image.data.every((v: number) => v === 255)).toBe(true);
+    const dispose = vi.spyOn(part.shadow!, 'dispose');
+    nodes.dispose();
+    nodes.dispose();
+    expect(dispose).toHaveBeenCalledOnce();
+    for (const bitmap of bitmaps) expect(bitmap.close).toHaveBeenCalledOnce();
+    old.frameTable.dispose();
+  });
+  it.each([{ missingShadow: 'shadow_3.png' }, { wrongShadow: true }])(
+    'rejects a failed or mismatched layer without publishing a partial set: %j',
+    async (options) => {
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const { bitmaps } = mockAssets({ spec: shadowSpec(), ...options });
+      pixelCanvas();
+      const nodes = new AtmosphereNodes(),
+        library = voxelProjectionLibrary('/assets', nodes);
+      expect(await library.loadType('HTNK')).toBeNull();
+      expect(library.get('HTNK')).toBeNull();
+      for (const bitmap of bitmaps) expect(bitmap.close).toHaveBeenCalledOnce();
+      nodes.dispose();
+    },
+  );
+  it('cancels an eight-layer decode without reviving or retaining any bitmap', async () => {
+    mockAssets({ spec: shadowSpec() });
+    pixelCanvas();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const bitmaps: { close: ReturnType<typeof vi.fn> }[] = [];
+    vi.stubGlobal(
+      'createImageBitmap',
+      vi.fn(async () => {
+        await gate;
+        const bitmap = { width: 320, height: 32, close: vi.fn() };
+        bitmaps.push(bitmap);
+        return bitmap;
+      }),
+    );
+    const nodes = new AtmosphereNodes(),
+      library = voxelProjectionLibrary('/assets', nodes);
+    const loading = library.loadType('HTNK');
+    await vi.waitFor(() => expect(createImageBitmap).toHaveBeenCalledTimes(12));
+    nodes.dispose();
+    release();
+    expect(await loading).toBeNull();
+    for (const bitmap of bitmaps) expect(bitmap.close).toHaveBeenCalledOnce();
+  });
   it('fetches the index/type once, shares textures and disposes bitmaps with the atmosphere', async () => {
     const { fetchMock, bitmaps } = mockAssets();
     const nodes = new AtmosphereNodes();

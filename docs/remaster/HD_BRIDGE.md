@@ -877,6 +877,58 @@ overrides the tactical rectangle (default: the frame minus YR's 168 px sidebar a
 choice of rate, and `hd-pipelines=sync` switches the asynchronous pipeline compiles off (see "Frame rate" and
 "Match start").
 
+## Projection page cutout
+
+A version 1 projection manifest may opt in with `"cutout": 0.5`. This must be a finite number greater than zero
+and at most one. Invalid thresholds reject the page set, following normal projection fallback. If absent, the
+threshold slot is zero and the existing coverage mix is unchanged, including completely uncovered engine art.
+The threshold compares the filtered page alpha after adjacent facing interpolation, before the projection strength
+control. A sample strictly below it is discarded before colour and native-depth writes. A surviving cutout sample
+uses the page fully (still weighted by the explicit projection strength control), preventing old voxel art from
+leaking through the filtered cut edge. This is a binary silhouette cut, not alpha blending or a change to mesh geometry.
+
+The main and source-colour water reflection paths use the same threshold. Per-unit opacity and native-ground
+material clones retain the mask node and its part binder. Native ground shadow silhouettes remain geometry based.
+Authors must retain opaque coverage and sampling padding everywhere that should keep the original silhouette;
+transparent gutters and intentional cuts can otherwise expose the background. The Python packer preserves zero-alpha
+interiors, dilates RGB only, and validates the threshold when indexing/installing a build. Atlases keep their existing
+trilinear mip sampling and shared negative half-level bias; cut edges are filtered before thresholding. Test oblique
+facings and the facing wrap at the intended view scale, as filtering can move a subpixel silhouette edge.
+
+## Articulated projection receiver shadows
+
+A part may opt in with `"shadow": { "layers": ["receiver_0.png", "receiver_1.png", "receiver_2.png",
+"receiver_3.png", "receiver_4.png", "receiver_5.png", "receiver_6.png", "receiver_7.png"] }`. These eight
+images have exactly the colour atlas's size, frame rectangles and pivots. Their red channel is a **linear**
+receiver factor in [0,1], white = no attenuation. They carry no alpha silhouette or house colour. Bake the base
+colour/paint without the articulated caster, retaining body self-shadow/AO; multiply the factor after house remap
+and before scene lighting. Never bake the mean caster shadow into that base as well.
+
+Layer i represents positive local joint `rotation.y = i * 2pi/8`, independently of body/world facing. The shader
+wraps the joint yaw, linearly blends the two nearest layers, and uses the ordinary adjacent body-facing projection
+for each: four filtered array samples, with the colour atlas's coordinates, rect clamps and mip bias. The main and
+source-colour water reflection graphs use the same factor. This adds one 2D-array texture binding and one per-object
+scalar uniform, no instance vertex attribute. The array has generated trilinear mips, NoColorSpace and no Y flip.
+An absent field makes no extra request and binds a white array, preserving existing appearance and material graphs.
+
+`VoxelUnit.articulation` owns a reference to its articulated joint. Source meshes share that record; the per-object
+uniform reads the live local rotation at draw time, and reflection twins read their source's record. Both live pose
+updates and direct Group rotations work without a second notification. Body rotation, geometry replacement, opacity
+clones and native-depth variants retain the same owner. A root without a joint supplies zero yaw. There is no
+material-global remembered yaw and no child-name discovery in the shader.
+
+The loader validates all eight paths and dimensions, waits for all colour/paint/layer requests to settle, and only
+publishes a complete set. Failures keep the existing look; cancellation cannot revive a disposed library. Temporary
+layer bitmaps close even on decode/copy failure. One CPU-backed array survives context reuploads and is disposed
+once by the projection library alongside the base atlases and frame tables. Colour variants share that array.
+The Python `Frame.shadow` / `pack_shadow_frames` contract uses eight untrimmed factor planes and the colour packer's
+layout, with nearest-receiver gutters. Indexing and installation validate the full layer set before writing files.
+
+Asset-free regressions cover yaw wrapping, direct joint rotation, independent instances, source twins, geometry
+swaps, absent fields, shader construction for WebGPU/WebGL2, binding budgets, packing alignment, missing layers,
+size mismatch and cancellation. These checks do not establish GPU pixel appearance, driver mip generation or
+real-game turn acceptance; verify those on the target renderer at the intended scale.
+
 ## Projection page manifest smoothing
 
 A projection page type manifest may include `"smooth": { "shape": "imls" }` to select artist-normal surface

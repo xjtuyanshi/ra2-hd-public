@@ -1,12 +1,14 @@
 import {
   ClampToEdgeWrapping,
   DataTexture,
+  DataArrayTexture,
   FloatType,
   LinearFilter,
   LinearMipmapLinearFilter,
   NearestFilter,
   NoColorSpace,
   RGBAFormat,
+  RedFormat,
   Texture,
   Vector2,
   Vector3,
@@ -34,6 +36,7 @@ export interface VoxelProjectionPart {
   spec: ProjectionPartManifest;
   colour: Texture;
   paint: Texture;
+  shadow?: DataArrayTexture;
   /**
    * Frame table, read with texel loads: column k is bake frame k, row 0 its pivot (x, y), row 1 its rect (x, y,
    * width, height), in atlas pixels. PROJECTION_TABLE_FRAMES columns whatever the manifest's frame count.
@@ -48,6 +51,7 @@ export interface VoxelProjectionPart {
 export class VoxelProjectionInputs {
   readonly colour = textureSlot('filtered');
   readonly paint = textureSlot('filtered');
+  readonly shadow = textureSlot(emptyShadow());
   readonly frameTable = textureSlot(emptyFrameTable());
   /** Rows of the bake's screen Jacobian (atlas pixels per world unit). */
   readonly jacobianX = uniform(new Vector3());
@@ -56,6 +60,8 @@ export class VoxelProjectionInputs {
   readonly atlasSize = uniform(new Vector2(1, 1));
   /** Page exposure (see VoxelProjectionManifest.exposure); 1 for pages stored without headroom. */
   readonly exposure = uniform(1);
+  /** Zero disables discarding, including samples outside a page rect. */
+  readonly cutout = uniform(0);
   /** 1 for pages with baked form light (VoxelProjectionManifest.shading), which skip the mesh form terms. */
   readonly baked = uniform(0);
   /** Bake frames per turn, facing units (of 256) between two frames, and the same step in radians. */
@@ -67,11 +73,13 @@ export class VoxelProjectionInputs {
     const { manifest, spec } = part;
     this.colour.value = part.colour;
     this.paint.value = part.paint;
+    this.shadow.value = part.shadow ?? emptyShadow();
     this.frameTable.value = part.frameTable;
     (this.jacobianX.value as Vector3).fromArray(manifest.jacobian[0]);
     (this.jacobianY.value as Vector3).fromArray(manifest.jacobian[1]);
     (this.atlasSize.value as Vector2).fromArray(spec.size);
     this.exposure.value = manifest.exposure ?? 1;
+    this.cutout.value = manifest.cutout ?? 0;
     this.baked.value = manifest.shading === 'baked' ? 1 : 0;
     this.frameCount.value = manifest.frames;
     this.facingStep.value = manifest.facingStep;
@@ -131,10 +139,11 @@ export function createVoxelProjectionPart(
   name: ProjectionPartName,
   colour: Texture,
   paint: Texture,
+  shadow?: DataArrayTexture,
 ): VoxelProjectionPart {
   const spec = manifest.parts[name];
   if (!spec) throw new Error(`Missing projection part: ${name}`);
-  return { manifest, spec, colour, paint, frameTable: projectionFrameTable(spec) };
+  return { manifest, spec, colour, paint, shadow, frameTable: projectionFrameTable(spec) };
 }
 
 /** Object light level of the XMP29U2 noon bakes (see VoxelProjectionState.levelRef). */
@@ -223,6 +232,66 @@ async function loadAtlas(url: string, size: readonly number[], signal: AbortSign
   return texture;
 }
 
+/** Array binding type is identical for absent and enabled assets; white preserves the old look exactly. */
+let neutralShadow: DataArrayTexture | undefined;
+function emptyShadow(): DataArrayTexture {
+  if (!neutralShadow) neutralShadow = shadowTexture(new Uint8Array(8).fill(255), 1, 1);
+  return neutralShadow;
+}
+
+function shadowTexture(data: Uint8Array, width: number, height: number): DataArrayTexture {
+  const texture = new DataArrayTexture(data, width, height, 8);
+  texture.format = RedFormat;
+  texture.colorSpace = NoColorSpace;
+  texture.flipY = false;
+  texture.wrapS = texture.wrapT = ClampToEdgeWrapping;
+  texture.magFilter = LinearFilter;
+  texture.minFilter = LinearMipmapLinearFilter;
+  texture.generateMipmaps = true;
+  texture.needsUpdate = true;
+  return texture;
+}
+
+/** Decode atomically, retaining CPU pixels for context reuploads and releasing every temporary bitmap. */
+async function loadShadow(
+  directory: string,
+  spec: ProjectionPartManifest,
+  signal: AbortSignal,
+): Promise<DataArrayTexture> {
+  const results = await Promise.allSettled(
+    spec.shadow!.layers.map(async (file) => {
+      const response = await fetch(directory + file, { signal });
+      if (!response.ok) throw new Error(`${file}: HTTP ${response.status}`);
+      return createImageBitmap(await response.blob(), {
+        colorSpaceConversion: 'none',
+        premultiplyAlpha: 'none',
+        imageOrientation: 'none',
+      });
+    }),
+  );
+  const bitmaps = results.flatMap((result) => (result.status === 'fulfilled' ? [result.value] : []));
+  try {
+    const failure = results.find((result) => result.status === 'rejected');
+    if (failure) throw failure.reason;
+    if (signal.aborted || bitmaps.some((bitmap) => bitmap.width !== spec.size[0] || bitmap.height !== spec.size[1]))
+      throw new Error('cancelled or shadow atlas dimensions differ from manifest');
+    const [width, height] = spec.size;
+    const canvas = new OffscreenCanvas(width, height);
+    const context = canvas.getContext('2d', { willReadFrequently: true });
+    if (!context) throw new Error('Cannot decode projection shadow pixels');
+    const data = new Uint8Array(width * height * 8);
+    bitmaps.forEach((bitmap, layer) => {
+      context.clearRect(0, 0, width, height);
+      context.drawImage(bitmap, 0, 0);
+      const rgba = context.getImageData(0, 0, width, height).data;
+      for (let pixel = 0; pixel < width * height; pixel++) data[layer * width * height + pixel] = rgba[pixel * 4]!;
+    });
+    return shadowTexture(data, width, height);
+  } finally {
+    for (const bitmap of bitmaps) bitmap.close();
+  }
+}
+
 /** Lazy, shared per-context assets. Failed/absent types settle once and preserve the caller's current material. */
 export class VoxelProjectionLibrary {
   private readonly abort = new AbortController();
@@ -303,14 +372,17 @@ export class VoxelProjectionLibrary {
       const directory = `${this.base}/${file.slice(0, file.lastIndexOf('/') + 1)}`;
       const names = Object.keys(manifest.parts) as ProjectionPartName[];
       // Wait for every in-flight texture, including failures, before publishing or cleaning up a partial load.
+      const requests = names.map((name) => {
+        const part = manifest.parts[name]!;
+        return {
+          name,
+          colour: loadAtlas(directory + part.colour, part.size, this.abort.signal),
+          paint: loadAtlas(directory + part.paint, part.size, this.abort.signal),
+          shadow: part.shadow ? loadShadow(directory, part, this.abort.signal) : undefined,
+        };
+      });
       const results = await Promise.allSettled(
-        names.flatMap((name) => {
-          const part = manifest.parts[name]!;
-          return [
-            loadAtlas(directory + part.colour, part.size, this.abort.signal),
-            loadAtlas(directory + part.paint, part.size, this.abort.signal),
-          ];
-        }),
+        requests.flatMap((r) => [r.colour, r.paint, ...(r.shadow ? [r.shadow] : [])]),
       );
       const textures = results.flatMap((result) => (result.status === 'fulfilled' ? [result.value] : []));
       const failure = results.find((result) => result.status === 'rejected');
@@ -320,9 +392,16 @@ export class VoxelProjectionLibrary {
         return null;
       }
       const parts: VoxelProjectionAsset['parts'] = {};
-      names.forEach((name, i) => {
-        parts[name] = createVoxelProjectionPart(manifest, name, textures[i * 2]!, textures[i * 2 + 1]!);
-      });
+      let offset = 0;
+      for (const request of requests) {
+        parts[request.name] = createVoxelProjectionPart(
+          manifest,
+          request.name,
+          textures[offset++]!,
+          textures[offset++]!,
+          request.shadow ? (textures[offset++] as DataArrayTexture) : undefined,
+        );
+      }
       for (const texture of textures) this.textures.add(texture);
       for (const part of Object.values(parts)) this.textures.add(part.frameTable);
       const asset: VoxelProjectionAsset = { manifest, parts };

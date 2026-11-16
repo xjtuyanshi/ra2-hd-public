@@ -22,6 +22,7 @@ import {
   vec3,
   vec4,
 } from 'three/tsl';
+import { meshRelativeYaw } from './voxelArticulation';
 import type { ShaderNode } from '../tsl';
 import type { VoxelProjectionInputs, VoxelProjectionState } from './voxelProjection';
 import { highlightExponent } from './spriteLook';
@@ -59,7 +60,14 @@ export function projectedVoxelColour(
   currentLight: ShaderNode,
   gains: VoxelLookGains,
   basis?: ProjectionBasis,
-): { colour: ShaderNode; albedo: ShaderNode; coverage: ShaderNode; paint: ShaderNode; formLight: ShaderNode } {
+): {
+  colour: ShaderNode;
+  albedo: ShaderNode;
+  coverage: ShaderNode;
+  pageCoverage: ShaderNode;
+  paint: ShaderNode;
+  formLight: ShaderNode;
+} {
   // 0 for pages with baked form light: every mesh form term below (and the caller's formAO) scales by it.
   const formLight: ShaderNode = float(1).sub(part.baked.clamp());
   const matrix = basis?.matrix ?? modelWorldMatrix;
@@ -78,7 +86,10 @@ export function projectedVoxelColour(
   const worldOffset: ShaderNode = matrix.mul(vec4(basis?.position ?? positionLocal, 0)).xyz.toVar();
   const jx = part.jacobianX,
     jy = part.jacobianY;
-  const sample = (k: ShaderNode): { colour: ShaderNode; alpha: ShaderNode; paint: ShaderNode } => {
+  const yaw: ShaderNode = fract(meshRelativeYaw.div(2 * Math.PI)).mul(8);
+  const yaw0: ShaderNode = floor(yaw);
+  const yaw1: ShaderNode = yaw0.add(1).mod(8);
+  const sample = (k: ShaderNode): { colour: ShaderNode; alpha: ShaderNode; paint: ShaderNode; shadow: ShaderNode } => {
     const delta: ShaderNode = float(Math.PI / 2)
       .sub(k.mul(part.frameAngle))
       .sub(theta);
@@ -103,7 +114,12 @@ export function projectedVoxelColour(
     const paint: ShaderNode = texture(part.paint, uv).bias(bias).rgb.toVar();
     // Pages with headroom store sRGB / exposure (see VoxelProjectionManifest.exposure); 1 leaves the sample as is
     // (a product with 1 is exact), and as a uniform it keeps the shader text the same for every page.
-    return { colour: sRGBTransferEOTF(colour.rgb.mul(part.exposure)), alpha: colour.a.mul(inside), paint };
+    const shadow: ShaderNode = mix(
+      texture(part.shadow, uv).depth(int(yaw0)).bias(bias).r,
+      texture(part.shadow, uv).depth(int(yaw1)).bias(bias).r,
+      fract(yaw),
+    );
+    return { shadow, colour: sRGBTransferEOTF(colour.rgb.mul(part.exposure)), alpha: colour.a.mul(inside), paint };
   };
   const a = sample(k0),
     b = sample(k1);
@@ -189,10 +205,14 @@ export function projectedVoxelColour(
   albedo = albedo.mul(pow(albedoLuma.div(0.18), albedoPower));
   const albedoGrey: ShaderNode = albedo.dot(vec3(0.2126, 0.7152, 0.0722));
   albedo = mix(vec3(albedoGrey), albedo, state.saturation).max(0).mul(state.gain);
+  const shadow: ShaderNode = a.shadow.mul(wa).add(b.shadow.mul(wb)).div(max(coverage, 1e-5));
   return {
-    colour: colour.mul(mix(1, ratio, state.relight.clamp().mul(formLight))),
-    albedo,
-    coverage: coverage.mul(state.strength.clamp()),
+    colour: colour.mul(mix(1, ratio, state.relight.clamp().mul(formLight))).mul(shadow),
+    albedo: albedo.mul(shadow),
+    // A cutout is an opaque page silhouette: surviving filtered edge samples must not bring back old voxel art.
+    // Zero is the legacy threshold and retains the original fractional coverage mix exactly.
+    coverage: mix(coverage, float(1), part.cutout.sign()).mul(state.strength.clamp()),
+    pageCoverage: coverage,
     paint: house ? mask : float(0),
     formLight,
   };

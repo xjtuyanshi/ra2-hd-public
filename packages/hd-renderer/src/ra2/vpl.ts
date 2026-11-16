@@ -570,6 +570,9 @@ function createGraph(
       gains,
     );
     const projState = voxelProjectionFor(nodes);
+    // NodeMaterial's mask discards the fragment before colour and native depth writes.
+    // Zero is the legacy default: even zero-coverage samples keep their engine-art fallback.
+    material.maskNode = projected.pageCoverage.greaterThanEqual(projection.cutout);
     const formAo: ShaderNode = poweredOcclusion(
       float(1).sub(occlusion.mul(projState.formAO.clamp().mul(projected.formLight))),
       gains.aoPower,
@@ -622,6 +625,7 @@ function createGraph(
     // The VPL palette ramp is the engine's fixed sculpted surface colour, independent of the scene's sun. Raw
     // palette indices alone would turn its pale/white hulls dark grey; retain that ramp at half ambient radiance.
     let albedo: ShaderNode = mix(moonlit(sourceLit, nodes), sourceLit, paint).mul(ao);
+    let keep: ShaderNode = float(1).greaterThan(0);
     if (projection) {
       const projState = voxelProjectionFor(nodes);
       const projected = projectedVoxelColour(
@@ -634,6 +638,7 @@ function createGraph(
         gains,
         { matrix: sourceMatrix, position: positionGeometry, normal: sourceNormal },
       );
+      keep = projected.pageCoverage.greaterThanEqual(projection.cutout);
       const formAo: ShaderNode = poweredOcclusion(
         float(1).sub(occlusion.mul(projState.formAO.clamp().mul(projected.formLight))),
         gains.aoPower,
@@ -652,7 +657,10 @@ function createGraph(
     }
     // The exact source emissive term is a lower bound on its complete (nonnegative) lighting. Clamp to that
     // bound so darker source faces stay dark; direct sun/glints above never add radiance to the water twin.
-    return voxelReflectionFinish(voxelReflectionAmbient(albedo, voxelFill, ceiling), state);
+    return Fn(() => {
+      keep.not().discard();
+      return voxelReflectionFinish(voxelReflectionAmbient(albedo, voxelFill, ceiling), state);
+    })();
   });
   return { prototype: material, lookup: lut, projection };
 }

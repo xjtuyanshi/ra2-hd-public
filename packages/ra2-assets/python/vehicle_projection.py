@@ -256,6 +256,7 @@ class Frame:
     pivot: np.ndarray
     outline: np.ndarray
     registration: Registration
+    shadow: np.ndarray | None = None  # Eight linear receiver factors, aligned to the untrimmed colour frame.
 
 
 def pack_frames(frames: list[Frame], padding: int = PADDING, max_width: int = 4096):
@@ -299,6 +300,31 @@ def pack_frames(frames: list[Frame], padding: int = PADDING, max_width: int = 40
         manifest_frames.append({'k': frame.k, 'facing': frame.facing, 'pivot': (frame.pivot + offset).tolist(),
                                 'rect': [px + padding, py + padding, x1 - x0, y1 - y0]})
     return colour_atlas, paint_atlas, manifest_frames
+
+
+def pack_shadow_frames(frames: list[Frame], packed: list[dict], size: tuple[int, int], padding: int = PADDING):
+    """Use the colour packer's exact crops, pivots and gutters for eight positive relative-yaw buckets."""
+    if padding < 12 or len(frames) != len(packed):
+        raise ValueError('Invalid shadow layout')
+    width, height = size
+    layers = np.full((8, height, width, 4), 255, np.uint8)
+    for frame, entry in zip(frames, packed):
+        factors = frame.shadow
+        if (factors is None or factors.shape != (8, *frame.alpha.shape)
+                or not np.isfinite(factors).all() or factors.min() < 0 or factors.max() > 1):
+            raise ValueError('Expected eight finite shadow factor frames in [0,1]')
+        x, y, w, h = entry['rect']
+        shift = np.asarray(entry['pivot']) - frame.pivot
+        x0, y0 = np.rint(np.array([x, y]) - shift).astype(int)
+        if entry['k'] != frame.k or x0 < 0 or y0 < 0 or x0+w > frame.alpha.shape[1] or y0+h > frame.alpha.shape[0]:
+            raise ValueError('Shadow layout differs from colour')
+        alpha = np.pad(frame.alpha[y0:y0+h, x0:x0+w], padding)
+        for layer in range(8):
+            factor = np.pad(factors[layer, y0:y0+h, x0:x0+w, None], ((padding,padding),(padding,padding),(0,0)))
+            filled = dilate_colour(factor, alpha)[..., 0]
+            pixels = np.rint(filled * 255).clip(0,255).astype(np.uint8)
+            layers[layer, y-padding:y+h+padding, x-padding:x+w+padding, :3] = pixels[..., None]
+    return layers
 
 
 def review_sheet(frames: list[Frame], path: Path):
@@ -494,6 +520,10 @@ def compose_sheet(bake: Path, part: str, out: Path, facings: list[int], cols: in
 
 def manifest_atlases(path: Path, spec: dict) -> list[Path]:
     """Validate the atlas references shared by index building and farm installation."""
+    cutout = spec.get('cutout')
+    if 'cutout' in spec and (isinstance(cutout, bool) or not isinstance(cutout, (int, float))
+                             or not math.isfinite(cutout) or not 0 < cutout <= 1):
+        raise ValueError(f'{path.name}: invalid projection page cutout')
     if not isinstance(spec.get('parts'), dict) or not spec['parts']:
         raise ValueError(f'{path.name}: missing atlas parts')
     atlases = set()
@@ -506,6 +536,24 @@ def manifest_atlases(path: Path, spec: dict) -> list[Path]:
             if not atlas.is_file():
                 raise ValueError(f'{path.name}: missing atlas {name}')
             atlases.add(atlas)
+        if 'shadow' in part:
+            shadow = part['shadow']
+            layers = shadow.get('layers') if isinstance(shadow, dict) else None
+            if not isinstance(layers, list) or len(layers) != 8:
+                raise ValueError(f'{path.name}: expected eight shadow layers')
+            size = part.get('size')
+            if not isinstance(size, list) or len(size) != 2 or any(type(n) is not int or n <= 0 for n in size):
+                raise ValueError(f'{path.name}: invalid shadow atlas size')
+            for name in layers:
+                if not isinstance(name, str) or Path(name).name != name or not name.endswith('.png'):
+                    raise ValueError(f'{path.name}: invalid shadow atlas name')
+                atlas = path.parent / name
+                if not atlas.is_file():
+                    raise ValueError(f'{path.name}: missing shadow atlas {name}')
+                with Image.open(atlas) as image:
+                    if list(image.size) != size:
+                        raise ValueError(f'{path.name}: shadow atlas dimensions differ')
+                atlases.add(atlas)
     return sorted(atlases)
 
 

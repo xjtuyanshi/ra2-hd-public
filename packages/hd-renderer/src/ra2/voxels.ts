@@ -1,3 +1,4 @@
+import type { VoxelArticulation } from './voxelArticulation';
 import {
   BufferAttribute,
   BufferGeometry,
@@ -634,6 +635,7 @@ let nextSilhouetteSerial = 1;
 export class VoxelUnit extends Group {
   /** Only body/turret/barrel originals; never infer membership by traversing shadow/reflection/foam children. */
   readonly partMeshes: Mesh[] = [];
+  readonly articulation: VoxelArticulation = {};
   /** |TurretOffset| of the model each part came from, parallel to `partMeshes` (see updateCaptureRadius). */
   private readonly partOffsets: number[] = [];
   /** Rotation-independent world radius about the root, including articulated turret offsets. */
@@ -662,6 +664,7 @@ export class VoxelUnit extends Group {
     mesh.userData.voxelNativeDepth = this.nativeDepth;
     mesh.userData.voxelLookClass = this.lookClass;
     mesh.userData.voxelLocalLight = this.localLight;
+    mesh.userData.voxelArticulation = this.articulation;
     // Each part has an outline of its own for the frame's outline pass (silhouette.ts): a turret over its hull too.
     mesh.userData.silhouette = silhouetteCode(this.silhouetteSerial, this.partMeshes.length);
     this.partMeshes.push(mesh);
@@ -918,6 +921,7 @@ export function instantiateVoxel(
     }
     if (!turret) {
       turret = new Group();
+      root.articulation.joint = turret;
       turret.position.set(part.turretOffset, 0, 0);
       root.add(turret);
     }
